@@ -255,6 +255,34 @@ func hasHeaders(content string) bool {
 	return false
 }
 
+// isGarbageChunk returns true for content that should be filtered out during import:
+// - very short strings (< 20 chars after trimming)
+// - purely numeric content (timestamps, IDs)
+// - a single word (possibly quoted)
+func isGarbageChunk(content string) bool {
+	s := strings.TrimSpace(content)
+	if len(s) < 20 {
+		return true
+	}
+	// Purely numeric (timestamps, IDs)
+	allDigits := true
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			allDigits = false
+			break
+		}
+	}
+	if allDigits {
+		return true
+	}
+	// Single word, optionally quoted (e.g. "ALERT" or ALERT)
+	stripped := strings.Trim(s, `"'` + "`")
+	if !strings.ContainsAny(stripped, " \t\n") {
+		return true
+	}
+	return false
+}
+
 // normalizeChunks post-processes raw memory chunks to improve search quality:
 // 1. Splits oversized chunks (>maxChars) on paragraph boundaries
 // 2. Merges tiny chunks (<minChars) with neighbors
@@ -350,12 +378,18 @@ func normalizeChunks(memories []RawMemory, minChars, maxChars int) []RawMemory {
 		flush()
 	}
 
-	// Phase 2: Merge tiny chunks with neighbors
+	// Phase 2: Merge tiny chunks with neighbors (skip garbage)
 	if len(split) <= 1 {
+		if len(split) == 1 && isGarbageChunk(split[0].Content) {
+			return nil
+		}
 		return split
 	}
 	var merged []RawMemory
 	for i := 0; i < len(split); i++ {
+		if isGarbageChunk(split[i].Content) {
+			continue
+		}
 		if len(split[i].Content) >= minChars {
 			merged = append(merged, split[i])
 			continue
@@ -374,7 +408,14 @@ func normalizeChunks(memories []RawMemory, minChars, maxChars int) []RawMemory {
 		}
 	}
 
-	return merged
+	// Final pass: remove any remaining garbage chunks
+	var clean []RawMemory
+	for _, m := range merged {
+		if !isGarbageChunk(m.Content) {
+			clean = append(clean, m)
+		}
+	}
+	return clean
 }
 
 // countLines returns the number of newlines in a string.

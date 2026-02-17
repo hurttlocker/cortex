@@ -751,8 +751,8 @@ func TestEngine_ImportDir_SkipHidden(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	os.WriteFile(filepath.Join(tmpDir, "visible.md"), []byte("## Test\n- Content\n"), 0644)
-	os.WriteFile(filepath.Join(tmpDir, ".hidden.md"), []byte("## Hidden\n- Secret\n"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, "visible.md"), []byte("## Test\nThis is visible content that should be imported into the store.\n"), 0644)
+	os.WriteFile(filepath.Join(tmpDir, ".hidden.md"), []byte("## Hidden\nThis is hidden content that must be skipped by the importer.\n"), 0644)
 
 	s := newTestStore(t)
 	e := NewEngine(s)
