@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/ingest"
 	"github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
@@ -24,6 +25,11 @@ func main() {
 	switch os.Args[1] {
 	case "import":
 		if err := runImport(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "extract":
+		if err := runExtract(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -63,12 +69,13 @@ func main() {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract]")
 	}
 
 	// Parse flags
 	var paths []string
 	opts := ingest.ImportOptions{}
+	enableExtraction := false
 
 	for _, arg := range args {
 		switch {
@@ -76,6 +83,8 @@ func runImport(args []string) error {
 			opts.Recursive = true
 		case arg == "--dry-run" || arg == "-n":
 			opts.DryRun = true
+		case arg == "--extract":
+			enableExtraction = true
 		case strings.HasPrefix(arg, "-"):
 			return fmt.Errorf("unknown flag: %s", arg)
 		default:
@@ -118,6 +127,17 @@ func runImport(args []string) error {
 		}
 
 		totalResult.Add(result)
+	}
+
+	// Run extraction if requested
+	if enableExtraction && !opts.DryRun && totalResult.MemoriesNew > 0 {
+		fmt.Println("\nRunning extraction...")
+		extractionStats, err := runExtractionOnImportedMemories(ctx, s)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Extraction error: %v\n", err)
+		} else {
+			fmt.Printf("  Facts extracted: %d\n", extractionStats.FactsExtracted)
+		}
 	}
 
 	fmt.Println()
@@ -253,6 +273,166 @@ func runStats(args []string) error {
 	}
 
 	return outputStatsTTY(stats, sourceFiles, dateRange)
+}
+
+func runExtract(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex extract <file> [--json]")
+	}
+
+	// Parse flags
+	var filepath string
+	jsonOutput := false
+
+	for _, arg := range args {
+		switch {
+		case arg == "--json":
+			jsonOutput = true
+		case strings.HasPrefix(arg, "-"):
+			return fmt.Errorf("unknown flag: %s", arg)
+		default:
+			if filepath != "" {
+				return fmt.Errorf("only one file path allowed")
+			}
+			filepath = arg
+		}
+	}
+
+	if filepath == "" {
+		return fmt.Errorf("no file path specified")
+	}
+
+	// Read file
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		return fmt.Errorf("reading file: %w", err)
+	}
+
+	// Run extraction
+	pipeline := extract.NewPipeline()
+	ctx := context.Background()
+
+	metadata := map[string]string{
+		"source_file": filepath,
+	}
+	// Detect format from extension
+	if strings.HasSuffix(strings.ToLower(filepath), ".md") {
+		metadata["format"] = "markdown"
+	}
+
+	facts, err := pipeline.Extract(ctx, string(content), metadata)
+	if err != nil {
+		return fmt.Errorf("extraction failed: %w", err)
+	}
+
+	// Output results
+	if jsonOutput || !isTTY() {
+		return outputExtractJSON(facts)
+	}
+
+	return outputExtractTTY(filepath, facts)
+}
+
+// ExtractionStats holds statistics about extraction run.
+type ExtractionStats struct {
+	FactsExtracted int
+}
+
+// runExtractionOnImportedMemories runs extraction on recently imported memories.
+func runExtractionOnImportedMemories(ctx context.Context, s store.Store) (*ExtractionStats, error) {
+	// Get recently imported memories (limit to reasonable batch size)
+	memories, err := s.ListMemories(ctx, store.ListOpts{Limit: 1000, SortBy: "date"})
+	if err != nil {
+		return nil, fmt.Errorf("listing memories: %w", err)
+	}
+
+	pipeline := extract.NewPipeline()
+	stats := &ExtractionStats{}
+
+	for _, memory := range memories {
+		// Build metadata
+		metadata := map[string]string{
+			"source_file": memory.SourceFile,
+		}
+		if strings.HasSuffix(strings.ToLower(memory.SourceFile), ".md") {
+			metadata["format"] = "markdown"
+		}
+
+		// Extract facts
+		facts, err := pipeline.Extract(ctx, memory.Content, metadata)
+		if err != nil {
+			continue // Skip errors, continue with next memory
+		}
+
+		// Store facts
+		for _, extractedFact := range facts {
+			fact := &store.Fact{
+				MemoryID:    memory.ID,
+				Subject:     extractedFact.Subject,
+				Predicate:   extractedFact.Predicate,
+				Object:      extractedFact.Object,
+				FactType:    extractedFact.FactType,
+				Confidence:  extractedFact.Confidence,
+				DecayRate:   extractedFact.DecayRate,
+				SourceQuote: extractedFact.SourceQuote,
+			}
+
+			_, err := s.AddFact(ctx, fact)
+			if err != nil {
+				continue // Skip storage errors
+			}
+			stats.FactsExtracted++
+		}
+	}
+
+	return stats, nil
+}
+
+func outputExtractJSON(facts []extract.ExtractedFact) error {
+	if facts == nil {
+		facts = []extract.ExtractedFact{}
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(facts)
+}
+
+func outputExtractTTY(filepath string, facts []extract.ExtractedFact) error {
+	if len(facts) == 0 {
+		fmt.Printf("No facts extracted from %s\n", filepath)
+		return nil
+	}
+
+	fmt.Printf("Extracted %d fact", len(facts))
+	if len(facts) != 1 {
+		fmt.Print("s")
+	}
+	fmt.Printf(" from %s\n\n", filepath)
+
+	// Group facts by type for better display
+	factsByType := make(map[string][]extract.ExtractedFact)
+	for _, fact := range facts {
+		factsByType[fact.FactType] = append(factsByType[fact.FactType], fact)
+	}
+
+	for factType, typeFacts := range factsByType {
+		fmt.Printf("%s (%d):\n", strings.ToUpper(factType), len(typeFacts))
+		for _, fact := range typeFacts {
+			if fact.Subject != "" {
+				fmt.Printf("  • %s %s %s", fact.Subject, fact.Predicate, fact.Object)
+			} else {
+				fmt.Printf("  • %s: %s", fact.Predicate, fact.Object)
+			}
+			fmt.Printf(" [%.1f]", fact.Confidence)
+			if fact.SourceQuote != "" && len(fact.SourceQuote) < 50 {
+				fmt.Printf(" (%q)", fact.SourceQuote)
+			}
+			fmt.Println()
+		}
+		fmt.Println()
+	}
+
+	return nil
 }
 
 // ExtendedStats holds additional statistics not available from store.Stats().
@@ -436,6 +616,7 @@ Usage:
 
 Commands:
   import <path>       Import memory from a file or directory
+  extract <file>      Extract facts from a single file (without importing)
   search <query>      Search memory (keyword by default, hybrid coming in Phase 2)
   stats               Show memory statistics and health
   list                List all memory entries
@@ -453,6 +634,10 @@ Search Flags:
 Import Flags:
   -r, --recursive     Recursively import from directories
   -n, --dry-run       Show what would be imported without writing
+  --extract           Extract facts from imported memories and store them
+
+Extract Flags:
+  --json              Force JSON output even in TTY
 
 Stats Flags:
   --json              Force JSON output even in TTY
