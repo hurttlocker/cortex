@@ -338,5 +338,5 @@ MIT — see [LICENSE](LICENSE) for details.
 </p>
 
 <p align="center">
-  <sub>Built with 🧠 by <a href="https://github.com/hurttlocker">hurttlocker</a></sub>
+  <sub>Built with ❤️ by <a href="https://github.com/hurttlocker">hurttlocker</a></sub>
 </p>
