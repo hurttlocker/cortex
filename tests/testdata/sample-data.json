@@ -1,0 +1,32 @@
+{
+  "user": {
+    "name": "Alex Chen",
+    "location": "San Francisco, CA",
+    "preferences": {
+      "editor": "VS Code",
+      "theme": "dark",
+      "language": "Go"
+    }
+  },
+  "projects": [
+    {
+      "name": "Project Alpha",
+      "status": "in_progress",
+      "stack": ["Go", "PostgreSQL", "Redis"],
+      "deadline": "2026-03-30"
+    },
+    {
+      "name": "Project Beta",
+      "status": "planning",
+      "stack": ["Python", "FastAPI"],
+      "deadline": null
+    }
+  ],
+  "decisions": [
+    {
+      "date": "2026-01-15",
+      "description": "Chose Go over Rust for CLI project",
+      "reasoning": "Faster iteration, lower contributor barrier"
+    }
+  ]
+}
