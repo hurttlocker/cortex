@@ -355,12 +355,12 @@ func TestSearchHybrid_FallsBackToKeyword(t *testing.T) {
 	engine := NewEngine(s)
 	ctx := context.Background()
 
-	// Hybrid should return error without embedder 
+	// Hybrid should return error without embedder
 	_, err := engine.Search(ctx, "Go", Options{Mode: ModeHybrid, Limit: 10})
 	if err == nil {
 		t.Fatalf("hybrid search without embedder should return an error")
 	}
-	
+
 	// Should be the expected error message
 	expectedErr := "semantic search requires an embedder. Use --embed <provider/model> flag"
 	if !strings.Contains(err.Error(), expectedErr) {
