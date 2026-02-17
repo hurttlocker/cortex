@@ -124,6 +124,33 @@ func (s *SQLiteStore) DeleteMemory(ctx context.Context, id int64) error {
 	return nil
 }
 
+// UpdateMemory updates a memory's content and recomputes its hash.
+// The memories_au trigger will keep FTS in sync.
+// Returns an error if the memory does not exist or is soft-deleted.
+func (s *SQLiteStore) UpdateMemory(ctx context.Context, id int64, content string) error {
+	if content == "" {
+		return fmt.Errorf("memory content cannot be empty")
+	}
+	newHash := HashContentOnly(content)
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE memories SET content = ?, content_hash = ?, updated_at = ?
+		 WHERE id = ? AND deleted_at IS NULL`,
+		content, newHash, now, id,
+	)
+	if err != nil {
+		return fmt.Errorf("updating memory %d: %w", id, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("memory %d not found or already deleted", id)
+	}
+	return nil
+}
+
 // AddMemoryBatch inserts multiple memories in a transaction.
 // Uses the configured batch size for chunking.
 func (s *SQLiteStore) AddMemoryBatch(ctx context.Context, memories []*Memory) ([]int64, error) {

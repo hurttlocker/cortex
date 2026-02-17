@@ -121,6 +121,7 @@ type Store interface {
 	GetMemory(ctx context.Context, id int64) (*Memory, error)
 	ListMemories(ctx context.Context, opts ListOpts) ([]*Memory, error)
 	DeleteMemory(ctx context.Context, id int64) error
+	UpdateMemory(ctx context.Context, id int64, content string) error
 
 	// Batch
 	AddMemoryBatch(ctx context.Context, memories []*Memory) ([]int64, error)
