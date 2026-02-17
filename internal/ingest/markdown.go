@@ -62,7 +62,7 @@ func (m *MarkdownImporter) Import(ctx context.Context, path string) ([]RawMemory
 	}
 
 	// Normalize: split oversized chunks, merge tiny fragments
-	return normalizeChunks(chunks, 50, 1500), nil
+	return normalizeChunks(chunks, 50, 500), nil
 }
 
 // stripFrontMatter removes YAML front matter (--- delimited) from content.
@@ -306,6 +306,40 @@ func normalizeChunks(memories []RawMemory, minChars, maxChars int) []RawMemory {
 			if para == "" {
 				continue
 			}
+			// If a single paragraph itself exceeds max, split it further
+			if len(para) > maxChars {
+				flush() // flush anything accumulated
+				// Try splitting on single newlines first
+				lines := strings.Split(para, "\n")
+				for _, line := range lines {
+					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
+					}
+					// If a single line still exceeds max, hard-cut it
+					for len(line) > maxChars {
+						cut := maxChars
+						// Try to cut at a space boundary
+						if idx := strings.LastIndex(line[:cut], " "); idx > maxChars/2 {
+							cut = idx
+						}
+						split = append(split, RawMemory{
+							Content:       strings.TrimSpace(line[:cut]),
+							SourceFile:    mem.SourceFile,
+							SourceLine:    mem.SourceLine + lineOffset,
+							SourceSection: mem.SourceSection,
+							Metadata:      copyMetadata(mem.Metadata),
+						})
+						line = strings.TrimSpace(line[cut:])
+					}
+					if currentLen > 0 && currentLen+len(line)+1 > maxChars {
+						flush()
+					}
+					current = append(current, line)
+					currentLen += len(line) + 1
+				}
+				continue
+			}
 			// If adding this paragraph would exceed max, flush first
 			if currentLen > 0 && currentLen+len(para)+2 > maxChars {
 				flush()
@@ -326,10 +360,12 @@ func normalizeChunks(memories []RawMemory, minChars, maxChars int) []RawMemory {
 			merged = append(merged, split[i])
 			continue
 		}
-		// Tiny chunk — merge with previous if same source file, otherwise next
-		if len(merged) > 0 && merged[len(merged)-1].SourceFile == split[i].SourceFile {
+		// Tiny chunk — merge with previous if same source file and won't exceed max, otherwise next
+		if len(merged) > 0 && merged[len(merged)-1].SourceFile == split[i].SourceFile &&
+			len(merged[len(merged)-1].Content)+len(split[i].Content)+2 < maxChars {
 			merged[len(merged)-1].Content += "\n\n" + split[i].Content
-		} else if i+1 < len(split) && split[i+1].SourceFile == split[i].SourceFile {
+		} else if i+1 < len(split) && split[i+1].SourceFile == split[i].SourceFile &&
+			len(split[i+1].Content)+len(split[i].Content)+2 < maxChars {
 			split[i+1].Content = split[i].Content + "\n\n" + split[i+1].Content
 			split[i+1].SourceLine = split[i].SourceLine
 		} else {
