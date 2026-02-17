@@ -43,6 +43,18 @@ func (s *SQLiteStore) migrate() error {
 			INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
 		END`,
 
+		// Fix #10: Recreate memories_au to skip FTS reinsert on soft-delete.
+		// DROP+CREATE is idempotent — fixes existing databases without a version gate.
+		`DROP TRIGGER IF EXISTS memories_au`,
+		`CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+			INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
+			INSERT INTO memories_fts(rowid, content)
+				SELECT new.id, new.content WHERE new.deleted_at IS NULL;
+		END`,
+
+		// One-time cleanup: purge FTS ghosts for already-soft-deleted memories.
+		`DELETE FROM memories_fts WHERE rowid IN (SELECT id FROM memories WHERE deleted_at IS NOT NULL)`,
+
 		// Extracted facts
 		`CREATE TABLE IF NOT EXISTS facts (
 			id              INTEGER PRIMARY KEY AUTOINCREMENT,
