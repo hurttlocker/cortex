@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strings"
 )
 
 // AddEmbedding stores an embedding vector for a memory.
@@ -141,4 +142,85 @@ func bytesToFloat32(buf []byte) []float32 {
 		vec[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
 	}
 	return vec
+}
+
+// ListMemoryIDsWithoutEmbeddings retrieves memory IDs that don't have embeddings yet.
+// This is used to efficiently find memories that need embedding without N+1 queries.
+func (s *SQLiteStore) ListMemoryIDsWithoutEmbeddings(ctx context.Context, limit int) ([]int64, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT m.id FROM memories m 
+		 LEFT JOIN embeddings e ON m.id = e.memory_id 
+		 WHERE m.deleted_at IS NULL AND e.memory_id IS NULL 
+		 LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing memory IDs without embeddings: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning memory ID: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// GetMemoriesByIDs retrieves multiple memories by their IDs in a single query.
+func (s *SQLiteStore) GetMemoriesByIDs(ctx context.Context, ids []int64) ([]*Memory, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	// Build placeholders for IN clause
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(
+		`SELECT id, content, source_file, source_line, source_section, content_hash, imported_at, updated_at
+		 FROM memories WHERE id IN (%s) AND deleted_at IS NULL`,
+		strings.Join(placeholders, ","),
+	)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("getting memories by IDs: %w", err)
+	}
+	defer rows.Close()
+
+	memories := make([]*Memory, 0, len(ids))
+	for rows.Next() {
+		m := &Memory{}
+		if err := rows.Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine,
+			&m.SourceSection, &m.ContentHash, &m.ImportedAt, &m.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning memory row: %w", err)
+		}
+		memories = append(memories, m)
+	}
+	return memories, rows.Err()
+}
+
+// GetEmbeddingDimensions returns the dimensionality of stored embeddings.
+// Returns an error if no embeddings exist.
+func (s *SQLiteStore) GetEmbeddingDimensions(ctx context.Context) (int, error) {
+	var dimensions int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT dimensions FROM embeddings LIMIT 1",
+	).Scan(&dimensions)
+	if err != nil {
+		return 0, fmt.Errorf("getting embedding dimensions: %w", err)
+	}
+	return dimensions, nil
 }

@@ -167,28 +167,32 @@ func (e *EmbedEngine) processBatch(ctx context.Context, memories []*store.Memory
 
 // getMemoriesWithoutEmbeddings retrieves all memories that don't have embeddings yet.
 func (e *EmbedEngine) getMemoriesWithoutEmbeddings(ctx context.Context, filterFn func(*store.Memory) bool) ([]*store.Memory, error) {
-	// Get all memories - we'll filter out ones with embeddings
-	allMemories, err := e.store.ListMemories(ctx, store.ListOpts{Limit: 100000}) // Large limit
+	// Get IDs of memories without embeddings efficiently (no N+1 queries)
+	ids, err := e.store.ListMemoryIDsWithoutEmbeddings(ctx, 10000) // Reasonable batch limit
 	if err != nil {
 		return nil, err
 	}
 
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	// Fetch all those memories in a single query
+	memories, err := e.store.GetMemoriesByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply filter if provided
+	if filterFn == nil {
+		return memories, nil
+	}
+
 	var result []*store.Memory
-	for _, memory := range allMemories {
-		// Apply filter if provided
-		if filterFn != nil && !filterFn(memory) {
-			continue
+	for _, memory := range memories {
+		if filterFn(memory) {
+			result = append(result, memory)
 		}
-
-		// Check if this memory already has an embedding
-		_, err := e.store.GetEmbedding(ctx, memory.ID)
-		if err == nil {
-			// Has embedding, skip it
-			continue
-		}
-
-		// Add to result (assuming error means no embedding exists)
-		result = append(result, memory)
 	}
 
 	return result, nil
