@@ -255,9 +255,33 @@ func runStats(args []string) error {
 	return outputStatsTTY(stats, sourceFiles, dateRange)
 }
 
-// getExtendedStats fetches source file count and import date range.
+// ExtendedStats holds additional statistics not available from store.Stats().
+type ExtendedStats struct {
+	SourceFiles int
+	DateRange   string
+}
+
+// getExtendedStats fetches source file count and import date range via SQL.
 func getExtendedStats(ctx context.Context, s store.Store) (int, string, error) {
-	// List memories to count distinct source files and get date range.
+	// Use the store's ExtendedStats method if available (efficient SQL queries).
+	if es, ok := s.(interface {
+		ExtendedStats(ctx context.Context) (int, string, string, error)
+	}); ok {
+		sourceFiles, earliest, latest, err := es.ExtendedStats(ctx)
+		if err != nil {
+			return 0, "", err
+		}
+		if sourceFiles == 0 {
+			return 0, "N/A", nil
+		}
+		dateRange := earliest
+		if earliest != latest {
+			dateRange = earliest + " → " + latest
+		}
+		return sourceFiles, dateRange, nil
+	}
+
+	// Fallback: list memories (slower, for interface compatibility).
 	memories, err := s.ListMemories(ctx, store.ListOpts{Limit: 100000})
 	if err != nil {
 		return 0, "", err

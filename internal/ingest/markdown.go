@@ -199,14 +199,14 @@ func splitOnAllHeaders(content string, absPath string, metadata map[string]strin
 }
 
 // buildSectionPath creates a hierarchical path from the header stack.
-// e.g., ["Trading", "Crypto", "Strategy", "", ""] → "Trading > Crypto > Strategy"
+// Skips empty levels so h2→h4 (no h3) still produces "Trading > Strategy".
+// e.g., ["Trading", "", "Strategy", "", ""] → "Trading > Strategy"
 func buildSectionPath(stack []string) string {
 	var parts []string
 	for _, h := range stack {
-		if h == "" {
-			break
+		if h != "" {
+			parts = append(parts, h)
 		}
-		parts = append(parts, h)
 	}
 	if len(parts) == 0 {
 		return ""

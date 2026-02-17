@@ -60,6 +60,34 @@ func (s *SQLiteStore) Stats(ctx context.Context) (*StoreStats, error) {
 	return stats, nil
 }
 
+// ExtendedStats returns source file count and date range using efficient SQL.
+func (s *SQLiteStore) ExtendedStats(ctx context.Context) (int, string, string, error) {
+	var sourceFiles int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT source_file) FROM memories WHERE deleted_at IS NULL AND source_file != ''`,
+	).Scan(&sourceFiles)
+	if err != nil {
+		return 0, "", "", fmt.Errorf("counting source files: %w", err)
+	}
+
+	if sourceFiles == 0 {
+		return 0, "", "", nil
+	}
+
+	var earliest, latest string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT
+			COALESCE(MIN(SUBSTR(imported_at, 1, 10)), ''),
+			COALESCE(MAX(SUBSTR(imported_at, 1, 10)), '')
+		 FROM memories WHERE deleted_at IS NULL`,
+	).Scan(&earliest, &latest)
+	if err != nil {
+		return sourceFiles, "", "", fmt.Errorf("getting date range: %w", err)
+	}
+
+	return sourceFiles, earliest, latest, nil
+}
+
 // SearchFTS performs full-text search using FTS5 with BM25 ranking.
 func (s *SQLiteStore) SearchFTS(ctx context.Context, query string, limit int) ([]*SearchResult, error) {
 	if limit <= 0 {
