@@ -1,0 +1,33 @@
+# Binaries (the built binary, not the source directory)
+/cortex
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build output
+/dist/
+/bin/
+
+# Test
+*.test
+*.out
+coverage.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dependencies
+/vendor/
+
+# ONNX model (downloaded on first run)
+*.onnx
+models/
