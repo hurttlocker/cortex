@@ -82,12 +82,24 @@ func (e *EmbedEngine) EmbedMemories(ctx context.Context, opts EmbedOptions) (*Em
 		batch := memories[i:end]
 		batchResult, err := e.processBatch(ctx, batch)
 		if err != nil {
-			// Log error but continue with next batch
+			// Batch failed — fall back to embedding one at a time.
+			// One bad text in a batch shouldn't kill its neighbors.
 			for _, memory := range batch {
-				result.Errors = append(result.Errors, EmbedError{
-					MemoryID: memory.ID,
-					Message:  err.Error(),
-				})
+				singleResult, singleErr := e.processBatch(ctx, []*store.Memory{memory})
+				if singleErr != nil {
+					result.Errors = append(result.Errors, EmbedError{
+						MemoryID: memory.ID,
+						Message:  singleErr.Error(),
+					})
+				} else {
+					result.EmbeddingsAdded += singleResult.Added
+					result.EmbeddingsSkipped += singleResult.Skipped
+					result.Errors = append(result.Errors, singleResult.Errors...)
+				}
+			}
+			// Still fire progress callback
+			if opts.ProgressFn != nil {
+				opts.ProgressFn(end, len(memories))
 			}
 			continue
 		}

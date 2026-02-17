@@ -863,10 +863,20 @@ func runEmbeddingOnImportedMemories(ctx context.Context, s store.Store, embedFla
 
 func runEmbed(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex embed <provider/model>")
+		return fmt.Errorf("usage: cortex embed <provider/model> [--batch-size N]")
 	}
 
 	embedFlag := args[0]
+	batchSize := 10 // Default: 10 for local models (Ollama), increase for API providers
+	for i := 1; i < len(args); i++ {
+		switch {
+		case args[i] == "--batch-size" && i+1 < len(args):
+			i++
+			fmt.Sscanf(args[i], "%d", &batchSize)
+		case strings.HasPrefix(args[i], "--batch-size="):
+			fmt.Sscanf(strings.TrimPrefix(args[i], "--batch-size="), "%d", &batchSize)
+		}
+	}
 
 	// Open store
 	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
@@ -901,8 +911,13 @@ func runEmbed(args []string) error {
 
 	// Embed all memories without embeddings
 	opts := ingest.DefaultEmbedOptions()
+	opts.BatchSize = batchSize
 	opts.ProgressFn = func(current, total int) {
-		fmt.Printf("Embedding memories... [%d/%d]\n", current, total)
+		pct := 0
+		if total > 0 {
+			pct = current * 100 / total
+		}
+		fmt.Printf("\r  Embedding... [%d/%d] %d%%", current, total, pct)
 	}
 
 	result, err := embedEngine.EmbedMemories(ctx, opts)

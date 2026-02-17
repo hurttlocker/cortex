@@ -52,15 +52,17 @@ func (m *MarkdownImporter) Import(ctx context.Context, path string) ([]RawMemory
 	}
 
 	// Try splitting on headers (any level h2+)
+	var chunks []RawMemory
 	if hasHeaders(body) {
-		sections := splitOnAllHeaders(body, absPath, metadata)
-		if len(sections) > 0 {
-			return sections, nil
-		}
+		chunks = splitOnAllHeaders(body, absPath, metadata)
+	}
+	if len(chunks) == 0 {
+		// Fallback: split on double newlines (paragraphs)
+		chunks = splitOnParagraphs(body, absPath, metadata)
 	}
 
-	// Fallback: split on double newlines (paragraphs)
-	return splitOnParagraphs(body, absPath, metadata), nil
+	// Normalize: split oversized chunks, merge tiny fragments
+	return normalizeChunks(chunks, 50, 1500), nil
 }
 
 // stripFrontMatter removes YAML front matter (--- delimited) from content.
@@ -251,6 +253,97 @@ func hasHeaders(content string) bool {
 		}
 	}
 	return false
+}
+
+// normalizeChunks post-processes raw memory chunks to improve search quality:
+// 1. Splits oversized chunks (>maxChars) on paragraph boundaries
+// 2. Merges tiny chunks (<minChars) with neighbors
+// This preserves provenance (source file, line, section) while keeping chunks
+// in the sweet spot for both BM25 and semantic search.
+func normalizeChunks(memories []RawMemory, minChars, maxChars int) []RawMemory {
+	if minChars <= 0 {
+		minChars = 50
+	}
+	if maxChars <= 0 {
+		maxChars = 1500
+	}
+
+	// Phase 1: Split oversized chunks
+	var split []RawMemory
+	for _, mem := range memories {
+		if len(mem.Content) <= maxChars {
+			split = append(split, mem)
+			continue
+		}
+		// Split on double newlines (paragraph boundaries)
+		paragraphs := strings.Split(mem.Content, "\n\n")
+		var current []string
+		currentLen := 0
+		lineOffset := 0
+
+		flush := func() {
+			if len(current) == 0 {
+				return
+			}
+			text := strings.TrimSpace(strings.Join(current, "\n\n"))
+			if text == "" {
+				return
+			}
+			split = append(split, RawMemory{
+				Content:       text,
+				SourceFile:    mem.SourceFile,
+				SourceLine:    mem.SourceLine + lineOffset,
+				SourceSection: mem.SourceSection,
+				Metadata:      copyMetadata(mem.Metadata),
+			})
+			lineOffset += countLines(strings.Join(current, "\n\n"))
+			current = nil
+			currentLen = 0
+		}
+
+		for _, para := range paragraphs {
+			para = strings.TrimSpace(para)
+			if para == "" {
+				continue
+			}
+			// If adding this paragraph would exceed max, flush first
+			if currentLen > 0 && currentLen+len(para)+2 > maxChars {
+				flush()
+			}
+			current = append(current, para)
+			currentLen += len(para) + 2
+		}
+		flush()
+	}
+
+	// Phase 2: Merge tiny chunks with neighbors
+	if len(split) <= 1 {
+		return split
+	}
+	var merged []RawMemory
+	for i := 0; i < len(split); i++ {
+		if len(split[i].Content) >= minChars {
+			merged = append(merged, split[i])
+			continue
+		}
+		// Tiny chunk — merge with previous if same source file, otherwise next
+		if len(merged) > 0 && merged[len(merged)-1].SourceFile == split[i].SourceFile {
+			merged[len(merged)-1].Content += "\n\n" + split[i].Content
+		} else if i+1 < len(split) && split[i+1].SourceFile == split[i].SourceFile {
+			split[i+1].Content = split[i].Content + "\n\n" + split[i+1].Content
+			split[i+1].SourceLine = split[i].SourceLine
+		} else {
+			// Orphan tiny chunk from a different file — keep it
+			merged = append(merged, split[i])
+		}
+	}
+
+	return merged
+}
+
+// countLines returns the number of newlines in a string.
+func countLines(s string) int {
+	return strings.Count(s, "\n") + 1
 }
 
 // copyMetadata creates a copy of the metadata map (or nil if empty).
