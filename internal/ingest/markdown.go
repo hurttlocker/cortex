@@ -62,7 +62,7 @@ func (m *MarkdownImporter) Import(ctx context.Context, path string) ([]RawMemory
 	}
 
 	// Normalize: split oversized chunks, merge tiny fragments
-	return normalizeChunks(chunks, 50, 500), nil
+	return normalizeChunks(chunks, 50, 1500), nil
 }
 
 // stripFrontMatter removes YAML front matter (--- delimited) from content.

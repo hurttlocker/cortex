@@ -72,7 +72,7 @@ cortex search "deployment process"
 cortex search "what timezone" --mode semantic
 
 # 3. Generate embeddings for semantic search (optional, needs Ollama)
-cortex embed ollama/all-minilm --batch-size 20
+cortex embed ollama/nomic-embed-text --batch-size 10
 
 # 4. See what your agent actually knows
 cortex stats
@@ -133,12 +133,12 @@ cortex import chat.txt --llm ollama/gemma2:2b   # Optional LLM-assist for unstru
 
 ```bash
 # Generate embeddings (one-time, runs locally via Ollama)
-cortex embed ollama/all-minilm --batch-size 20
+cortex embed ollama/nomic-embed-text --batch-size 10
 
 # Search modes
 cortex search "deployment process"                           # BM25 keyword (instant)
-cortex search "what timezone" --mode semantic --embed ollama/all-minilm  # Semantic
-cortex search "deployment" --mode hybrid --embed ollama/all-minilm       # Both
+cortex search "what timezone" --mode semantic --embed ollama/nomic-embed-text  # Semantic
+cortex search "deployment" --mode hybrid --embed ollama/nomic-embed-text       # Both
 ```
 
 Embedding is provider-agnostic: Ollama (local, free), OpenAI, DeepSeek, OpenRouter, or any custom endpoint. BM25 search works with zero setup — no embeddings needed.
@@ -306,7 +306,7 @@ No Docker. No Postgres. No Redis. No CGO. **Just a 15MB binary and a SQLite file
 
 | Provider | Endpoint | API Key | Notes |
 |----------|----------|---------|-------|
-| **Ollama** (recommended) | `localhost:11434` | None | Free, local, `ollama pull all-minilm` |
+| **Ollama** (recommended) | `localhost:11434` | None | Free, local, `ollama pull nomic-embed-text` |
 | **OpenAI** | `api.openai.com` | `OPENAI_API_KEY` | `text-embedding-3-small` |
 | **DeepSeek** | `api.deepseek.com` | `DEEPSEEK_API_KEY` | Budget-friendly |
 | **OpenRouter** | `openrouter.ai` | `OPENROUTER_API_KEY` | Any model |
@@ -316,36 +316,33 @@ No Docker. No Postgres. No Redis. No CGO. **Just a 15MB binary and a SQLite file
 
 Cortex automatically chunks content for optimal search and embedding:
 
-- **Max 500 chars per chunk** — fits within token limits of small embedding models
+- **Max 1500 chars per chunk** — fits within token limits of most embedding models (768d+ like `nomic-embed-text`)
 - **Splits on paragraph boundaries** (`\n\n`), falls back to line breaks (`\n`), then word boundaries
 - **Merges tiny fragments** (<50 chars) with neighbors to avoid noise
 - **Preserves provenance** — every chunk tracks source file, line number, and section header
 
 ---
 
-## 📊 Search Benchmark (v0.1.1)
+## 📊 Search Benchmark (v0.1.2)
 
-Real-world benchmark on 1,540 memories from a production agent workspace. Embedding model: `all-minilm` (384 dimensions) via Ollama.
+Real-world benchmark on 967 memories from a production agent workspace. Embedding model: `nomic-embed-text` (768 dimensions) via Ollama.
 
-| Query | BM25 (ms) | Semantic (ms) | Hybrid (ms) | Winner | Why |
-|-------|:---------:|:------------:|:-----------:|--------|-----|
-| "trading strategy QQQ options" | 20 | 54 | 52 | **Semantic** | Found actual strategy config (score 0.58) vs file list |
-| "Spear customer support workflow" | 17 | 51 | 51 | **Semantic** | Found email routing rules vs generic YC research |
-| "wedding venue villa plan" | 16 | 49 | 50 | **Semantic** | 5 hits at 0.73 score vs 1 hit at 0.04 |
-| "OpenClaw gateway configuration" | 16 | 53 | 54 | **Semantic** | Found actual config changes vs tangential mention |
-| "eBay David Yurman revenue" | 16 | 55 | 56 | **Tie** | Both found relevant results, different angles |
-| "agent heartbeat monitoring" | 16 | 49 | 49 | **Semantic** | Found heartbeat decision context (0.65) |
-| "crypto ADA Cardano trading" | 16 | 54 | 54 | **Semantic** | Found Alpaca crypto setup vs isolation rule |
-| "house hunting Philadelphia" | 17 | 50 | 49 | **BM25** | Exact keyword match on location + budget data |
+| Query | BM25 | Semantic | Hybrid | Winner | Why |
+|-------|:----:|:-------:|:------:|--------|-----|
+| "wedding venue" | 0.829 | 0.603 | 0.876 | **Hybrid** | BM25 keyword + semantic venue context fused for best result |
+| "what model does Hawk use" | 0.799 | 0.713 | 0.806 | **Hybrid** | Semantic found capital-instructions (authoritative), hybrid boosted it |
+| "crypto trading strategy" | 0.805 | 0.638 | 0.700 | **BM25** | Exact keywords match well; semantic found backtester details |
+| "Spear monthly revenue" | 0.791 | 0.687 | 0.822 | **Hybrid** | Semantic surfaced PAYE payment math; hybrid combined both angles |
+| "eBay dispute" | 0.660 | 0.626 | 0.700 | **Hybrid** | Both engines weak here; hybrid had best fusion |
+| "Q's sleep schedule" | 0.601 | 0.601 | 0.700 | **Hybrid** | Neither engine strong; hybrid best of weak results |
 
-**Key findings:**
-- **BM25**: ~16ms avg, excellent for exact terms and proper nouns
-- **Semantic**: ~52ms avg, dramatically better for conceptual queries (3-16x more relevant top results)
-- **Hybrid**: ~52ms avg, good all-rounder but RRF weights need tuning (currently favors BM25 signal)
-- **Semantic wins 6/8 queries** — especially strong on intent-based searches
-- **BM25 wins on exact term matching** — "house hunting Philadelphia" hits exact keywords
+**Key findings (v0.1.2 with Weighted Score Fusion):**
+- **BM25**: Fastest, excellent for exact terms and proper nouns
+- **Semantic**: Finds conceptually related content BM25 misses entirely (e.g., capital-instructions for agent model queries)
+- **Hybrid (WSF)**: Best overall — won 4/6 queries by combining keyword precision with semantic understanding
+- **Nomic-embed-text** (768d) handles longer chunks reliably vs all-minilm (384d)
 
-> **Recommendation:** Use `keyword` mode for known exact terms, `semantic` for exploratory/conceptual queries. Hybrid ranking weights will be tuned in future releases.
+> **Recommendation:** Use `hybrid` as default mode. Fall back to `bm25` for exact keyword lookups, `semantic` for exploratory/conceptual queries.
 
 ## 🗺️ Roadmap
 
@@ -377,7 +374,7 @@ Real-world benchmark on 1,540 memories from a production agent workspace. Embedd
 - **Multi-agent Memory**: Scoped memory sharing between agents
 - **Graph Memory Layer**: Relationship-aware memory architecture
 
-### Current Open Issues (v0.1.1)
+### Current Open Issues (v0.1.2)
 1. **Hybrid RRF tuning**: BM25 vs semantic weight balance needs refinement (#18)
 2. **O(N) brute-force semantic search**: Currently scans all embeddings — needs ANN index for large datasets (#18)
 3. **Embed integration tests**: Zero test coverage on embedding pipeline (#19)
