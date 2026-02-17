@@ -4,9 +4,9 @@
     <strong>Import-first, zero-dependency, observable memory layer for AI agents</strong>
   </p>
   <p align="center">
-    <a href="https://github.com/LavonTMCQ/cortex/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-    <a href="https://github.com/LavonTMCQ/cortex/releases"><img src="https://img.shields.io/github/v/release/LavonTMCQ/cortex?include_prereleases" alt="Release"></a>
-    <a href="https://goreportcard.com/report/github.com/LavonTMCQ/cortex"><img src="https://goreportcard.com/badge/github.com/LavonTMCQ/cortex" alt="Go Report Card"></a>
+    <a href="https://github.com/hurttlocker/cortex/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+    <a href="https://github.com/hurttlocker/cortex/releases"><img src="https://img.shields.io/github/v/release/hurttlocker/cortex?include_prereleases" alt="Release"></a>
+    <a href="https://goreportcard.com/report/github.com/hurttlocker/cortex"><img src="https://goreportcard.com/badge/github.com/hurttlocker/cortex" alt="Go Report Card"></a>
   </p>
 </p>
 
@@ -39,10 +39,10 @@ Now you want to:
 
 ```bash
 # Go install
-go install github.com/LavonTMCQ/cortex/cmd/cortex@latest
+go install github.com/hurttlocker/cortex/cmd/cortex@latest
 
 # Or download the binary
-curl -sSL https://github.com/LavonTMCQ/cortex/releases/latest/download/cortex-$(uname -s)-$(uname -m) -o cortex
+curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-$(uname -s)-$(uname -m) -o cortex
 chmod +x cortex && sudo mv cortex /usr/local/bin/
 ```
 
@@ -152,13 +152,33 @@ Cortex isn't trying to replace these tools — it's solving the problem they don
 - **ONNX Runtime** — local semantic embeddings (~80MB model)
 - **Zero external services** — no Docker, no Postgres, no API keys
 
+## What Makes Cortex Different
+
+Beyond import-first architecture and zero dependencies, Cortex introduces concepts from cognitive science and distributed systems that no other memory tool implements:
+
+### 🧬 Provenance Chains
+Every fact tracks not just where it came from, but what it influenced. Ask "what decisions were based on this fact?" and "if this changed, what breaks?"
+
+### 📉 Confidence Decay
+Facts fade over time unless reinforced — just like human memory. Identity facts persist for years. Meeting times decay in days. Based on Ebbinghaus's forgetting curve from cognitive science.
+
+### 🔭 Memory Lenses
+Context-dependent views of the same memory store. Your trading lens shows market data. Your personal lens shows relationships. Auto-detects from query context.
+
+### 📜 Differential Memory
+Git for your agent's knowledge. Diff what changed, log every event, snapshot and restore. Full audit trail.
+
+### 🌐 Cortex Memory Protocol (CMP)
+The long game: standardize how agents talk to memory, like LSP standardized how editors talk to language intelligence. Cortex CLI is the reference implementation.
+
 ## Roadmap
 
-See [docs/MVP.md](docs/MVP.md) for the detailed MVP scope.
+See [docs/MVP.md](docs/MVP.md) for detailed scope and [docs/NOVEL-IDEAS.md](docs/NOVEL-IDEAS.md) for the full vision.
 
-**Phase 1 (Current):** Import engine, dual search, CLI, basic observability  
-**Phase 2:** Web dashboard, MCP server, additional importers (Obsidian, Notion)  
-**Phase 3:** Graph memory, multi-agent support, plugin ecosystem
+**Phase 1 (Current):** Import engine, dual search, CLI, basic observability, LLM-assist extraction  
+**Phase 2:** Web dashboard, MCP server, provenance chains, confidence decay, additional importers  
+**Phase 3:** Memory lenses, differential memory (diff/log/snapshot), plugin ecosystem  
+**Phase 4:** Cortex Memory Protocol (CMP) specification, multi-agent support, graph memory
 
 ## Contributing
 
@@ -175,7 +195,7 @@ Please read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for an overview of the 
 ### Development
 
 ```bash
-git clone https://github.com/LavonTMCQ/cortex.git
+git clone https://github.com/hurttlocker/cortex.git
 cd cortex
 go build ./cmd/cortex/
 ./cortex --help
