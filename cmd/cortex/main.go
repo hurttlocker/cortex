@@ -443,7 +443,12 @@ func runStale(args []string) error {
 		case strings.HasPrefix(args[i], "-"):
 			return fmt.Errorf("unknown flag: %s", args[i])
 		default:
-			return fmt.Errorf("unexpected argument: %s", args[i])
+			// Accept positional number as --days shorthand (e.g. "cortex stale 30")
+			days, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("unexpected argument: %s", args[i])
+			}
+			opts.MaxDays = days
 		}
 	}
 
@@ -471,7 +476,14 @@ func runStale(args []string) error {
 		return outputStaleJSON(staleFacts)
 	}
 
-	return outputStaleTTY(staleFacts, opts)
+	// Get total fact count for the "no stale facts" message context.
+	storeStats, _ := s.Stats(ctx)
+	totalFacts := 0
+	if storeStats != nil {
+		totalFacts = int(storeStats.FactCount)
+	}
+
+	return outputStaleTTY(staleFacts, opts, totalFacts)
 }
 
 func runConflicts(args []string) error {
@@ -1496,9 +1508,13 @@ func outputStaleJSON(staleFacts []observe.StaleFact) error {
 	return enc.Encode(staleFacts)
 }
 
-func outputStaleTTY(staleFacts []observe.StaleFact, opts observe.StaleOpts) error {
+func outputStaleTTY(staleFacts []observe.StaleFact, opts observe.StaleOpts, totalFacts int) error {
 	if len(staleFacts) == 0 {
-		fmt.Printf("No stale facts found (confidence < %.2f, not reinforced in %d+ days)\n", opts.MaxConfidence, opts.MaxDays)
+		if totalFacts > 0 {
+			fmt.Printf("No stale facts found. All %d facts were reinforced within the last %d days.\n", totalFacts, opts.MaxDays)
+		} else {
+			fmt.Printf("No stale facts found (confidence < %.2f, not reinforced in %d+ days)\n", opts.MaxConfidence, opts.MaxDays)
+		}
 		return nil
 	}
 
