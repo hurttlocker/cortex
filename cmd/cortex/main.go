@@ -18,14 +18,14 @@ import (
 const version = "0.1.0-dev"
 
 var (
-	globalDBPath string
+	globalDBPath  string
 	globalVerbose bool
 )
 
 func main() {
 	// Parse global flags and filter them out of args
 	args := parseGlobalFlags(os.Args[1:])
-	
+
 	if len(args) < 1 {
 		printUsage()
 		os.Exit(0)
@@ -89,7 +89,7 @@ func main() {
 // Returns filtered args with global flags removed
 func parseGlobalFlags(args []string) []string {
 	var filtered []string
-	
+
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--db" && i+1 < len(args):
@@ -106,7 +106,7 @@ func parseGlobalFlags(args []string) []string {
 			filtered = append(filtered, args[i])
 		}
 	}
-	
+
 	return filtered
 }
 
@@ -198,8 +198,8 @@ func runImport(args []string) error {
 			fmt.Fprintf(os.Stderr, "  Extraction error: %v\n", err)
 		} else {
 			if extractionStats.LLMFactsExtracted > 0 {
-				fmt.Printf("  Facts extracted: %d (%d rules, %d LLM)\n", 
-					extractionStats.FactsExtracted, 
+				fmt.Printf("  Facts extracted: %d (%d rules, %d LLM)\n",
+					extractionStats.FactsExtracted,
 					extractionStats.RulesFactsExtracted,
 					extractionStats.LLMFactsExtracted)
 			} else {
@@ -754,7 +754,7 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 			if err != nil {
 				continue // Skip storage errors
 			}
-			
+
 			stats.FactsExtracted++
 			if extractedFact.ExtractionMethod == "llm" {
 				stats.LLMFactsExtracted++
@@ -798,7 +798,7 @@ func outputExtractTTY(filepath string, facts []extract.ExtractedFact) error {
 		fmt.Print("s")
 	}
 	fmt.Printf(" from %s", filepath)
-	
+
 	if llmCount > 0 {
 		fmt.Printf(" (%d rules, %d LLM)", rulesCount, llmCount)
 	}
@@ -820,12 +820,12 @@ func outputExtractTTY(filepath string, facts []extract.ExtractedFact) error {
 				fmt.Printf("  • %s: %s", fact.Predicate, fact.Object)
 			}
 			fmt.Printf(" [%.1f]", fact.Confidence)
-			
+
 			// Show extraction method if LLM was used
 			if fact.ExtractionMethod == "llm" {
 				fmt.Printf(" (LLM)")
 			}
-			
+
 			if fact.SourceQuote != "" && len(fact.SourceQuote) < 50 {
 				fmt.Printf(" (%q)", fact.SourceQuote)
 			}
@@ -862,7 +862,7 @@ func outputListMemoriesTTY(memories []*store.Memory, opts store.ListOpts) error 
 	for i, memory := range memories {
 		// Format date
 		date := memory.ImportedAt.Format("2006-01-02")
-		
+
 		// Truncate content
 		content := memory.Content
 		if len(content) > 60 {
@@ -872,7 +872,7 @@ func outputListMemoriesTTY(memories []*store.Memory, opts store.ListOpts) error 
 		content = strings.ReplaceAll(content, "\n", " ")
 
 		fmt.Printf("  %d. [%s] %s\n", i+1, date, content)
-		
+
 		// Add source info if available
 		if memory.SourceFile != "" {
 			fmt.Printf("     📁 %s", memory.SourceFile)
@@ -884,12 +884,12 @@ func outputListMemoriesTTY(memories []*store.Memory, opts store.ListOpts) error 
 			}
 			fmt.Println()
 		}
-		
+
 		// Add verbose details if requested
 		if globalVerbose && len(memory.Content) > 60 {
 			fmt.Printf("     Full content: %s\n", memory.Content)
 		}
-		
+
 		fmt.Println()
 	}
 
@@ -933,14 +933,14 @@ func outputListFactsTTY(facts []*store.Fact, opts store.ListOpts) error {
 		}
 
 		fmt.Printf("  %d. [%s] %s\n", i+1, fact.FactType, factContent)
-		fmt.Printf("     Confidence: %.2f · Decay: %.3f/day\n", 
+		fmt.Printf("     Confidence: %.2f · Decay: %.3f/day\n",
 			fact.Confidence, fact.DecayRate)
-		
+
 		// Add source quote if available and verbose
 		if globalVerbose && fact.SourceQuote != "" {
 			fmt.Printf("     Source: %q\n", fact.SourceQuote)
 		}
-		
+
 		fmt.Println()
 	}
 
@@ -981,7 +981,7 @@ func exportMemoriesJSON(memories []*store.Memory, output *os.File) error {
 
 func exportMemoriesMarkdown(memories []*store.Memory, output *os.File) error {
 	fmt.Fprintf(output, "# Cortex Memory Export\n\n")
-	
+
 	// Group by source file
 	sourceGroups := make(map[string][]*store.Memory)
 	for _, memory := range memories {
@@ -991,10 +991,10 @@ func exportMemoriesMarkdown(memories []*store.Memory, output *os.File) error {
 		}
 		sourceGroups[sourceFile] = append(sourceGroups[sourceFile], memory)
 	}
-	
+
 	for sourceFile, sourceMemories := range sourceGroups {
 		fmt.Fprintf(output, "## Source: %s\n\n", sourceFile)
-		
+
 		for _, memory := range sourceMemories {
 			if memory.SourceSection != "" {
 				fmt.Fprintf(output, "### %s", memory.SourceSection)
@@ -1003,24 +1003,24 @@ func exportMemoriesMarkdown(memories []*store.Memory, output *os.File) error {
 				}
 				fmt.Fprintf(output, "\n\n")
 			}
-			
+
 			fmt.Fprintf(output, "%s\n\n", memory.Content)
 		}
 	}
-	
+
 	return nil
 }
 
 func exportMemoriesCSV(memories []*store.Memory, output *os.File) error {
 	// Write CSV header
 	fmt.Fprintf(output, "id,content,source_file,source_line,source_section,imported_at\n")
-	
+
 	for _, memory := range memories {
 		// Escape quotes in content
 		content := strings.ReplaceAll(memory.Content, `"`, `""`)
 		sourceFile := strings.ReplaceAll(memory.SourceFile, `"`, `""`)
 		sourceSection := strings.ReplaceAll(memory.SourceSection, `"`, `""`)
-		
+
 		fmt.Fprintf(output, `%d,"%s","%s",%d,"%s",%s`+"\n",
 			memory.ID,
 			content,
@@ -1029,7 +1029,7 @@ func exportMemoriesCSV(memories []*store.Memory, output *os.File) error {
 			sourceSection,
 			memory.ImportedAt.Format("2006-01-02T15:04:05Z07:00"))
 	}
-	
+
 	return nil
 }
 
@@ -1041,47 +1041,47 @@ func exportFactsJSON(facts []*store.Fact, output *os.File) error {
 
 func exportFactsMarkdown(facts []*store.Fact, output *os.File) error {
 	fmt.Fprintf(output, "# Cortex Facts Export\n\n")
-	
+
 	// Group by fact type
 	typeGroups := make(map[string][]*store.Fact)
 	for _, fact := range facts {
 		typeGroups[fact.FactType] = append(typeGroups[fact.FactType], fact)
 	}
-	
+
 	for factType, typeFacts := range typeGroups {
 		fmt.Fprintf(output, "## %s Facts\n\n", strings.Title(factType))
-		
+
 		for _, fact := range typeFacts {
 			if fact.Subject != "" {
 				fmt.Fprintf(output, "**%s** %s %s", fact.Subject, fact.Predicate, fact.Object)
 			} else {
 				fmt.Fprintf(output, "**%s**: %s", fact.Predicate, fact.Object)
 			}
-			
+
 			fmt.Fprintf(output, " *(confidence: %.2f)*\n", fact.Confidence)
-			
+
 			if fact.SourceQuote != "" {
 				fmt.Fprintf(output, "> %s\n", fact.SourceQuote)
 			}
-			
+
 			fmt.Fprintf(output, "\n")
 		}
 	}
-	
+
 	return nil
 }
 
 func exportFactsCSV(facts []*store.Fact, output *os.File) error {
 	// Write CSV header
 	fmt.Fprintf(output, "id,memory_id,subject,predicate,object,fact_type,confidence,decay_rate,source_quote,created_at\n")
-	
+
 	for _, fact := range facts {
 		// Escape quotes
 		subject := strings.ReplaceAll(fact.Subject, `"`, `""`)
 		predicate := strings.ReplaceAll(fact.Predicate, `"`, `""`)
 		object := strings.ReplaceAll(fact.Object, `"`, `""`)
 		sourceQuote := strings.ReplaceAll(fact.SourceQuote, `"`, `""`)
-		
+
 		fmt.Fprintf(output, `%d,%d,"%s","%s","%s",%s,%.6f,%.6f,"%s",%s`+"\n",
 			fact.ID,
 			fact.MemoryID,
@@ -1094,7 +1094,7 @@ func exportFactsCSV(facts []*store.Fact, output *os.File) error {
 			sourceQuote,
 			fact.CreatedAt.Format("2006-01-02T15:04:05Z07:00"))
 	}
-	
+
 	return nil
 }
 
@@ -1259,7 +1259,7 @@ func outputEnhancedStatsJSON(stats *observe.Stats, dateRange string) error {
 		Stats:     stats,
 		DateRange: dateRange,
 	}
-	
+
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(s)
@@ -1276,11 +1276,11 @@ func outputEnhancedStatsTTY(stats *observe.Stats, dateRange string) error {
 		fmt.Printf("│ Storage:         %-27s │\n", formatBytes(stats.StorageBytes))
 	}
 	fmt.Printf("│ Avg confidence:  %.2f%-22s │\n", stats.AvgConfidence, "")
-	
+
 	if len(stats.FactsByType) > 0 {
 		fmt.Println("├─────────────────────────────────────────────┤")
 		fmt.Println("│ Facts by Type                                │")
-		
+
 		// Calculate percentages and show top types
 		total := stats.TotalFacts
 		for factType, count := range stats.FactsByType {
@@ -1297,19 +1297,19 @@ func outputEnhancedStatsTTY(stats *observe.Stats, dateRange string) error {
 			}
 		}
 	}
-	
+
 	fmt.Println("├─────────────────────────────────────────────┤")
 	fmt.Println("│ Freshness                                    │")
 	fmt.Printf("│   Today:           %-25d │\n", stats.Freshness.Today)
 	fmt.Printf("│   This week:       %-25d │\n", stats.Freshness.ThisWeek)
 	fmt.Printf("│   This month:      %-25d │\n", stats.Freshness.ThisMonth)
 	fmt.Printf("│   Older:           %-25d │\n", stats.Freshness.Older)
-	
+
 	if dateRange != "N/A" {
 		fmt.Println("├─────────────────────────────────────────────┤")
 		fmt.Printf("│ Date Range:   %-29s │\n", dateRange)
 	}
-	
+
 	fmt.Println("╰─────────────────────────────────────────────╯")
 	return nil
 }
@@ -1343,9 +1343,9 @@ func outputStaleTTY(staleFacts []observe.StaleFact, opts observe.StaleOpts) erro
 		}
 
 		fmt.Printf("⚠️  %.2f  \"%s\"\n", sf.EffectiveConfidence, factContent)
-		fmt.Printf("         %s · %d days old · original confidence: %.2f\n", 
+		fmt.Printf("         %s · %d days old · original confidence: %.2f\n",
 			sf.Fact.FactType, sf.DaysSinceReinforced, sf.Fact.Confidence)
-		
+
 		if sf.Fact.SourceQuote != "" {
 			fmt.Printf("         Source: %q\n", sf.Fact.SourceQuote)
 		}
@@ -1377,14 +1377,14 @@ func outputConflictsTTY(conflicts []observe.Conflict) error {
 
 	for _, c := range conflicts {
 		fmt.Println("❌ Attribute Conflict")
-		
+
 		fact1Content := ""
 		if c.Fact1.Subject != "" {
 			fact1Content = fmt.Sprintf("%s %s %s", c.Fact1.Subject, c.Fact1.Predicate, c.Fact1.Object)
 		} else {
 			fact1Content = fmt.Sprintf("%s: %s", c.Fact1.Predicate, c.Fact1.Object)
 		}
-		
+
 		fact2Content := ""
 		if c.Fact2.Subject != "" {
 			fact2Content = fmt.Sprintf("%s %s %s", c.Fact2.Subject, c.Fact2.Predicate, c.Fact2.Object)

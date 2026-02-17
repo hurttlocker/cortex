@@ -178,7 +178,7 @@ func (c *LLMClient) Extract(ctx context.Context, text string) ([]ExtractedFact, 
 
 		// Exponential backoff: 1s, 2s, 4s
 		backoffDuration := time.Duration(1<<attempt) * time.Second
-		
+
 		// For rate limit errors, respect Retry-After if present
 		if httpErr, ok := err.(*HTTPError); ok && httpErr.StatusCode == 429 {
 			if retryAfter := httpErr.RetryAfter; retryAfter > 0 {
@@ -320,7 +320,7 @@ func (c *LLMClient) sendChatRequest(ctx context.Context, req ChatRequest) (*Chat
 // parseExtractionResponse parses the LLM's JSON response into facts.
 func (c *LLMClient) parseExtractionResponse(content string) ([]ExtractedFact, error) {
 	content = strings.TrimSpace(content)
-	
+
 	var response LLMExtractionResponse
 	if err := json.Unmarshal([]byte(content), &response); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)

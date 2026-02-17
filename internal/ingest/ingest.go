@@ -256,7 +256,7 @@ func (e *Engine) sniffFormat(path string) Importer {
 	}
 
 	// Try JSON
-	if (strings.HasPrefix(content, "{") || strings.HasPrefix(content, "[")) {
+	if strings.HasPrefix(content, "{") || strings.HasPrefix(content, "[") {
 		var js json.RawMessage
 		if json.Unmarshal(data, &js) == nil {
 			return &JSONImporter{}

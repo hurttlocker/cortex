@@ -149,7 +149,7 @@ type Store interface {
 	// Observability
 	Stats(ctx context.Context) (*StoreStats, error)
 	StaleFacts(ctx context.Context, maxConfidence float64, daysSinceRecall int) ([]*Fact, error)
-	
+
 	// Enhanced observability methods
 	GetSourceCount(ctx context.Context) (int, error)
 	GetAverageConfidence(ctx context.Context) (float64, error)

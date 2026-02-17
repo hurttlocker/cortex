@@ -291,7 +291,7 @@ func (p *Pipeline) extractRegexPatterns(text string) []ExtractedFact {
 					Predicate:   predicate,
 					Object:      value,
 					FactType:    pattern.factType,
-					Confidence:  0.7, // Medium confidence for regex matches
+					Confidence:  0.7,      // Medium confidence for regex matches
 					SourceQuote: match[0], // Full match as source quote
 				}
 
@@ -399,25 +399,25 @@ func (p *Pipeline) extractWithLLM(ctx context.Context, text string) ([]Extracted
 
 	// Chunk the document if it's too large
 	chunks := ChunkDocument(text, p.llmConfig.ContextWindow)
-	
+
 	var allFacts []ExtractedFact
-	
+
 	for _, chunk := range chunks {
 		// Skip empty or whitespace-only chunks
 		if strings.TrimSpace(chunk) == "" {
 			continue
 		}
-		
+
 		facts, err := p.llmClient.Extract(ctx, chunk)
 		if err != nil {
 			return nil, fmt.Errorf("extracting from chunk: %w", err)
 		}
-		
+
 		allFacts = append(allFacts, facts...)
 	}
-	
+
 	// Deduplicate facts across chunks
 	allFacts = deduplicateFacts(allFacts)
-	
+
 	return allFacts, nil
 }
