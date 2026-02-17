@@ -329,22 +329,21 @@ func TestSearchSemantic_FallbackToBM25(t *testing.T) {
 	engine := NewEngine(s)
 	ctx := context.Background()
 
-	// Without an embedder, semantic search should fall back to BM25
+	// Without an embedder, semantic search should return an error
 	results, err := engine.Search(ctx, "Go programming", Options{Mode: ModeSemantic, Limit: 10})
-	if err != nil {
-		t.Fatalf("semantic search without embedder should fall back to BM25: %v", err)
+	if err == nil {
+		t.Fatalf("semantic search without embedder should return an error")
 	}
 
-	// Should find results using BM25 fallback
-	if len(results) == 0 {
-		t.Error("expected fallback BM25 search to find results")
+	// Should be the expected error message
+	expectedErr := "semantic search requires an embedder. Use --embed <provider/model> flag"
+	if !strings.Contains(err.Error(), expectedErr) {
+		t.Errorf("expected error message to contain %q, got: %v", expectedErr, err)
 	}
 
-	// Results should be marked as BM25 since we fell back
-	for _, result := range results {
-		if result.MatchType != "bm25" {
-			t.Errorf("expected match type 'bm25' for fallback, got %q", result.MatchType)
-		}
+	// Results should be empty due to error
+	if results != nil {
+		t.Error("expected nil results when error occurs")
 	}
 }
 
@@ -356,13 +355,16 @@ func TestSearchHybrid_FallsBackToKeyword(t *testing.T) {
 	engine := NewEngine(s)
 	ctx := context.Background()
 
-	// Hybrid should work (falls back to keyword in Phase 1)
-	results, err := engine.Search(ctx, "Go", Options{Mode: ModeHybrid, Limit: 10})
-	if err != nil {
-		t.Fatalf("hybrid search failed: %v", err)
+	// Hybrid should return error without embedder
+	_, err := engine.Search(ctx, "Go", Options{Mode: ModeHybrid, Limit: 10})
+	if err == nil {
+		t.Fatalf("hybrid search without embedder should return an error")
 	}
-	if len(results) == 0 {
-		t.Error("expected results from hybrid search (keyword fallback)")
+
+	// Should be the expected error message
+	expectedErr := "semantic search requires an embedder. Use --embed <provider/model> flag"
+	if !strings.Contains(err.Error(), expectedErr) {
+		t.Errorf("expected error message to contain %q, got: %v", expectedErr, err)
 	}
 }
 
@@ -740,18 +742,18 @@ func TestSearchHybrid_FallbackNilEmbedder(t *testing.T) {
 	ctx := context.Background()
 
 	results, err := engine.Search(ctx, "Go programming", Options{Mode: ModeHybrid, Limit: 10})
-	if err != nil {
-		t.Fatalf("Hybrid search without embedder should fall back to BM25: %v", err)
+	if err == nil {
+		t.Fatalf("Hybrid search without embedder should return an error")
 	}
 
-	if len(results) == 0 {
-		t.Error("Expected fallback BM25 search to find results")
+	// Should be the expected error message
+	expectedErr := "semantic search requires an embedder. Use --embed <provider/model> flag"
+	if !strings.Contains(err.Error(), expectedErr) {
+		t.Errorf("expected error message to contain %q, got: %v", expectedErr, err)
 	}
 
-	// Results should be marked as BM25 since we fell back
-	for _, result := range results {
-		if result.MatchType != "bm25" {
-			t.Errorf("Expected match type 'bm25' for fallback, got %q", result.MatchType)
-		}
+	// Results should be nil due to error
+	if results != nil {
+		t.Error("expected nil results when error occurs")
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -74,6 +75,7 @@ func (e *HTTPError) Error() string {
 type Client struct {
 	config EmbedConfig
 	http   *http.Client
+	mu     sync.Mutex
 }
 
 // ParseEmbedFlag parses "--embed provider/model" format.
@@ -128,12 +130,14 @@ func ParseEmbedFlag(flag string) (*EmbedConfig, error) {
 		return nil, fmt.Errorf("unknown provider %q. Supported: ollama, openai, deepseek, openrouter, custom", provider)
 	}
 
-	// Allow environment variable overrides
-	if endpoint := os.Getenv("CORTEX_EMBED_ENDPOINT"); endpoint != "" {
-		config.Endpoint = endpoint
-	}
-	if apiKey := os.Getenv("CORTEX_EMBED_API_KEY"); apiKey != "" {
-		config.APIKey = apiKey
+	// Only apply generic overrides for custom provider (other providers have their own env vars)
+	if config.Provider == "custom" {
+		if endpoint := os.Getenv("CORTEX_EMBED_ENDPOINT"); endpoint != "" {
+			config.Endpoint = endpoint
+		}
+		if apiKey := os.Getenv("CORTEX_EMBED_API_KEY"); apiKey != "" {
+			config.APIKey = apiKey
+		}
 	}
 
 	return config, nil
@@ -268,7 +272,9 @@ func (c *Client) EmbedBatch(ctx context.Context, texts []string) ([][]float32, e
 			// Update dimensions from first non-empty embedding
 			for _, emb := range embeddings {
 				if len(emb) > 0 {
+					c.mu.Lock()
 					c.config.dimensions = len(emb)
+					c.mu.Unlock()
 					break
 				}
 			}
@@ -307,6 +313,8 @@ func (c *Client) EmbedBatch(ctx context.Context, texts []string) ([][]float32, e
 // Dimensions returns the dimensionality of embeddings from this client.
 // Returns 0 if no embeddings have been generated yet.
 func (c *Client) Dimensions() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.config.dimensions
 }
 
@@ -350,7 +358,8 @@ func (c *Client) attemptEmbedBatch(ctx context.Context, texts []string) ([][]flo
 	defer resp.Body.Close()
 
 	// Read response body
-	body, err := io.ReadAll(resp.Body)
+	// Cap response body at 10MB to prevent memory exhaustion from malicious/broken servers
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
 	}

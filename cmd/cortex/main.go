@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -352,11 +353,7 @@ func runSearch(args []string) error {
 		return outputJSON(results)
 	}
 
-	// Hybrid mode note in Phase 1
-	if searchMode == search.ModeHybrid {
-		fmt.Println("Note: hybrid mode currently uses keyword search only (semantic search coming in Phase 2)")
-		fmt.Println()
-	}
+	// Hybrid mode note removed - hybrid mode now works fully
 
 	return outputTTY(query, results)
 }
@@ -391,6 +388,7 @@ func runStats(args []string) error {
 	}
 
 	// Get additional info: date range
+	// TODO: Consider merging this with observe engine stats to avoid duplicate queries
 	_, dateRange, err := getExtendedStats(ctx, s)
 	if err != nil {
 		return fmt.Errorf("getting extended stats: %w", err)
@@ -729,13 +727,13 @@ func runExport(args []string) error {
 	}
 
 	if exportFacts {
-		facts, err := s.ListFacts(ctx, store.ListOpts{Limit: 100000}) // Large limit to export all
+		facts, err := s.ListFacts(ctx, store.ListOpts{Limit: math.MaxInt32}) // TODO: Add pagination for v0.2
 		if err != nil {
 			return fmt.Errorf("listing facts: %w", err)
 		}
 		return exportFactsInFormat(facts, format, output)
 	} else {
-		memories, err := s.ListMemories(ctx, store.ListOpts{Limit: 100000}) // Large limit to export all
+		memories, err := s.ListMemories(ctx, store.ListOpts{Limit: math.MaxInt32}) // TODO: Add pagination for v0.2
 		if err != nil {
 			return fmt.Errorf("listing memories: %w", err)
 		}
@@ -1287,7 +1285,7 @@ func getExtendedStats(ctx context.Context, s store.Store) (int, string, error) {
 	}
 
 	// Fallback: list memories (slower, for interface compatibility).
-	memories, err := s.ListMemories(ctx, store.ListOpts{Limit: 100000})
+	memories, err := s.ListMemories(ctx, store.ListOpts{Limit: math.MaxInt32}) // TODO: Add pagination for v0.2
 	if err != nil {
 		return 0, "", err
 	}

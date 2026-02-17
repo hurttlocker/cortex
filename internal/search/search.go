@@ -232,14 +232,23 @@ func TruncateContent(content string, maxLen int) string {
 // searchSemantic performs semantic search using embedding similarity.
 func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options) ([]Result, error) {
 	if e.embedder == nil {
-		// Fall back to BM25 with a warning (could also return error)
-		return e.searchBM25(ctx, query, opts)
+		return nil, fmt.Errorf("semantic search requires an embedder. Use --embed <provider/model> flag")
 	}
 
 	// Generate embedding for query
 	queryEmbedding, err := e.embedder.Embed(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("embedding query: %w", err)
+	}
+
+	// Check dimension compatibility with stored embeddings
+	if len(queryEmbedding) > 0 {
+		storedDims, err := e.store.GetEmbeddingDimensions(ctx)
+		if err == nil { // Only check if there are stored embeddings
+			if len(queryEmbedding) != storedDims {
+				return nil, fmt.Errorf("dimension mismatch: query embedding has %d dimensions but stored embeddings have %d. Did you change embedding models? Re-embed with: cortex embed <provider/model>", len(queryEmbedding), storedDims)
+			}
+		}
 	}
 
 	// Search embeddings in store
@@ -250,11 +259,7 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 
 	results := make([]Result, 0, len(storeResults))
 	for _, sr := range storeResults {
-		// Store already returns cosine similarity as score (0-1 range)
-		if sr.Score < opts.MinConfidence {
-			continue
-		}
-
+		// Store already filters by minSimilarity, so no need to double-check
 		r := Result{
 			Content:       sr.Memory.Content,
 			SourceFile:    sr.Memory.SourceFile,
@@ -275,8 +280,7 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 // searchHybrid performs both BM25 and semantic search, merging results with Reciprocal Rank Fusion (RRF).
 func (e *Engine) searchHybrid(ctx context.Context, query string, opts Options) ([]Result, error) {
 	if e.embedder == nil {
-		// Fall back to BM25 only with warning (could also return error)
-		return e.searchBM25(ctx, query, opts)
+		return nil, fmt.Errorf("semantic search requires an embedder. Use --embed <provider/model> flag")
 	}
 
 	// Run both searches concurrently
