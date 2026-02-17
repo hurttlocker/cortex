@@ -412,10 +412,10 @@ func TestNormalizeBM25Score(t *testing.T) {
 		wantGt float64
 		wantLt float64
 	}{
-		{-10.0, 0.0, 1.0},  // good match
-		{-1.0, 0.0, 1.0},   // decent match
-		{-0.1, 0.0, 1.0},   // weak match
-		{0.0, 0.99, 1.01},  // edge: score should be 1.0
+		{-10.0, 0.0, 1.0}, // good match
+		{-1.0, 0.0, 1.0},  // decent match
+		{-0.1, 0.0, 1.0},  // weak match
+		{0.0, 0.99, 1.01}, // edge: score should be 1.0
 	}
 
 	for _, tt := range tests {

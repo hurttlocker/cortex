@@ -533,7 +533,7 @@ func TestConfidenceScores(t *testing.T) {
 		t.Errorf("Expected KV fact confidence 0.9, got %f", kvFacts[0].Confidence)
 	}
 
-	// Regex patterns should have 0.7 confidence  
+	// Regex patterns should have 0.7 confidence
 	regexFacts := pipeline.extractRegexPatterns("Contact me at john@example.com")
 	for _, fact := range regexFacts {
 		if fact.Confidence != 0.7 {

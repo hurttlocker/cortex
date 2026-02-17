@@ -20,13 +20,13 @@ import (
 
 // Stats holds aggregate memory statistics for observability.
 type Stats struct {
-	TotalMemories int              `json:"memories"`
-	TotalFacts    int              `json:"facts"`
-	TotalSources  int              `json:"sources"`
-	StorageBytes  int64            `json:"storage_bytes"`
-	AvgConfidence float64          `json:"avg_confidence"`
-	FactsByType   map[string]int   `json:"facts_by_type"`
-	Freshness     Freshness        `json:"freshness"`
+	TotalMemories int            `json:"memories"`
+	TotalFacts    int            `json:"facts"`
+	TotalSources  int            `json:"sources"`
+	StorageBytes  int64          `json:"storage_bytes"`
+	AvgConfidence float64        `json:"avg_confidence"`
+	FactsByType   map[string]int `json:"facts_by_type"`
+	Freshness     Freshness      `json:"freshness"`
 }
 
 // Freshness holds distribution of memories by import date buckets.

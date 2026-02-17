@@ -24,12 +24,12 @@ func newTestEngine(t *testing.T) *Engine {
 func addTestMemory(t *testing.T, engine *Engine, content, sourceFile string) int64 {
 	t.Helper()
 	ctx := context.Background()
-	
+
 	memory := &store.Memory{
 		Content:    content,
 		SourceFile: sourceFile,
 	}
-	
+
 	id, err := engine.store.AddMemory(ctx, memory)
 	if err != nil {
 		t.Fatalf("failed to add test memory: %v", err)
@@ -41,7 +41,7 @@ func addTestMemory(t *testing.T, engine *Engine, content, sourceFile string) int
 func addTestFact(t *testing.T, engine *Engine, memoryID int64, subject, predicate, object, factType string, confidence float64) int64 {
 	t.Helper()
 	ctx := context.Background()
-	
+
 	fact := &store.Fact{
 		MemoryID:   memoryID,
 		Subject:    subject,
@@ -51,7 +51,7 @@ func addTestFact(t *testing.T, engine *Engine, memoryID int64, subject, predicat
 		Confidence: confidence,
 		DecayRate:  0.01,
 	}
-	
+
 	id, err := engine.store.AddFact(ctx, fact)
 	if err != nil {
 		t.Fatalf("failed to add test fact: %v", err)
@@ -91,7 +91,7 @@ func TestGetStats_WithData(t *testing.T) {
 	// Add test data
 	m1 := addTestMemory(t, engine, "Test content 1", "file1.md")
 	m2 := addTestMemory(t, engine, "Test content 2", "file2.md")
-	
+
 	addTestFact(t, engine, m1, "user", "name", "Alice", "identity", 0.9)
 	addTestFact(t, engine, m1, "user", "age", "25", "kv", 0.8)
 	addTestFact(t, engine, m2, "user", "city", "New York", "location", 0.7)
@@ -110,7 +110,7 @@ func TestGetStats_WithData(t *testing.T) {
 	if stats.TotalSources != 2 {
 		t.Errorf("expected 2 sources, got %d", stats.TotalSources)
 	}
-	
+
 	expectedAvg := (0.9 + 0.8 + 0.7) / 3.0
 	if math.Abs(stats.AvgConfidence-expectedAvg) > 0.01 {
 		t.Errorf("expected avg confidence %.2f, got %.2f", expectedAvg, stats.AvgConfidence)
@@ -119,9 +119,9 @@ func TestGetStats_WithData(t *testing.T) {
 
 func TestGetStats_FactsByType(t *testing.T) {
 	engine := newTestEngine(t)
-	
+
 	m1 := addTestMemory(t, engine, "Test content", "file1.md")
-	
+
 	addTestFact(t, engine, m1, "user", "name", "Alice", "identity", 0.9)
 	addTestFact(t, engine, m1, "user", "age", "25", "kv", 0.8)
 	addTestFact(t, engine, m1, "user", "city", "NYC", "location", 0.7)
@@ -147,12 +147,12 @@ func TestGetStats_FactsByType(t *testing.T) {
 
 func TestGetStats_Freshness(t *testing.T) {
 	engine := newTestEngine(t)
-	
+
 	// This test is challenging because we can't easily control import timestamps
 	// We'll add some data and verify that freshness totals match memory count
 	m1 := addTestMemory(t, engine, "Today content", "today.md")
 	m2 := addTestMemory(t, engine, "Also today", "today2.md")
-	
+
 	stats, err := engine.GetStats(context.Background())
 	if err != nil {
 		t.Fatalf("GetStats failed: %v", err)
@@ -162,12 +162,12 @@ func TestGetStats_Freshness(t *testing.T) {
 	if totalFreshness != stats.TotalMemories {
 		t.Errorf("freshness totals (%d) don't match memory count (%d)", totalFreshness, stats.TotalMemories)
 	}
-	
+
 	// New memories should appear in "today" bucket
 	if stats.Freshness.Today == 0 {
 		t.Error("expected some memories in 'today' bucket")
 	}
-	
+
 	// Avoid unused variable warnings
 	_ = m1
 	_ = m2
@@ -175,7 +175,7 @@ func TestGetStats_Freshness(t *testing.T) {
 
 func TestGetStats_StorageSize(t *testing.T) {
 	engine := newTestEngine(t)
-	
+
 	// Add some data
 	m1 := addTestMemory(t, engine, "Test content", "file1.md")
 	addTestFact(t, engine, m1, "user", "name", "Alice", "identity", 0.9)
@@ -195,7 +195,7 @@ func TestGetStats_StorageSize(t *testing.T) {
 
 func TestGetStaleFacts_NoStale(t *testing.T) {
 	engine := newTestEngine(t)
-	
+
 	m1 := addTestMemory(t, engine, "Fresh content", "fresh.md")
 	addTestFact(t, engine, m1, "user", "name", "Alice", "identity", 0.9)
 
@@ -218,17 +218,17 @@ func TestGetStaleFacts_NoStale(t *testing.T) {
 func TestGetStaleFacts_DecayedFacts(t *testing.T) {
 	engine := newTestEngine(t)
 	ctx := context.Background()
-	
+
 	m1 := addTestMemory(t, engine, "Old content", "old.md")
 	factID := addTestFact(t, engine, m1, "user", "name", "Alice", "identity", 0.8)
-	
+
 	// Manually set last_reinforced to old date to simulate staleness
 	// We need to access the SQLite store directly for this
 	sqliteStore := engine.store.(*store.SQLiteStore)
 	oldTime := time.Now().UTC().AddDate(0, 0, -60) // 60 days ago
-	
-	_, err := sqliteStore.ExecContext(ctx, 
-		"UPDATE facts SET last_reinforced = ? WHERE id = ?", 
+
+	_, err := sqliteStore.ExecContext(ctx,
+		"UPDATE facts SET last_reinforced = ? WHERE id = ?",
 		oldTime, factID)
 	if err != nil {
 		t.Fatalf("failed to update last_reinforced: %v", err)
@@ -262,15 +262,15 @@ func TestGetStaleFacts_DecayedFacts(t *testing.T) {
 func TestGetStaleFacts_EffectiveConfidenceCalculation(t *testing.T) {
 	engine := newTestEngine(t)
 	ctx := context.Background()
-	
+
 	m1 := addTestMemory(t, engine, "Test content", "test.md")
 	factID := addTestFact(t, engine, m1, "user", "name", "Alice", "identity", 0.8)
-	
+
 	// Set last_reinforced to 30 days ago
 	sqliteStore := engine.store.(*store.SQLiteStore)
 	oldTime := time.Now().UTC().AddDate(0, 0, -30)
-	_, err := sqliteStore.ExecContext(ctx, 
-		"UPDATE facts SET last_reinforced = ?, decay_rate = ? WHERE id = ?", 
+	_, err := sqliteStore.ExecContext(ctx,
+		"UPDATE facts SET last_reinforced = ?, decay_rate = ? WHERE id = ?",
 		oldTime, 0.01, factID)
 	if err != nil {
 		t.Fatalf("failed to update fact: %v", err)
@@ -295,7 +295,7 @@ func TestGetStaleFacts_EffectiveConfidenceCalculation(t *testing.T) {
 	// Calculate expected effective confidence: 0.8 * exp(-0.01 * 30)
 	expectedEffective := 0.8 * math.Exp(-0.01*30)
 	actualEffective := staleFacts[0].EffectiveConfidence
-	
+
 	if math.Abs(actualEffective-expectedEffective) > 0.01 {
 		t.Errorf("expected effective confidence %.3f, got %.3f", expectedEffective, actualEffective)
 	}
@@ -304,26 +304,26 @@ func TestGetStaleFacts_EffectiveConfidenceCalculation(t *testing.T) {
 func TestGetStaleFacts_SortedByStaleness(t *testing.T) {
 	engine := newTestEngine(t)
 	ctx := context.Background()
-	
+
 	m1 := addTestMemory(t, engine, "Test content", "test.md")
-	
+
 	// Add facts with different staleness levels
 	f1 := addTestFact(t, engine, m1, "user", "name", "Alice", "identity", 0.9)
 	f2 := addTestFact(t, engine, m1, "user", "age", "25", "kv", 0.5)
-	
+
 	sqliteStore := engine.store.(*store.SQLiteStore)
-	
+
 	// Make f1 more stale (older)
-	_, err := sqliteStore.ExecContext(ctx, 
-		"UPDATE facts SET last_reinforced = ? WHERE id = ?", 
+	_, err := sqliteStore.ExecContext(ctx,
+		"UPDATE facts SET last_reinforced = ? WHERE id = ?",
 		time.Now().UTC().AddDate(0, 0, -60), f1)
 	if err != nil {
 		t.Fatalf("failed to update f1: %v", err)
 	}
-	
+
 	// Make f2 less stale
-	_, err = sqliteStore.ExecContext(ctx, 
-		"UPDATE facts SET last_reinforced = ? WHERE id = ?", 
+	_, err = sqliteStore.ExecContext(ctx,
+		"UPDATE facts SET last_reinforced = ? WHERE id = ?",
 		time.Now().UTC().AddDate(0, 0, -40), f2)
 	if err != nil {
 		t.Fatalf("failed to update f2: %v", err)
@@ -353,16 +353,16 @@ func TestGetStaleFacts_SortedByStaleness(t *testing.T) {
 func TestGetStaleFacts_Limit(t *testing.T) {
 	engine := newTestEngine(t)
 	ctx := context.Background()
-	
+
 	m1 := addTestMemory(t, engine, "Test content", "test.md")
-	
+
 	// Add multiple old facts
 	for i := 0; i < 5; i++ {
 		factID := addTestFact(t, engine, m1, "user", "fact", "value", "kv", 0.5)
-		
+
 		sqliteStore := engine.store.(*store.SQLiteStore)
-		_, err := sqliteStore.ExecContext(ctx, 
-			"UPDATE facts SET last_reinforced = ? WHERE id = ?", 
+		_, err := sqliteStore.ExecContext(ctx,
+			"UPDATE facts SET last_reinforced = ? WHERE id = ?",
 			time.Now().UTC().AddDate(0, 0, -60), factID)
 		if err != nil {
 			t.Fatalf("failed to update fact %d: %v", i, err)
@@ -389,9 +389,9 @@ func TestGetStaleFacts_Limit(t *testing.T) {
 
 func TestGetConflicts_AttributeConflict(t *testing.T) {
 	engine := newTestEngine(t)
-	
+
 	m1 := addTestMemory(t, engine, "Test content", "test.md")
-	
+
 	// Add conflicting facts: same subject+predicate, different objects
 	addTestFact(t, engine, m1, "user", "timezone", "EST", "preference", 0.8)
 	addTestFact(t, engine, m1, "user", "timezone", "PST", "preference", 0.7)
@@ -418,9 +418,9 @@ func TestGetConflicts_AttributeConflict(t *testing.T) {
 
 func TestGetConflicts_NoConflicts(t *testing.T) {
 	engine := newTestEngine(t)
-	
+
 	m1 := addTestMemory(t, engine, "Clean content", "clean.md")
-	
+
 	// Add non-conflicting facts
 	addTestFact(t, engine, m1, "user", "name", "Alice", "identity", 0.9)
 	addTestFact(t, engine, m1, "user", "age", "25", "kv", 0.8)
@@ -438,9 +438,9 @@ func TestGetConflicts_NoConflicts(t *testing.T) {
 
 func TestGetConflicts_CaseInsensitiveMatching(t *testing.T) {
 	engine := newTestEngine(t)
-	
+
 	m1 := addTestMemory(t, engine, "Test content", "test.md")
-	
+
 	// Add facts with different case but same subject+predicate
 	addTestFact(t, engine, m1, "USER", "TIMEZONE", "EST", "preference", 0.8)
 	addTestFact(t, engine, m1, "user", "timezone", "PST", "preference", 0.7)
@@ -457,9 +457,9 @@ func TestGetConflicts_CaseInsensitiveMatching(t *testing.T) {
 
 func TestGetConflicts_SameObjectNoConflict(t *testing.T) {
 	engine := newTestEngine(t)
-	
+
 	m1 := addTestMemory(t, engine, "Test content", "test.md")
-	
+
 	// Add facts with same subject+predicate+object (reinforcement, not conflict)
 	addTestFact(t, engine, m1, "user", "timezone", "EST", "preference", 0.8)
 	addTestFact(t, engine, m1, "user", "timezone", "EST", "preference", 0.9)
@@ -478,7 +478,7 @@ func TestGetConflicts_SameObjectNoConflict(t *testing.T) {
 
 func TestStaleOpts_Defaults(t *testing.T) {
 	engine := newTestEngine(t)
-	
+
 	// Empty opts should use defaults
 	staleFacts, err := engine.GetStaleFacts(context.Background(), StaleOpts{})
 	if err != nil {
@@ -493,7 +493,7 @@ func TestStaleOpts_Defaults(t *testing.T) {
 
 func TestGetStats_EmptyStrings(t *testing.T) {
 	engine := newTestEngine(t)
-	
+
 	m1 := addTestMemory(t, engine, "Test content", "") // Empty source file
 	addTestFact(t, engine, m1, "", "", "", "kv", 0.0)  // Empty fact fields
 

@@ -1,0 +1,118 @@
+name: PR Auto-Fix
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Check out PR branch
+        run: |
+          git checkout ${{ github.head_ref }}
+
+      - name: Run go fmt and auto-commit changes
+        run: |
+          echo "Running go fmt..."
+          go fmt ./...
+          
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "Code formatting changes detected, committing..."
+            git add .
+            git commit -m "Auto-fix: go fmt"
+            git push origin ${{ github.head_ref }}
+            echo "✅ Formatting fixes committed and pushed"
+          else
+            echo "✅ No formatting changes needed"
+          fi
+
+      - name: Run go vet with clear error reporting
+        run: |
+          echo "Running go vet..."
+          if ! go vet ./...; then
+            echo "❌ FAILED: go vet found issues"
+            echo ""
+            echo "🔧 To fix locally:"
+            echo "  go vet ./..."
+            echo ""
+            echo "Common go vet issues:"
+            echo "  • Unreachable code"
+            echo "  • Printf format string mismatches"
+            echo "  • Unused variables"
+            echo "  • Incorrect struct tags"
+            exit 1
+          else
+            echo "✅ go vet passed"
+          fi
+
+      - name: Run go test with clear error reporting
+        run: |
+          echo "Running tests..."
+          if ! go test ./... -v; then
+            echo "❌ FAILED: Tests failed"
+            echo ""
+            echo "🔧 To fix locally:"
+            echo "  go test ./... -v"
+            echo ""
+            echo "💡 Tips:"
+            echo "  • Run tests locally before pushing"
+            echo "  • Check for race conditions with: go test -race ./..."
+            echo "  • Use go test -run TestName to run specific tests"
+            exit 1
+          else
+            echo "✅ All tests passed"
+          fi
+
+      - name: Check for TODO/FIXME comments in PR diff
+        run: |
+          echo "Checking for new TODO/FIXME comments..."
+          
+          # Get the base branch for comparison
+          git fetch origin ${{ github.base_ref }}
+          
+          # Check diff for TODO/FIXME comments
+          NEW_TODOS=$(git diff origin/${{ github.base_ref }}...HEAD | grep -E "^\+.*TODO|^\+.*FIXME" || true)
+          
+          if [[ -n "$NEW_TODOS" ]]; then
+            echo "⚠️  WARNING: New TODO/FIXME comments found in this PR:"
+            echo "$NEW_TODOS"
+            echo ""
+            echo "💭 Consider:"
+            echo "  • Creating GitHub issues for these TODOs"
+            echo "  • Adding context about when these should be addressed"
+            echo "  • Using more specific comments like TODO(username): description"
+            echo ""
+            echo "This is a warning only - the PR can still be merged."
+          else
+            echo "✅ No new TODO/FIXME comments found"
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "🎯 PR Auto-Fix Summary:"
+          echo "  • Code formatting: Auto-applied if needed"
+          echo "  • go vet: Must pass to merge"  
+          echo "  • Tests: Must pass to merge"
+          echo "  • TODO/FIXME: Warning only"
+          echo ""
+          echo "Ready for human review! 🚀"

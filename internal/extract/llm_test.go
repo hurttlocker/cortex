@@ -57,7 +57,7 @@ func newMockLLMServerWithRetryAfter(t *testing.T, retryAfter int) *httptest.Serv
 			w.Write([]byte("Rate limited"))
 			return
 		}
-		
+
 		// Second call succeeds
 		resp := ChatResponse{
 			Choices: []struct {
@@ -655,7 +655,7 @@ func TestChunkDocument_LargeDoc(t *testing.T) {
 	if len(chunks) > 1 {
 		chunk1 := chunks[0]
 		chunk2 := chunks[1]
-		
+
 		// Should have some overlap (but not test exact amount since it's rough)
 		if len(chunk1) < 500 {
 			t.Errorf("First chunk seems too small: %d chars", len(chunk1))
@@ -779,7 +779,7 @@ func TestValidateFact_InvalidType(t *testing.T) {
 
 func TestValidateFact_ConfidenceOutOfRange(t *testing.T) {
 	client := &LLMClient{}
-	
+
 	// Test confidence > 1.0
 	fact := ExtractedFact{
 		Subject:     "Alice",

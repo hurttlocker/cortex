@@ -175,7 +175,7 @@ func (s *SQLiteStore) GetFactsByType(ctx context.Context) (map[string]int, error
 // GetFreshnessDistribution returns memory counts bucketed by import date.
 func (s *SQLiteStore) GetFreshnessDistribution(ctx context.Context) (*Freshness, error) {
 	freshness := &Freshness{}
-	
+
 	// Use SUBSTR to extract date portion since timestamps include timezone
 	queries := []struct {
 		query string
