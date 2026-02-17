@@ -90,6 +90,22 @@ type StoreStats struct {
 	DBSizeBytes    int64
 }
 
+// Freshness holds distribution of memories by import date buckets.
+type Freshness struct {
+	Today     int `json:"today"`
+	ThisWeek  int `json:"this_week"`
+	ThisMonth int `json:"this_month"`
+	Older     int `json:"older"`
+}
+
+// Conflict represents two facts that may contradict each other.
+type Conflict struct {
+	Fact1        Fact    `json:"fact1"`
+	Fact2        Fact    `json:"fact2"`
+	ConflictType string  `json:"conflict_type"` // "attribute"
+	Similarity   float64 `json:"similarity"`
+}
+
 // StoreConfig holds configuration for NewStore.
 type StoreConfig struct {
 	DBPath              string
@@ -132,6 +148,13 @@ type Store interface {
 	// Observability
 	Stats(ctx context.Context) (*StoreStats, error)
 	StaleFacts(ctx context.Context, maxConfidence float64, daysSinceRecall int) ([]*Fact, error)
+	
+	// Enhanced observability methods
+	GetSourceCount(ctx context.Context) (int, error)
+	GetAverageConfidence(ctx context.Context) (float64, error)
+	GetFactsByType(ctx context.Context) (map[string]int, error)
+	GetFreshnessDistribution(ctx context.Context) (*Freshness, error)
+	GetAttributeConflicts(ctx context.Context) ([]Conflict, error)
 
 	// Maintenance
 	Vacuum(ctx context.Context) error
@@ -144,6 +167,11 @@ type SQLiteStore struct {
 	dbPath    string
 	batchSize int
 	embDims   int
+}
+
+// ExecContext executes a SQL statement. This is exposed for testing purposes.
+func (s *SQLiteStore) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return s.db.ExecContext(ctx, query, args...)
 }
 
 // NewStore creates a new SQLite-backed Store.
