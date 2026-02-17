@@ -242,7 +242,7 @@ func runSearch(args []string) error {
 	var queryParts []string
 	mode := "keyword"
 	limit := 10
-	minConfidence := 0.0
+	minConfidence := -1.0 // -1 = use mode-dependent defaults (BM25: 0.05, semantic: 0.25, hybrid: 0.05)
 	jsonOutput := false
 	embedFlag := ""
 

@@ -1,11 +1,11 @@
 // Package search provides search capabilities for Cortex.
 //
-// Two search modes, both fully local:
-// - BM25 keyword search via SQLite FTS5
-// - Semantic search via local ONNX embeddings (all-MiniLM-L6-v2) [Phase 2]
+// Three search modes:
+// - BM25 keyword search via SQLite FTS5 (instant, zero dependencies)
+// - Semantic search via embedding similarity (any provider: Ollama, OpenAI, etc.)
+// - Hybrid mode combines both using Weighted Score Fusion (α=0.3 BM25, 0.7 semantic)
 //
-// The default hybrid mode combines both using reciprocal rank fusion,
-// giving users the best of exact keyword matching and conceptual similarity.
+// Each mode applies minimum score filtering to prevent garbage-in/results-out.
 package search
 
 import (
@@ -46,15 +46,39 @@ func ParseMode(s string) (Mode, error) {
 type Options struct {
 	Mode          Mode    // Search mode (default: keyword)
 	Limit         int     // Max results (default: 10)
-	MinConfidence float64 // Minimum confidence threshold (default: 0.0)
+	MinConfidence float64 // Minimum score threshold (default: mode-dependent, -1 = use default)
 }
 
-// DefaultOptions returns sensible defaults for Phase 1 (keyword-only).
+// Default minimum score thresholds by mode.
+// These filter noise — garbage queries returning low-relevance results.
+const (
+	defaultMinBM25     = 0.05 // tanh(0.5/10)=0.05 → filters ranks weaker than ~0.5
+	defaultMinSemantic = 0.25 // Cosine similarity below 0.25 is essentially random
+	defaultMinHybrid   = 0.05 // Fused scores, lower threshold since it's a blend
+)
+
+// DefaultOptions returns sensible defaults.
 func DefaultOptions() Options {
 	return Options{
 		Mode:          ModeKeyword,
 		Limit:         10,
-		MinConfidence: 0.0,
+		MinConfidence: -1, // -1 = use mode-dependent default
+	}
+}
+
+// effectiveMinScore returns the minimum score threshold for a given mode.
+// If the user set an explicit threshold (>= 0), use that. Otherwise use defaults.
+func effectiveMinScore(mode Mode, configured float64) float64 {
+	if configured >= 0 {
+		return configured
+	}
+	switch mode {
+	case ModeSemantic:
+		return defaultMinSemantic
+	case ModeHybrid:
+		return defaultMinHybrid
+	default:
+		return defaultMinBM25
 	}
 }
 
@@ -150,13 +174,14 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 		}
 	}
 
+	minScore := effectiveMinScore(ModeKeyword, opts.MinConfidence)
 	results := make([]Result, 0, len(storeResults))
 	for _, sr := range storeResults {
 		// FTS5 rank is negative (more negative = better match).
 		// Convert to positive score where higher = better.
 		score := normalizeBM25Score(sr.Score)
 
-		if score < opts.MinConfidence {
+		if score < minScore {
 			continue
 		}
 
@@ -181,11 +206,18 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 	return results, nil
 }
 
-// normalizeBM25Score converts FTS5's negative rank to a positive 0-1 score.
+// normalizeBM25Score converts FTS5's negative rank to a 0-1 score.
 // FTS5 rank values are negative, with more negative being more relevant.
-// We use: score = 1 / (1 + |rank|) which maps to (0, 1] range.
+// We use log normalization: score = log(1 + |rank|) / log(1 + maxRank)
+// where maxRank anchors the scale. This preserves relative differences
+// better than 1/(1+|rank|) which compresses everything to 0.04-0.16.
+// For standalone BM25 results, we use a simpler sigmoid-like mapping.
 func normalizeBM25Score(rank float64) float64 {
-	return 1.0 / (1.0 + math.Abs(rank))
+	absRank := math.Abs(rank)
+	// Sigmoid-like mapping: tanh(absRank / scale)
+	// scale=10 gives: rank -1 → 0.10, rank -5 → 0.46, rank -10 → 0.76, rank -25 → 0.99
+	// This spreads scores across 0-1 range more evenly than 1/(1+x)
+	return math.Tanh(absRank / 10.0)
 }
 
 // sanitizeFTSQuery performs basic sanitization of an FTS5 query.
@@ -306,7 +338,8 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 	}
 
 	// Search embeddings in store
-	storeResults, err := e.store.SearchEmbedding(ctx, queryEmbedding, opts.Limit, opts.MinConfidence)
+	minScore := effectiveMinScore(ModeSemantic, opts.MinConfidence)
+	storeResults, err := e.store.SearchEmbedding(ctx, queryEmbedding, opts.Limit, minScore)
 	if err != nil {
 		return nil, fmt.Errorf("semantic search failed: %w", err)
 	}
@@ -331,10 +364,20 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 	return results, nil
 }
 
-// searchHybrid performs both BM25 and semantic search, merging results with Reciprocal Rank Fusion (RRF).
+// searchHybrid performs both BM25 and semantic search, merging results with
+// Weighted Score Fusion. Fetches extra candidates from each engine (3x limit)
+// to give the fusion algorithm more signal to work with.
 func (e *Engine) searchHybrid(ctx context.Context, query string, opts Options) ([]Result, error) {
 	if e.embedder == nil {
 		return nil, fmt.Errorf("semantic search requires an embedder. Use --embed <provider/model> flag")
+	}
+
+	// Fetch more candidates than requested so fusion has a wider pool.
+	// With only opts.Limit from each, overlap is sparse and ranking is noisy.
+	candidateOpts := opts
+	candidateOpts.Limit = opts.Limit * 3
+	if candidateOpts.Limit < 15 {
+		candidateOpts.Limit = 15
 	}
 
 	// Run both searches concurrently
@@ -346,87 +389,139 @@ func (e *Engine) searchHybrid(ctx context.Context, query string, opts Options) (
 	bm25Chan := make(chan searchResult, 1)
 	semanticChan := make(chan searchResult, 1)
 
-	// BM25 search
 	go func() {
-		results, err := e.searchBM25(ctx, query, opts)
+		results, err := e.searchBM25(ctx, query, candidateOpts)
 		bm25Chan <- searchResult{results, err}
 	}()
 
-	// Semantic search
 	go func() {
-		results, err := e.searchSemantic(ctx, query, opts)
+		results, err := e.searchSemantic(ctx, query, candidateOpts)
 		semanticChan <- searchResult{results, err}
 	}()
 
-	// Collect results
 	bm25Result := <-bm25Chan
 	semanticResult := <-semanticChan
 
-	// Handle errors - if one fails, return the other (but mark as hybrid)
+	// Handle errors - if one fails, return the other
 	if bm25Result.err != nil && semanticResult.err != nil {
 		return nil, fmt.Errorf("both searches failed: BM25: %w, Semantic: %v", bm25Result.err, semanticResult.err)
 	} else if bm25Result.err != nil {
-		// Update match type to hybrid
 		for i := range semanticResult.results {
 			semanticResult.results[i].MatchType = "hybrid"
 		}
+		if len(semanticResult.results) > opts.Limit {
+			semanticResult.results = semanticResult.results[:opts.Limit]
+		}
 		return semanticResult.results, nil
 	} else if semanticResult.err != nil {
-		// Update match type to hybrid
 		for i := range bm25Result.results {
 			bm25Result.results[i].MatchType = "hybrid"
+		}
+		if len(bm25Result.results) > opts.Limit {
+			bm25Result.results = bm25Result.results[:opts.Limit]
 		}
 		return bm25Result.results, nil
 	}
 
-	// Merge using Reciprocal Rank Fusion (RRF) with k=60
-	return mergeWithRRF(bm25Result.results, semanticResult.results, opts.Limit), nil
+	return mergeWeightedScores(bm25Result.results, semanticResult.results, opts.Limit), nil
 }
 
-// mergeWithRRF merges two result lists using Reciprocal Rank Fusion.
-// RRF formula: score(d) = sum(1/(k + rank_i(d))) for each result set, k=60
-func mergeWithRRF(bm25Results, semanticResults []Result, limit int) []Result {
-	const k = 60.0
+// mergeWeightedScores combines BM25 and semantic results using normalized score fusion.
+//
+// Why not RRF? RRF with k=60 was designed for large candidate sets (hundreds).
+// With 5-15 candidates, all scores compress to 0.016-0.033 — indistinguishable.
+//
+// Weighted Score Fusion:
+//  1. Normalize each result set's scores to 0-1 (min-max within set)
+//  2. Combine: hybrid_score = α × bm25_norm + (1-α) × semantic_norm
+//  3. Results appearing in both sets get boosted by both signals
+//
+// α=0.3 (BM25 weight) — semantic gets more influence because:
+//   - Semantic captures meaning/intent that keywords miss
+//   - BM25 already gets a natural boost: keyword matches that ALSO have
+//     high semantic similarity will rank highest
+const hybridAlpha = 0.3 // BM25 weight. Semantic weight = 1 - hybridAlpha
 
-	// Create a map to accumulate RRF scores
-	scoreMap := make(map[int64]float64)
-	resultMap := make(map[int64]Result)
+func mergeWeightedScores(bm25Results, semanticResults []Result, limit int) []Result {
+	// Normalize scores within each result set to 0-1 range
+	bm25Norm := normalizeResultScores(bm25Results)
+	semNorm := normalizeResultScores(semanticResults)
 
-	// Add BM25 results with their ranks
-	for i, result := range bm25Results {
-		rank := float64(i + 1) // 1-based ranking
-		scoreMap[result.MemoryID] += 1.0 / (k + rank)
-		result.MatchType = "hybrid"
-		resultMap[result.MemoryID] = result
+	// Build a map of memory_id → normalized scores from each source
+	type fusedEntry struct {
+		result   Result
+		bm25     float64
+		semantic float64
 	}
+	fusedMap := make(map[int64]*fusedEntry)
 
-	// Add semantic results with their ranks
-	for i, result := range semanticResults {
-		rank := float64(i + 1) // 1-based ranking
-		scoreMap[result.MemoryID] += 1.0 / (k + rank)
-		if _, exists := resultMap[result.MemoryID]; !exists {
-			result.MatchType = "hybrid"
-			resultMap[result.MemoryID] = result
+	for i, r := range bm25Results {
+		fusedMap[r.MemoryID] = &fusedEntry{
+			result: r,
+			bm25:   bm25Norm[i],
 		}
 	}
 
-	// Convert back to slice and sort by RRF score
-	var merged []Result
-	for memoryID, score := range scoreMap {
-		result := resultMap[memoryID]
-		result.Score = score
-		merged = append(merged, result)
+	for i, r := range semanticResults {
+		if entry, exists := fusedMap[r.MemoryID]; exists {
+			// Result found by both engines — use semantic's content (usually richer)
+			entry.semantic = semNorm[i]
+		} else {
+			fusedMap[r.MemoryID] = &fusedEntry{
+				result:   r,
+				semantic: semNorm[i],
+			}
+		}
 	}
 
-	// Sort by RRF score descending
+	// Calculate fused scores
+	var merged []Result
+	for _, entry := range fusedMap {
+		fusedScore := hybridAlpha*entry.bm25 + (1-hybridAlpha)*entry.semantic
+		entry.result.Score = fusedScore
+		entry.result.MatchType = "hybrid"
+		merged = append(merged, entry.result)
+	}
+
+	// Sort by fused score descending
 	sort.Slice(merged, func(i, j int) bool {
 		return merged[i].Score > merged[j].Score
 	})
 
-	// Limit results
 	if len(merged) > limit {
 		merged = merged[:limit]
 	}
 
 	return merged
+}
+
+// normalizeResultScores returns min-max normalized scores (0-1) for a result set.
+// If all scores are equal, returns 1.0 for all (single-score degenerate case).
+func normalizeResultScores(results []Result) []float64 {
+	if len(results) == 0 {
+		return nil
+	}
+
+	scores := make([]float64, len(results))
+	minScore := results[0].Score
+	maxScore := results[0].Score
+	for _, r := range results {
+		if r.Score < minScore {
+			minScore = r.Score
+		}
+		if r.Score > maxScore {
+			maxScore = r.Score
+		}
+	}
+
+	spread := maxScore - minScore
+	for i, r := range results {
+		if spread == 0 {
+			scores[i] = 1.0 // All same score
+		} else {
+			scores[i] = (r.Score - minScore) / spread
+		}
+	}
+
+	return scores
 }

@@ -378,8 +378,8 @@ func TestDefaultOptions(t *testing.T) {
 	if opts.Limit != 10 {
 		t.Errorf("expected default limit 10, got %d", opts.Limit)
 	}
-	if opts.MinConfidence != 0.0 {
-		t.Errorf("expected default min_confidence 0.0, got %f", opts.MinConfidence)
+	if opts.MinConfidence != -1.0 {
+		t.Errorf("expected default min_confidence -1.0 (use mode defaults), got %f", opts.MinConfidence)
 	}
 }
 
@@ -420,16 +420,18 @@ func TestParseMode(t *testing.T) {
 // --- Score Normalization ---
 
 func TestNormalizeBM25Score(t *testing.T) {
-	// FTS5 rank is negative, more negative = better
+	// FTS5 rank is negative, more negative = better.
+	// New normalization uses tanh(|rank|/10): rank 0 → 0, rank -10 → 0.76, rank -25 → 0.99
 	tests := []struct {
 		rank   float64
 		wantGt float64
 		wantLt float64
 	}{
-		{-10.0, 0.0, 1.0}, // good match
-		{-1.0, 0.0, 1.0},  // decent match
-		{-0.1, 0.0, 1.0},  // weak match
-		{0.0, 0.99, 1.01}, // edge: score should be 1.0
+		{-25.0, 0.95, 1.01}, // strong match → high score
+		{-10.0, 0.70, 0.85}, // good match → ~0.76
+		{-5.0, 0.40, 0.55},  // decent match → ~0.46
+		{-1.0, 0.08, 0.12},  // weak match → ~0.10
+		{0.0, -0.01, 0.01},  // no match → 0.0
 	}
 
 	for _, tt := range tests {
