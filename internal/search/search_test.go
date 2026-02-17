@@ -325,7 +325,7 @@ func TestSearchBM25_InvalidSyntaxFallback(t *testing.T) {
 func TestSearchSemantic_FallbackToBM25(t *testing.T) {
 	s := newTestStore(t)
 	seedTestData(t, s)
-	
+
 	engine := NewEngine(s)
 	ctx := context.Background()
 
@@ -625,13 +625,13 @@ func (m *mockEmbedder) Embed(ctx context.Context, text string) ([]float32, error
 	if embedding, ok := m.embeddings[text]; ok {
 		return embedding, nil
 	}
-	
+
 	// Generate a simple embedding based on text content
 	embedding := make([]float32, m.dimensions)
 	for i := range embedding {
 		embedding[i] = float32(len(text)+i) * 0.001
 	}
-	
+
 	m.embeddings[text] = embedding
 	return embedding, nil
 }
@@ -655,32 +655,32 @@ func (m *mockEmbedder) Dimensions() int {
 func TestSearchSemantic_WithEmbedder(t *testing.T) {
 	s := newTestStore(t)
 	seedTestData(t, s)
-	
+
 	// Add embeddings for some memories
 	ctx := context.Background()
 	embedder := newMockEmbedder()
-	
+
 	// Add embedding for one of the Go-related memories
 	goMemory := []float32{0.8, 0.2, 0.1}
 	err := s.AddEmbedding(ctx, 3, goMemory) // Memory ID 3 should be Go-related
 	if err != nil {
 		t.Fatalf("Failed to add embedding: %v", err)
 	}
-	
+
 	// Mock the query embedding to be similar to Go memory
 	embedder.embeddings["Go programming"] = []float32{0.7, 0.3, 0.2}
-	
+
 	engine := NewEngineWithEmbedder(s, embedder)
-	
+
 	results, err := engine.Search(ctx, "Go programming", Options{Mode: ModeSemantic, Limit: 10})
 	if err != nil {
 		t.Fatalf("Semantic search failed: %v", err)
 	}
-	
+
 	if len(results) == 0 {
 		t.Error("Expected semantic search to find results")
 	}
-	
+
 	// Results should be marked as semantic
 	for _, result := range results {
 		if result.MatchType != "semantic" {
@@ -692,38 +692,38 @@ func TestSearchSemantic_WithEmbedder(t *testing.T) {
 func TestSearchHybrid_RRF(t *testing.T) {
 	s := newTestStore(t)
 	seedTestData(t, s)
-	
+
 	ctx := context.Background()
 	embedder := newMockEmbedder()
-	
+
 	// Add embedding for Go-related memory (Memory ID 3)
 	goMemory := []float32{0.8, 0.2, 0.1}
 	err := s.AddEmbedding(ctx, 3, goMemory)
 	if err != nil {
 		t.Fatalf("Failed to add embedding: %v", err)
 	}
-	
+
 	// Mock query embedding similar to Go memory
 	embedder.embeddings["Go programming"] = []float32{0.7, 0.3, 0.2}
-	
+
 	engine := NewEngineWithEmbedder(s, embedder)
-	
+
 	results, err := engine.Search(ctx, "Go programming", Options{Mode: ModeHybrid, Limit: 10})
 	if err != nil {
 		t.Fatalf("Hybrid search failed: %v", err)
 	}
-	
+
 	if len(results) == 0 {
 		t.Error("Expected hybrid search to find results")
 	}
-	
+
 	// Results should be marked as hybrid
 	for _, result := range results {
 		if result.MatchType != "hybrid" {
 			t.Errorf("Expected match type 'hybrid', got %q", result.MatchType)
 		}
 	}
-	
+
 	// RRF should produce non-zero scores
 	for _, result := range results {
 		if result.Score <= 0 {
@@ -735,19 +735,19 @@ func TestSearchHybrid_RRF(t *testing.T) {
 func TestSearchHybrid_FallbackNilEmbedder(t *testing.T) {
 	s := newTestStore(t)
 	seedTestData(t, s)
-	
+
 	engine := NewEngine(s) // No embedder
 	ctx := context.Background()
-	
+
 	results, err := engine.Search(ctx, "Go programming", Options{Mode: ModeHybrid, Limit: 10})
 	if err != nil {
 		t.Fatalf("Hybrid search without embedder should fall back to BM25: %v", err)
 	}
-	
+
 	if len(results) == 0 {
 		t.Error("Expected fallback BM25 search to find results")
 	}
-	
+
 	// Results should be marked as BM25 since we fell back
 	for _, result := range results {
 		if result.MatchType != "bm25" {

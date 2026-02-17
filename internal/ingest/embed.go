@@ -10,9 +10,9 @@ import (
 
 // EmbedOptions configures an embedding operation.
 type EmbedOptions struct {
-	BatchSize   int                               // Number of texts to embed per API call (default: 50)
-	ProgressFn  func(current, total int)          // Progress callback
-	FilterFn    func(memory *store.Memory) bool   // Optional filter for which memories to embed
+	BatchSize  int                             // Number of texts to embed per API call (default: 50)
+	ProgressFn func(current, total int)        // Progress callback
+	FilterFn   func(memory *store.Memory) bool // Optional filter for which memories to embed
 }
 
 // DefaultEmbedOptions returns sensible defaults for embedding.

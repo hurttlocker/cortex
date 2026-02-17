@@ -360,7 +360,7 @@ func TestEmbed_EmptyTexts(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	
+
 	// Test empty string
 	_, err = client.Embed(ctx, "")
 	if err == nil {

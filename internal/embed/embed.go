@@ -2,7 +2,7 @@
 //
 // Supports multiple providers:
 // - ollama: http://localhost:11434/v1/embeddings
-// - openai: https://api.openai.com/v1/embeddings  
+// - openai: https://api.openai.com/v1/embeddings
 // - openrouter: https://openrouter.ai/api/v1/embeddings
 // - deepseek: https://api.deepseek.com/v1/embeddings
 // - custom: user-specified endpoint
@@ -32,13 +32,13 @@ type Embedder interface {
 
 // EmbedConfig holds embedding provider configuration.
 type EmbedConfig struct {
-	Provider      string // "ollama", "openai", "deepseek", "openrouter", "custom"
-	Model         string // model name  
-	Endpoint      string // full API URL
-	APIKey        string
-	MaxRetries    int // default: 3
-	TimeoutSecs   int // per-request timeout (default: 60)
-	dimensions    int // auto-detected on first call
+	Provider    string // "ollama", "openai", "deepseek", "openrouter", "custom"
+	Model       string // model name
+	Endpoint    string // full API URL
+	APIKey      string
+	MaxRetries  int // default: 3
+	TimeoutSecs int // per-request timeout (default: 60)
+	dimensions  int // auto-detected on first call
 }
 
 // EmbedRequest represents an OpenAI-compatible embeddings request.
@@ -199,7 +199,7 @@ func NewClient(config *EmbedConfig) (*Client, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
-	
+
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -264,7 +264,7 @@ func (c *Client) EmbedBatch(ctx context.Context, texts []string) ([][]float32, e
 					result[indexMap[i]] = embedding
 				}
 			}
-			
+
 			// Update dimensions from first non-empty embedding
 			for _, emb := range embeddings {
 				if len(emb) > 0 {
