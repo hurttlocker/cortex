@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/ingest"
 	"github.com/hurttlocker/cortex/internal/observe"
@@ -39,6 +40,11 @@ func main() {
 		}
 	case "extract":
 		if err := runExtract(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "embed":
+		if err := runEmbed(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -124,7 +130,7 @@ func getDBPath() string {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--llm <provider/model>]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--llm <provider/model>] [--embed <provider/model>]")
 	}
 
 	// Parse flags
@@ -132,6 +138,7 @@ func runImport(args []string) error {
 	opts := ingest.ImportOptions{}
 	enableExtraction := false
 	llmFlag := ""
+	embedFlag := ""
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -146,6 +153,11 @@ func runImport(args []string) error {
 			llmFlag = args[i]
 		case strings.HasPrefix(args[i], "--llm="):
 			llmFlag = strings.TrimPrefix(args[i], "--llm=")
+		case args[i] == "--embed" && i+1 < len(args):
+			i++
+			embedFlag = args[i]
+		case strings.HasPrefix(args[i], "--embed="):
+			embedFlag = strings.TrimPrefix(args[i], "--embed=")
 		case strings.HasPrefix(args[i], "-"):
 			return fmt.Errorf("unknown flag: %s", args[i])
 		default:
@@ -208,6 +220,17 @@ func runImport(args []string) error {
 		}
 	}
 
+	// Run embedding if requested
+	if embedFlag != "" && !opts.DryRun && totalResult.MemoriesNew > 0 {
+		fmt.Println("\nGenerating embeddings...")
+		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Embedding error: %v\n", err)
+		} else {
+			fmt.Printf("  Embeddings generated: %d\n", embedStats.EmbeddingsAdded)
+		}
+	}
+
 	fmt.Println()
 	fmt.Print(ingest.FormatImportResult(totalResult))
 	return nil
@@ -220,6 +243,7 @@ func runSearch(args []string) error {
 	limit := 10
 	minConfidence := 0.0
 	jsonOutput := false
+	embedFlag := ""
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -256,6 +280,11 @@ func runSearch(args []string) error {
 			minConfidence = f
 		case args[i] == "--json":
 			jsonOutput = true
+		case args[i] == "--embed" && i+1 < len(args):
+			i++
+			embedFlag = args[i]
+		case strings.HasPrefix(args[i], "--embed="):
+			embedFlag = strings.TrimPrefix(args[i], "--embed=")
 		case strings.HasPrefix(args[i], "-"):
 			return fmt.Errorf("unknown flag: %s", args[i])
 		default:
@@ -265,7 +294,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--json]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--json]")
 	}
 
 	searchMode, err := search.ParseMode(mode)
@@ -280,7 +309,31 @@ func runSearch(args []string) error {
 	}
 	defer s.Close()
 
-	engine := search.NewEngine(s)
+	// Create search engine with optional embedder
+	var engine *search.Engine
+	if embedFlag != "" {
+		// Configure embedder
+		embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
+		if err != nil {
+			return fmt.Errorf("configuring embedder: %w", err)
+		}
+		if embedConfig == nil {
+			return fmt.Errorf("no embedding configuration found")
+		}
+		if err := embedConfig.Validate(); err != nil {
+			return fmt.Errorf("invalid embedding configuration: %w", err)
+		}
+
+		embedder, err := embed.NewClient(embedConfig)
+		if err != nil {
+			return fmt.Errorf("creating embedder: %w", err)
+		}
+
+		engine = search.NewEngineWithEmbedder(s, embedder)
+	} else {
+		engine = search.NewEngine(s)
+	}
+
 	ctx := context.Background()
 
 	opts := search.Options{
@@ -765,6 +818,115 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 	}
 
 	return stats, nil
+}
+
+// EmbeddingStats holds statistics about embedding run.
+type EmbeddingStats struct {
+	EmbeddingsAdded int
+}
+
+// runEmbeddingOnImportedMemories runs embedding on recently imported memories.
+func runEmbeddingOnImportedMemories(ctx context.Context, s store.Store, embedFlag string) (*EmbeddingStats, error) {
+	// Configure embedder
+	embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
+	if err != nil {
+		return nil, fmt.Errorf("configuring embedder: %w", err)
+	}
+	if embedConfig == nil {
+		return nil, fmt.Errorf("no embedding configuration found")
+	}
+	if err := embedConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid embedding configuration: %w", err)
+	}
+
+	embedder, err := embed.NewClient(embedConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating embedder: %w", err)
+	}
+
+	// Create embedding engine
+	embedEngine := ingest.NewEmbedEngine(s, embedder)
+
+	// Embed only recently imported memories (filter for ones without embeddings)
+	opts := ingest.DefaultEmbedOptions()
+	opts.ProgressFn = func(current, total int) {
+		fmt.Printf("  [%d/%d] Embedding memories...\n", current, total)
+	}
+
+	result, err := embedEngine.EmbedMemories(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("embedding memories: %w", err)
+	}
+
+	return &EmbeddingStats{
+		EmbeddingsAdded: result.EmbeddingsAdded,
+	}, nil
+}
+
+func runEmbed(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex embed <provider/model>")
+	}
+
+	embedFlag := args[0]
+
+	// Open store
+	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Configure embedder
+	embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
+	if err != nil {
+		return fmt.Errorf("configuring embedder: %w", err)
+	}
+	if embedConfig == nil {
+		return fmt.Errorf("no embedding configuration found")
+	}
+	if err := embedConfig.Validate(); err != nil {
+		return fmt.Errorf("invalid embedding configuration: %w", err)
+	}
+
+	embedder, err := embed.NewClient(embedConfig)
+	if err != nil {
+		return fmt.Errorf("creating embedder: %w", err)
+	}
+
+	// Create embedding engine
+	embedEngine := ingest.NewEmbedEngine(s, embedder)
+
+	fmt.Println("Generating embeddings for all memories without embeddings...")
+
+	// Embed all memories without embeddings
+	opts := ingest.DefaultEmbedOptions()
+	opts.ProgressFn = func(current, total int) {
+		fmt.Printf("Embedding memories... [%d/%d]\n", current, total)
+	}
+
+	result, err := embedEngine.EmbedMemories(ctx, opts)
+	if err != nil {
+		return fmt.Errorf("embedding memories: %w", err)
+	}
+
+	fmt.Printf("\nEmbedding complete:\n")
+	fmt.Printf("  Memories processed: %d\n", result.MemoriesProcessed)
+	fmt.Printf("  Embeddings added: %d\n", result.EmbeddingsAdded)
+	fmt.Printf("  Already had embeddings: %d\n", result.EmbeddingsSkipped)
+
+	if len(result.Errors) > 0 {
+		fmt.Printf("  Errors: %d\n", len(result.Errors))
+		if globalVerbose {
+			for _, err := range result.Errors {
+				fmt.Printf("    Memory %d: %s\n", err.MemoryID, err.Message)
+			}
+		}
+	}
+
+	return nil
 }
 
 func outputExtractJSON(facts []extract.ExtractedFact) error {
@@ -1433,7 +1595,8 @@ Usage:
 Commands:
   import <path>       Import memory from a file or directory
   extract <file>      Extract facts from a single file (without importing)
-  search <query>      Search memory (keyword by default, hybrid coming in Phase 2)
+  embed <provider/model> Generate embeddings for all memories without embeddings
+  search <query>      Search memory (keyword, semantic, or hybrid)
   stats               Show memory statistics and health
   list                List memories or facts from the store
   export              Export the full memory store in different formats
@@ -1450,12 +1613,14 @@ Search Flags:
   --mode <mode>       Search mode: keyword, semantic, hybrid (default: keyword)
   --limit <N>         Maximum results (default: 10)
   --min-confidence <F> Minimum confidence threshold (default: 0.0)
+  --embed <provider/model> Embedding provider for semantic/hybrid search (e.g., --embed ollama/all-minilm)
   --json              Force JSON output even in TTY
 
 Import Flags:
   -r, --recursive     Recursively import from directories
   -n, --dry-run       Show what would be imported without writing
   --extract           Extract facts from imported memories and store them
+  --embed <provider/model> Generate embeddings during import (e.g., --embed ollama/all-minilm)
   --llm <provider/model>  Enable LLM-assisted extraction (e.g., --llm openai/gpt-4o-mini)
 
 Extract Flags:

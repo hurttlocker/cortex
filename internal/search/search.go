@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
@@ -74,14 +75,20 @@ type Searcher interface {
 	Search(ctx context.Context, query string, opts Options) ([]Result, error)
 }
 
-// Engine implements Searcher with BM25 search (and semantic stub for Phase 2).
+// Engine implements Searcher with BM25 search and optional semantic search.
 type Engine struct {
-	store store.Store
+	store    store.Store
+	embedder embed.Embedder // nil = BM25 only
 }
 
 // NewEngine creates a search engine backed by the given store.
 func NewEngine(s store.Store) *Engine {
 	return &Engine{store: s}
+}
+
+// NewEngineWithEmbedder creates a search engine with semantic search capability.
+func NewEngineWithEmbedder(s store.Store, e embed.Embedder) *Engine {
+	return &Engine{store: s, embedder: e}
 }
 
 // Search performs a search using the specified mode.
@@ -98,14 +105,9 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	case ModeKeyword, "":
 		return e.searchBM25(ctx, query, opts)
 	case ModeSemantic:
-		return nil, fmt.Errorf("semantic search requires ONNX embeddings (coming in Phase 2)")
+		return e.searchSemantic(ctx, query, opts)
 	case ModeHybrid:
-		// Phase 1: hybrid falls back to keyword-only
-		results, err := e.searchBM25(ctx, query, opts)
-		if err != nil {
-			return nil, err
-		}
-		return results, nil
+		return e.searchHybrid(ctx, query, opts)
 	default:
 		return nil, fmt.Errorf("unknown search mode: %q", opts.Mode)
 	}
@@ -225,4 +227,148 @@ func TruncateContent(content string, maxLen int) string {
 	}
 
 	return truncated + "..."
+}
+
+// searchSemantic performs semantic search using embedding similarity.
+func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options) ([]Result, error) {
+	if e.embedder == nil {
+		// Fall back to BM25 with a warning (could also return error)
+		return e.searchBM25(ctx, query, opts)
+	}
+
+	// Generate embedding for query
+	queryEmbedding, err := e.embedder.Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("embedding query: %w", err)
+	}
+
+	// Search embeddings in store
+	storeResults, err := e.store.SearchEmbedding(ctx, queryEmbedding, opts.Limit, opts.MinConfidence)
+	if err != nil {
+		return nil, fmt.Errorf("semantic search failed: %w", err)
+	}
+
+	results := make([]Result, 0, len(storeResults))
+	for _, sr := range storeResults {
+		// Store already returns cosine similarity as score (0-1 range)
+		if sr.Score < opts.MinConfidence {
+			continue
+		}
+
+		r := Result{
+			Content:       sr.Memory.Content,
+			SourceFile:    sr.Memory.SourceFile,
+			SourceLine:    sr.Memory.SourceLine,
+			SourceSection: sr.Memory.SourceSection,
+			Score:         sr.Score,
+			Snippet:       sr.Snippet,
+			MatchType:     "semantic",
+			MemoryID:      sr.Memory.ID,
+		}
+		results = append(results, r)
+	}
+
+	// Already sorted by score in store
+	return results, nil
+}
+
+// searchHybrid performs both BM25 and semantic search, merging results with Reciprocal Rank Fusion (RRF).
+func (e *Engine) searchHybrid(ctx context.Context, query string, opts Options) ([]Result, error) {
+	if e.embedder == nil {
+		// Fall back to BM25 only with warning (could also return error)
+		return e.searchBM25(ctx, query, opts)
+	}
+
+	// Run both searches concurrently
+	type searchResult struct {
+		results []Result
+		err     error
+	}
+
+	bm25Chan := make(chan searchResult, 1)
+	semanticChan := make(chan searchResult, 1)
+
+	// BM25 search
+	go func() {
+		results, err := e.searchBM25(ctx, query, opts)
+		bm25Chan <- searchResult{results, err}
+	}()
+
+	// Semantic search
+	go func() {
+		results, err := e.searchSemantic(ctx, query, opts)
+		semanticChan <- searchResult{results, err}
+	}()
+
+	// Collect results
+	bm25Result := <-bm25Chan
+	semanticResult := <-semanticChan
+
+	// Handle errors - if one fails, return the other (but mark as hybrid)
+	if bm25Result.err != nil && semanticResult.err != nil {
+		return nil, fmt.Errorf("both searches failed: BM25: %w, Semantic: %v", bm25Result.err, semanticResult.err)
+	} else if bm25Result.err != nil {
+		// Update match type to hybrid
+		for i := range semanticResult.results {
+			semanticResult.results[i].MatchType = "hybrid"
+		}
+		return semanticResult.results, nil
+	} else if semanticResult.err != nil {
+		// Update match type to hybrid
+		for i := range bm25Result.results {
+			bm25Result.results[i].MatchType = "hybrid"
+		}
+		return bm25Result.results, nil
+	}
+
+	// Merge using Reciprocal Rank Fusion (RRF) with k=60
+	return mergeWithRRF(bm25Result.results, semanticResult.results, opts.Limit), nil
+}
+
+// mergeWithRRF merges two result lists using Reciprocal Rank Fusion.
+// RRF formula: score(d) = sum(1/(k + rank_i(d))) for each result set, k=60
+func mergeWithRRF(bm25Results, semanticResults []Result, limit int) []Result {
+	const k = 60.0
+
+	// Create a map to accumulate RRF scores
+	scoreMap := make(map[int64]float64)
+	resultMap := make(map[int64]Result)
+
+	// Add BM25 results with their ranks
+	for i, result := range bm25Results {
+		rank := float64(i + 1) // 1-based ranking
+		scoreMap[result.MemoryID] += 1.0 / (k + rank)
+		result.MatchType = "hybrid"
+		resultMap[result.MemoryID] = result
+	}
+
+	// Add semantic results with their ranks
+	for i, result := range semanticResults {
+		rank := float64(i + 1) // 1-based ranking
+		scoreMap[result.MemoryID] += 1.0 / (k + rank)
+		if _, exists := resultMap[result.MemoryID]; !exists {
+			result.MatchType = "hybrid"
+			resultMap[result.MemoryID] = result
+		}
+	}
+
+	// Convert back to slice and sort by RRF score
+	var merged []Result
+	for memoryID, score := range scoreMap {
+		result := resultMap[memoryID]
+		result.Score = score
+		merged = append(merged, result)
+	}
+
+	// Sort by RRF score descending
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].Score > merged[j].Score
+	})
+
+	// Limit results
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+
+	return merged
 }
