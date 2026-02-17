@@ -1,4 +1,4 @@
-module github.com/LavonTMCQ/cortex
+module github.com/hurttlocker/cortex
 
 go 1.24.0
 

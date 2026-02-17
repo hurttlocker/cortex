@@ -19,8 +19,9 @@ func (m *MarkdownImporter) CanHandle(path string) bool {
 }
 
 // Import parses a Markdown file into memory chunks.
-// Splits on ## (h2) headers. Each section becomes one memory unit.
-// If no h2 headers are found, splits on double newlines (paragraphs).
+// Splits on any header level (h2, h3, h4, etc.). Each section becomes one memory unit.
+// Builds hierarchical section paths like "Trading > Crypto > Strategy".
+// If no headers (h2+) are found, splits on double newlines (paragraphs).
 func (m *MarkdownImporter) Import(ctx context.Context, path string) ([]RawMemory, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
@@ -50,9 +51,9 @@ func (m *MarkdownImporter) Import(ctx context.Context, path string) ([]RawMemory
 		metadata["date"] = match
 	}
 
-	// Try splitting on h2 headers (only if h2 headers exist)
-	if hasH2Headers(body) {
-		sections := splitOnHeaders(body, absPath, metadata)
+	// Try splitting on headers (any level h2+)
+	if hasHeaders(body) {
+		sections := splitOnAllHeaders(body, absPath, metadata)
 		if len(sections) > 0 {
 			return sections, nil
 		}
@@ -96,18 +97,44 @@ func stripFrontMatter(content string) (map[string]string, string) {
 	return metadata, body
 }
 
-// splitOnHeaders splits Markdown content on ## (h2) headers.
-// Each h2 section becomes one memory unit. h3/h4 are kept within the h2 section.
-func splitOnHeaders(content string, absPath string, metadata map[string]string) []RawMemory {
+// headerRe matches any markdown header level 1-6.
+var headerRe = regexp.MustCompile(`^(#{1,6})\s+(.+)`)
+
+// splitOnAllHeaders splits Markdown content on any header (h2, h3, h4, h5, h6).
+// h1 is treated as a document title, not a section boundary.
+// Builds hierarchical section paths: "Trading > Crypto > Strategy" for nested headers.
+func splitOnAllHeaders(content string, absPath string, metadata map[string]string) []RawMemory {
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	var memories []RawMemory
 
-	var currentSection string
+	// headerStack tracks the current header hierarchy.
+	// Index 0 = h2, index 1 = h3, index 2 = h4, etc.
+	headerStack := make([]string, 5) // h2 through h6
+
 	var currentLines []string
 	var sectionStartLine int
+	var currentSectionPath string
 	lineNum := 0
 	inCodeBlock := false
-	h2Re := regexp.MustCompile(`^##\s+(.+)`)
+
+	flushSection := func() {
+		if len(currentLines) == 0 {
+			return
+		}
+		text := strings.TrimSpace(strings.Join(currentLines, "\n"))
+		if text == "" {
+			return
+		}
+		mem := RawMemory{
+			Content:       text,
+			SourceFile:    absPath,
+			SourceLine:    sectionStartLine,
+			SourceSection: currentSectionPath,
+			Metadata:      copyMetadata(metadata),
+		}
+		memories = append(memories, mem)
+		currentLines = nil
+	}
 
 	for scanner.Scan() {
 		lineNum++
@@ -123,35 +150,38 @@ func splitOnHeaders(content string, absPath string, metadata map[string]string) 
 			continue
 		}
 
-		if match := h2Re.FindStringSubmatch(line); match != nil {
-			// Save previous section if non-empty
-			if currentSection != "" || len(currentLines) > 0 {
-				text := strings.TrimSpace(strings.Join(currentLines, "\n"))
-				if text != "" {
-					mem := RawMemory{
-						Content:       text,
-						SourceFile:    absPath,
-						SourceLine:    sectionStartLine,
-						SourceSection: currentSection,
-						Metadata:      copyMetadata(metadata),
-					}
-					memories = append(memories, mem)
+		if match := headerRe.FindStringSubmatch(line); match != nil {
+			level := len(match[1]) // number of # characters
+			title := strings.TrimSpace(match[2])
+
+			if level == 1 {
+				// h1 = document title, store as metadata, not a section boundary
+				if metadata == nil {
+					metadata = make(map[string]string)
+				}
+				metadata["title"] = title
+				if sectionStartLine == 0 {
+					sectionStartLine = lineNum + 1
+				}
+				continue
+			}
+
+			// h2+ = section boundary. Flush current section.
+			flushSection()
+
+			// Update header stack. Clear all levels below this one.
+			// h2 = index 0, h3 = index 1, h4 = index 2, etc.
+			stackIdx := level - 2
+			if stackIdx >= 0 && stackIdx < len(headerStack) {
+				headerStack[stackIdx] = title
+				// Clear deeper levels
+				for i := stackIdx + 1; i < len(headerStack); i++ {
+					headerStack[i] = ""
 				}
 			}
 
-			currentSection = strings.TrimSpace(match[1])
-			currentLines = nil
-			sectionStartLine = lineNum + 1 // content starts on next line
-			continue
-		}
-
-		// Skip h1 headers (top-level title, not a section boundary)
-		if strings.HasPrefix(line, "# ") && !strings.HasPrefix(line, "## ") && currentSection == "" {
-			// Store as metadata if it's the document title
-			if metadata == nil {
-				metadata = make(map[string]string)
-			}
-			metadata["title"] = strings.TrimSpace(strings.TrimPrefix(line, "# "))
+			// Build section path from stack: "Trading > Crypto > Strategy"
+			currentSectionPath = buildSectionPath(headerStack)
 			sectionStartLine = lineNum + 1
 			continue
 		}
@@ -162,22 +192,26 @@ func splitOnHeaders(content string, absPath string, metadata map[string]string) 
 		}
 	}
 
-	// Save last section
-	if currentSection != "" || len(currentLines) > 0 {
-		text := strings.TrimSpace(strings.Join(currentLines, "\n"))
-		if text != "" {
-			mem := RawMemory{
-				Content:       text,
-				SourceFile:    absPath,
-				SourceLine:    sectionStartLine,
-				SourceSection: currentSection,
-				Metadata:      copyMetadata(metadata),
-			}
-			memories = append(memories, mem)
-		}
-	}
+	// Flush last section
+	flushSection()
 
 	return memories
+}
+
+// buildSectionPath creates a hierarchical path from the header stack.
+// e.g., ["Trading", "Crypto", "Strategy", "", ""] → "Trading > Crypto > Strategy"
+func buildSectionPath(stack []string) string {
+	var parts []string
+	for _, h := range stack {
+		if h == "" {
+			break
+		}
+		parts = append(parts, h)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " > ")
 }
 
 // splitOnParagraphs splits content on double newlines.
@@ -207,12 +241,12 @@ func splitOnParagraphs(content string, absPath string, metadata map[string]strin
 	return memories
 }
 
-// hasH2Headers checks if the content contains any h2 (## ) headers.
-func hasH2Headers(content string) bool {
+// hasHeaders checks if the content contains any h2+ headers.
+func hasHeaders(content string) bool {
 	scanner := bufio.NewScanner(strings.NewReader(content))
-	h2Re := regexp.MustCompile(`^##\s+(.+)`)
+	re := regexp.MustCompile(`^#{2,6}\s+(.+)`)
 	for scanner.Scan() {
-		if h2Re.MatchString(scanner.Text()) {
+		if re.MatchString(scanner.Text()) {
 			return true
 		}
 	}
