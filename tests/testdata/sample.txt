@@ -1,0 +1,5 @@
+This is the first paragraph of plain text. It contains some information about the project setup and initial decisions that were made.
+
+This is the second paragraph. It discusses the architecture choices and why Go was selected as the primary language for the project.
+
+This is the third paragraph. It covers testing strategy and the importance of integration tests alongside unit tests.
