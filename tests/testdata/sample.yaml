@@ -1,0 +1,12 @@
+user:
+  name: Alex Chen
+  location: San Francisco
+  preferences:
+    editor: VS Code
+    theme: dark
+
+projects:
+  - name: Project Alpha
+    status: in_progress
+  - name: Project Beta
+    status: planning
