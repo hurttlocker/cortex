@@ -114,6 +114,8 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 }
 
 // searchBM25 performs keyword search using the store's FTS5 capability.
+// Uses AND-first-then-OR strategy: tries implicit AND for precision,
+// falls back to OR for recall when AND returns zero results.
 func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]Result, error) {
 	// Sanitize query to prevent FTS5 syntax errors from crashing
 	sanitized := sanitizeFTSQuery(query)
@@ -125,7 +127,6 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 	if err != nil {
 		// If the query has bad FTS5 syntax, try a simpler fallback
 		if isFTSSyntaxError(err) {
-			// Escape the query as a simple term search
 			escaped := escapeFTSQuery(query)
 			storeResults, err = e.store.SearchFTS(ctx, escaped, opts.Limit)
 			if err != nil {
@@ -133,6 +134,19 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 			}
 		} else {
 			return nil, fmt.Errorf("search failed: %w", err)
+		}
+	}
+
+	// AND→OR fallback: if AND returned nothing and query has multiple words, retry with OR.
+	// This gives precision when all terms co-occur, recall when they don't.
+	if len(storeResults) == 0 && hasMultipleSearchTerms(sanitized) {
+		orQuery := buildORQuery(sanitized)
+		if orQuery != "" {
+			storeResults, err = e.store.SearchFTS(ctx, orQuery, opts.Limit)
+			if err != nil {
+				// OR fallback failed — not fatal, just return empty
+				storeResults = nil
+			}
 		}
 	}
 
@@ -178,6 +192,46 @@ func normalizeBM25Score(rank float64) float64 {
 // It trims whitespace and returns empty string for empty/whitespace-only queries.
 func sanitizeFTSQuery(query string) string {
 	return strings.TrimSpace(query)
+}
+
+// hasMultipleSearchTerms checks if a query has more than one searchable word.
+func hasMultipleSearchTerms(query string) bool {
+	words := strings.Fields(query)
+	count := 0
+	for _, w := range words {
+		w = strings.Trim(w, `"`)
+		if w == "" || strings.EqualFold(w, "AND") || strings.EqualFold(w, "OR") || strings.EqualFold(w, "NOT") {
+			continue
+		}
+		count++
+		if count >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+// buildORQuery converts a multi-word query to use OR between terms.
+// "SB co-founder Spear" → `"SB" OR "co-founder" OR "Spear"`
+func buildORQuery(query string) string {
+	words := strings.Fields(query)
+	if len(words) <= 1 {
+		return query
+	}
+
+	terms := make([]string, 0, len(words))
+	for _, w := range words {
+		w = strings.Trim(w, `"`)
+		w = strings.TrimSpace(w)
+		if w == "" || strings.EqualFold(w, "AND") || strings.EqualFold(w, "OR") || strings.EqualFold(w, "NOT") {
+			continue
+		}
+		terms = append(terms, `"`+w+`"`)
+	}
+	if len(terms) == 0 {
+		return ""
+	}
+	return strings.Join(terms, " OR ")
 }
 
 // escapeFTSQuery wraps each word in double quotes to treat them as literal terms,
