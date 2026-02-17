@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LavonTMCQ/cortex/internal/store"
+	"github.com/hurttlocker/cortex/internal/store"
 )
 
 // testdataDir returns the absolute path to the tests/testdata directory.
@@ -51,13 +51,18 @@ func TestMarkdownImport_WithHeaders(t *testing.T) {
 		t.Fatal("Expected at least one memory chunk")
 	}
 
-	// Should have sections: Personal, Work, Preferences, Projects, Decisions, People
+	// Should have sections including hierarchical h3 splits:
+	// Personal, Work, Preferences, Projects > Project Alpha, Projects > Project Beta, Decisions, People
 	sections := make(map[string]bool)
 	for _, m := range memories {
 		sections[m.SourceSection] = true
 	}
 
-	expectedSections := []string{"Personal", "Work", "Preferences", "Projects", "Decisions", "People"}
+	expectedSections := []string{
+		"Personal", "Work", "Preferences",
+		"Projects > Project Alpha", "Projects > Project Beta",
+		"Decisions", "People",
+	}
 	for _, s := range expectedSections {
 		if !sections[s] {
 			t.Errorf("Missing section: %s (got sections: %v)", s, sections)
@@ -548,7 +553,7 @@ func TestEngine_FormatDetection(t *testing.T) {
 					strings.Replace(
 						java_type_name(imp), "ingest.", "ingest.", 1),
 					"*", "*", 1),
-				"github.com/LavonTMCQ/cortex/internal/", "", 1),
+				"github.com/hurttlocker/cortex/internal/", "", 1),
 			"", "", 1),
 			"")
 		_ = typeName // type checking done via CanHandle

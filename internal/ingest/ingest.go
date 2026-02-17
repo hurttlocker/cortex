@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/LavonTMCQ/cortex/internal/store"
+	"github.com/hurttlocker/cortex/internal/store"
 )
 
 // Engine orchestrates the import process.

@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/LavonTMCQ/cortex/internal/ingest"
-	"github.com/LavonTMCQ/cortex/internal/store"
+	"github.com/hurttlocker/cortex/internal/ingest"
+	"github.com/hurttlocker/cortex/internal/store"
 )
 
 const version = "0.1.0-dev"
@@ -142,6 +142,6 @@ Flags:
   -v, --version       Print version
 
 Documentation:
-  https://github.com/LavonTMCQ/cortex
+  https://github.com/hurttlocker/cortex
 `, version)
 }
