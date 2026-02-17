@@ -12,6 +12,8 @@ package extract
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -43,10 +45,13 @@ var DecayRates = map[string]float64{
 	"kv":           0.01,  // half-life: 69 days (default)
 }
 
-// Pipeline orchestrates the extraction process using rule-based extraction.
+// Pipeline orchestrates the extraction process using rule-based extraction
+// and optional LLM-assisted extraction (Tier 2).
 type Pipeline struct {
 	kvPatterns    []*kvPattern
 	regexPatterns []*regexPattern
+	llmConfig     *LLMConfig // Optional LLM configuration
+	llmClient     *LLMClient // Optional LLM client
 }
 
 // kvPattern represents a key-value pattern to match.
@@ -63,18 +68,29 @@ type regexPattern struct {
 	name     string
 }
 
-// NewPipeline creates a new extraction pipeline with all rule-based extractors.
-func NewPipeline() *Pipeline {
-	return &Pipeline{
+// NewPipeline creates a new extraction pipeline with all rule-based extractors
+// and optional LLM-assisted extraction.
+func NewPipeline(llmConfig ...*LLMConfig) *Pipeline {
+	p := &Pipeline{
 		kvPatterns:    initKVPatterns(),
 		regexPatterns: initRegexPatterns(),
 	}
+
+	// Configure LLM if provided
+	if len(llmConfig) > 0 && llmConfig[0] != nil {
+		p.llmConfig = llmConfig[0]
+		p.llmClient = NewLLMClient(llmConfig[0])
+	}
+
+	return p
 }
 
 // Extract runs extraction on the input text and returns structured facts.
+// Uses both rule-based extraction (Tier 1) and optional LLM extraction (Tier 2).
 func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string]string) ([]ExtractedFact, error) {
 	var facts []ExtractedFact
 
+	// Tier 1: Rule-based extraction
 	// 1. Extract key-value patterns
 	kvFacts := p.extractKeyValues(text)
 	facts = append(facts, kvFacts...)
@@ -83,7 +99,7 @@ func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string
 	regexFacts := p.extractRegexPatterns(text)
 	facts = append(facts, regexFacts...)
 
-	// 3. Assign decay rates and set extraction method
+	// 3. Assign decay rates and set extraction method for Tier 1 facts
 	for i := range facts {
 		facts[i].ExtractionMethod = "rules"
 		if rate, ok := DecayRates[facts[i].FactType]; ok {
@@ -93,10 +109,23 @@ func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string
 		}
 	}
 
-	// 4. Deduplicate facts within this extraction run
-	facts = deduplicateFacts(facts)
+	// Tier 2: LLM-assisted extraction (optional)
+	var llmFacts []ExtractedFact
+	if p.llmClient != nil {
+		var err error
+		llmFacts, err = p.extractWithLLM(ctx, text)
+		if err != nil {
+			// Log warning but don't fail - fall back to Tier 1 only
+			// TODO: Consider using a logger interface instead of stderr
+			fmt.Fprintf(os.Stderr, "Warning: LLM extraction failed, using rule-based extraction only: %v\n", err)
+		}
+	}
 
-	return facts, nil
+	// 4. Merge and deduplicate facts from both tiers
+	allFacts := append(facts, llmFacts...)
+	allFacts = deduplicateFacts(allFacts)
+
+	return allFacts, nil
 }
 
 // initKVPatterns initializes key-value extraction patterns in priority order.
@@ -360,4 +389,35 @@ func parseInteger(s string) (int, bool) {
 	}
 
 	return val, true
+}
+
+// extractWithLLM runs LLM-assisted extraction on the input text.
+func (p *Pipeline) extractWithLLM(ctx context.Context, text string) ([]ExtractedFact, error) {
+	if p.llmClient == nil || p.llmConfig == nil {
+		return nil, fmt.Errorf("LLM client not configured")
+	}
+
+	// Chunk the document if it's too large
+	chunks := ChunkDocument(text, p.llmConfig.ContextWindow)
+	
+	var allFacts []ExtractedFact
+	
+	for _, chunk := range chunks {
+		// Skip empty or whitespace-only chunks
+		if strings.TrimSpace(chunk) == "" {
+			continue
+		}
+		
+		facts, err := p.llmClient.Extract(ctx, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("extracting from chunk: %w", err)
+		}
+		
+		allFacts = append(allFacts, facts...)
+	}
+	
+	// Deduplicate facts across chunks
+	allFacts = deduplicateFacts(allFacts)
+	
+	return allFacts, nil
 }
