@@ -124,26 +124,32 @@ func getDBPath() string {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--llm <provider/model>]")
 	}
 
 	// Parse flags
 	var paths []string
 	opts := ingest.ImportOptions{}
 	enableExtraction := false
+	llmFlag := ""
 
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
 		switch {
-		case arg == "--recursive" || arg == "-r":
+		case args[i] == "--recursive" || args[i] == "-r":
 			opts.Recursive = true
-		case arg == "--dry-run" || arg == "-n":
+		case args[i] == "--dry-run" || args[i] == "-n":
 			opts.DryRun = true
-		case arg == "--extract":
+		case args[i] == "--extract":
 			enableExtraction = true
-		case strings.HasPrefix(arg, "-"):
-			return fmt.Errorf("unknown flag: %s", arg)
+		case args[i] == "--llm" && i+1 < len(args):
+			i++
+			llmFlag = args[i]
+		case strings.HasPrefix(args[i], "--llm="):
+			llmFlag = strings.TrimPrefix(args[i], "--llm=")
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
 		default:
-			paths = append(paths, arg)
+			paths = append(paths, args[i])
 		}
 	}
 
@@ -187,11 +193,18 @@ func runImport(args []string) error {
 	// Run extraction if requested
 	if enableExtraction && !opts.DryRun && totalResult.MemoriesNew > 0 {
 		fmt.Println("\nRunning extraction...")
-		extractionStats, err := runExtractionOnImportedMemories(ctx, s)
+		extractionStats, err := runExtractionOnImportedMemories(ctx, s, llmFlag)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Extraction error: %v\n", err)
 		} else {
-			fmt.Printf("  Facts extracted: %d\n", extractionStats.FactsExtracted)
+			if extractionStats.LLMFactsExtracted > 0 {
+				fmt.Printf("  Facts extracted: %d (%d rules, %d LLM)\n", 
+					extractionStats.FactsExtracted, 
+					extractionStats.RulesFactsExtracted,
+					extractionStats.LLMFactsExtracted)
+			} else {
+				fmt.Printf("  Facts extracted: %d (rules only)\n", extractionStats.FactsExtracted)
+			}
 		}
 	}
 
@@ -455,24 +468,30 @@ func runConflicts(args []string) error {
 
 func runExtract(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex extract <file> [--json]")
+		return fmt.Errorf("usage: cortex extract <file> [--json] [--llm <provider/model>]")
 	}
 
 	// Parse flags
 	var filepath string
 	jsonOutput := false
+	llmFlag := ""
 
-	for _, arg := range args {
+	for i := 0; i < len(args); i++ {
 		switch {
-		case arg == "--json":
+		case args[i] == "--json":
 			jsonOutput = true
-		case strings.HasPrefix(arg, "-"):
-			return fmt.Errorf("unknown flag: %s", arg)
+		case args[i] == "--llm" && i+1 < len(args):
+			i++
+			llmFlag = args[i]
+		case strings.HasPrefix(args[i], "--llm="):
+			llmFlag = strings.TrimPrefix(args[i], "--llm=")
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
 		default:
 			if filepath != "" {
 				return fmt.Errorf("only one file path allowed")
 			}
-			filepath = arg
+			filepath = args[i]
 		}
 	}
 
@@ -486,8 +505,23 @@ func runExtract(args []string) error {
 		return fmt.Errorf("reading file: %w", err)
 	}
 
+	// Configure LLM if requested
+	var llmConfig *extract.LLMConfig
+	if llmFlag != "" {
+		var err error
+		llmConfig, err = extract.ResolveLLMConfig(llmFlag)
+		if err != nil {
+			return fmt.Errorf("configuring LLM: %w", err)
+		}
+		if llmConfig != nil {
+			if err := llmConfig.Validate(); err != nil {
+				return fmt.Errorf("invalid LLM configuration: %w", err)
+			}
+		}
+	}
+
 	// Run extraction
-	pipeline := extract.NewPipeline()
+	pipeline := extract.NewPipeline(llmConfig)
 	ctx := context.Background()
 
 	metadata := map[string]string{
@@ -658,18 +692,34 @@ func runExport(args []string) error {
 
 // ExtractionStats holds statistics about extraction run.
 type ExtractionStats struct {
-	FactsExtracted int
+	FactsExtracted      int
+	RulesFactsExtracted int
+	LLMFactsExtracted   int
 }
 
 // runExtractionOnImportedMemories runs extraction on recently imported memories.
-func runExtractionOnImportedMemories(ctx context.Context, s store.Store) (*ExtractionStats, error) {
+func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag string) (*ExtractionStats, error) {
 	// Get recently imported memories (limit to reasonable batch size)
 	memories, err := s.ListMemories(ctx, store.ListOpts{Limit: 1000, SortBy: "date"})
 	if err != nil {
 		return nil, fmt.Errorf("listing memories: %w", err)
 	}
 
-	pipeline := extract.NewPipeline()
+	// Configure LLM if requested
+	var llmConfig *extract.LLMConfig
+	if llmFlag != "" {
+		llmConfig, err = extract.ResolveLLMConfig(llmFlag)
+		if err != nil {
+			return nil, fmt.Errorf("configuring LLM: %w", err)
+		}
+		if llmConfig != nil {
+			if err := llmConfig.Validate(); err != nil {
+				return nil, fmt.Errorf("invalid LLM configuration: %w", err)
+			}
+		}
+	}
+
+	pipeline := extract.NewPipeline(llmConfig)
 	stats := &ExtractionStats{}
 
 	for _, memory := range memories {
@@ -687,7 +737,7 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store) (*Extra
 			continue // Skip errors, continue with next memory
 		}
 
-		// Store facts
+		// Store facts and track extraction method
 		for _, extractedFact := range facts {
 			fact := &store.Fact{
 				MemoryID:    memory.ID,
@@ -704,7 +754,13 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store) (*Extra
 			if err != nil {
 				continue // Skip storage errors
 			}
+			
 			stats.FactsExtracted++
+			if extractedFact.ExtractionMethod == "llm" {
+				stats.LLMFactsExtracted++
+			} else {
+				stats.RulesFactsExtracted++
+			}
 		}
 	}
 
@@ -726,11 +782,28 @@ func outputExtractTTY(filepath string, facts []extract.ExtractedFact) error {
 		return nil
 	}
 
+	// Count facts by extraction method
+	rulesCount := 0
+	llmCount := 0
+	for _, fact := range facts {
+		if fact.ExtractionMethod == "llm" {
+			llmCount++
+		} else {
+			rulesCount++
+		}
+	}
+
 	fmt.Printf("Extracted %d fact", len(facts))
 	if len(facts) != 1 {
 		fmt.Print("s")
 	}
-	fmt.Printf(" from %s\n\n", filepath)
+	fmt.Printf(" from %s", filepath)
+	
+	if llmCount > 0 {
+		fmt.Printf(" (%d rules, %d LLM)", rulesCount, llmCount)
+	}
+	fmt.Println()
+	fmt.Println()
 
 	// Group facts by type for better display
 	factsByType := make(map[string][]extract.ExtractedFact)
@@ -747,6 +820,12 @@ func outputExtractTTY(filepath string, facts []extract.ExtractedFact) error {
 				fmt.Printf("  • %s: %s", fact.Predicate, fact.Object)
 			}
 			fmt.Printf(" [%.1f]", fact.Confidence)
+			
+			// Show extraction method if LLM was used
+			if fact.ExtractionMethod == "llm" {
+				fmt.Printf(" (LLM)")
+			}
+			
 			if fact.SourceQuote != "" && len(fact.SourceQuote) < 50 {
 				fmt.Printf(" (%q)", fact.SourceQuote)
 			}
@@ -1377,9 +1456,11 @@ Import Flags:
   -r, --recursive     Recursively import from directories
   -n, --dry-run       Show what would be imported without writing
   --extract           Extract facts from imported memories and store them
+  --llm <provider/model>  Enable LLM-assisted extraction (e.g., --llm openai/gpt-4o-mini)
 
 Extract Flags:
   --json              Force JSON output even in TTY
+  --llm <provider/model>  Enable LLM-assisted extraction (e.g., --llm ollama/gemma2:2b)
 
 List Flags:
   --facts             List facts instead of memories
