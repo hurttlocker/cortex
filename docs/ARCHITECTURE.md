@@ -69,6 +69,33 @@ This is a philosophical choice, not just a technical one: your memory should wor
 - **Semantic (ONNX):** For when users know the concept but not the words. Finds related memories even without keyword overlap.
 - **Hybrid (default):** Combines both with reciprocal rank fusion.
 
+### Two-Tier Extraction Pipeline
+
+```
+Input Document
+     │
+     ├─── Structured? (MD with headers, JSON, YAML, CSV)
+     │         │
+     │         └──▶ Tier 1: Rule-Based Extraction
+     │              • Pattern matching on structure
+     │              • Regex for dates, emails, URLs
+     │              • Basic NER via prose
+     │              • Zero dependencies
+     │
+     └─── Unstructured? (Raw text, conversation logs)
+               │
+               ├──▶ Tier 1: Best-effort local extraction
+               │    (may miss relationships, coreference)
+               │
+               └──▶ Tier 2: LLM-Assist (if configured)
+                    • Sends doc + extraction schema to LLM
+                    • Any OpenAI-compatible API
+                    • Returns typed JSON (validated by Cortex)
+                    • Never sends existing memory to LLM
+```
+
+Both tiers produce the same output format: `[]ExtractedFact`. The storage layer doesn't know or care which tier produced the fact.
+
 ## Data Model
 
 ```sql

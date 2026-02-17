@@ -53,6 +53,27 @@ Local NLP-based entity and fact extraction. No LLM required.
 
 The extraction pipeline uses rule-based NLP (dependency parsing, NER) with no external API calls.
 
+### 2b. LLM-Assist Mode (Optional, Day One)
+
+For unstructured content where rule-based extraction falls short, Cortex offers LLM-assisted extraction via any OpenAI-compatible API:
+
+```bash
+# Use any provider
+cortex import chat-log.txt --llm ollama/gemma2:2b       # Free, local
+cortex import chat-log.txt --llm openai/gpt-4.1-nano    # ~$0.10/M tokens
+cortex import chat-log.txt --llm anthropic/haiku         # High quality, cheap
+cortex import chat-log.txt --llm deepseek/v3             # Dirt cheap
+cortex import chat-log.txt --llm openrouter/any-model    # Any model
+```
+
+The LLM receives structured extraction prompts and returns typed JSON. Cortex validates the output. The LLM never sees your full memory store — only the document being imported.
+
+**Key design decisions:**
+- LLM-assist is OPTIONAL. Local extraction is always the default.
+- Supports ANY OpenAI-compatible API endpoint.
+- The LLM is used for extraction only — search is always local.
+- Extraction prompts are versioned and reproducible.
+
 ### 3. Dual Search
 
 Two search modes, both local, both fast:
