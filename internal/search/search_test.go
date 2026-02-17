@@ -322,17 +322,29 @@ func TestSearchBM25_InvalidSyntaxFallback(t *testing.T) {
 
 // --- Semantic Search (Stub) ---
 
-func TestSearchSemantic_Stub(t *testing.T) {
+func TestSearchSemantic_FallbackToBM25(t *testing.T) {
 	s := newTestStore(t)
+	seedTestData(t, s)
+	
 	engine := NewEngine(s)
 	ctx := context.Background()
 
-	_, err := engine.Search(ctx, "conceptual query", Options{Mode: ModeSemantic, Limit: 10})
-	if err == nil {
-		t.Error("expected error for semantic search (not yet implemented)")
+	// Without an embedder, semantic search should fall back to BM25
+	results, err := engine.Search(ctx, "Go programming", Options{Mode: ModeSemantic, Limit: 10})
+	if err != nil {
+		t.Fatalf("semantic search without embedder should fall back to BM25: %v", err)
 	}
-	if err != nil && !strings.Contains(err.Error(), "Phase 2") {
-		t.Errorf("error should mention Phase 2, got: %v", err)
+
+	// Should find results using BM25 fallback
+	if len(results) == 0 {
+		t.Error("expected fallback BM25 search to find results")
+	}
+
+	// Results should be marked as BM25 since we fell back
+	for _, result := range results {
+		if result.MatchType != "bm25" {
+			t.Errorf("expected match type 'bm25' for fallback, got %q", result.MatchType)
+		}
 	}
 }
 
@@ -593,5 +605,153 @@ func TestStatsViaStore(t *testing.T) {
 	}
 	if stats.FactCount != 0 {
 		t.Errorf("expected 0 facts (not extracted yet), got %d", stats.FactCount)
+	}
+}
+
+// Mock embedder for testing
+type mockEmbedder struct {
+	dimensions int
+	embeddings map[string][]float32
+}
+
+func newMockEmbedder() *mockEmbedder {
+	return &mockEmbedder{
+		dimensions: 384,
+		embeddings: make(map[string][]float32),
+	}
+}
+
+func (m *mockEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	if embedding, ok := m.embeddings[text]; ok {
+		return embedding, nil
+	}
+	
+	// Generate a simple embedding based on text content
+	embedding := make([]float32, m.dimensions)
+	for i := range embedding {
+		embedding[i] = float32(len(text)+i) * 0.001
+	}
+	
+	m.embeddings[text] = embedding
+	return embedding, nil
+}
+
+func (m *mockEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	embeddings := make([][]float32, len(texts))
+	for i, text := range texts {
+		emb, err := m.Embed(ctx, text)
+		if err != nil {
+			return nil, err
+		}
+		embeddings[i] = emb
+	}
+	return embeddings, nil
+}
+
+func (m *mockEmbedder) Dimensions() int {
+	return m.dimensions
+}
+
+func TestSearchSemantic_WithEmbedder(t *testing.T) {
+	s := newTestStore(t)
+	seedTestData(t, s)
+	
+	// Add embeddings for some memories
+	ctx := context.Background()
+	embedder := newMockEmbedder()
+	
+	// Add embedding for one of the Go-related memories
+	goMemory := []float32{0.8, 0.2, 0.1}
+	err := s.AddEmbedding(ctx, 3, goMemory) // Memory ID 3 should be Go-related
+	if err != nil {
+		t.Fatalf("Failed to add embedding: %v", err)
+	}
+	
+	// Mock the query embedding to be similar to Go memory
+	embedder.embeddings["Go programming"] = []float32{0.7, 0.3, 0.2}
+	
+	engine := NewEngineWithEmbedder(s, embedder)
+	
+	results, err := engine.Search(ctx, "Go programming", Options{Mode: ModeSemantic, Limit: 10})
+	if err != nil {
+		t.Fatalf("Semantic search failed: %v", err)
+	}
+	
+	if len(results) == 0 {
+		t.Error("Expected semantic search to find results")
+	}
+	
+	// Results should be marked as semantic
+	for _, result := range results {
+		if result.MatchType != "semantic" {
+			t.Errorf("Expected match type 'semantic', got %q", result.MatchType)
+		}
+	}
+}
+
+func TestSearchHybrid_RRF(t *testing.T) {
+	s := newTestStore(t)
+	seedTestData(t, s)
+	
+	ctx := context.Background()
+	embedder := newMockEmbedder()
+	
+	// Add embedding for Go-related memory (Memory ID 3)
+	goMemory := []float32{0.8, 0.2, 0.1}
+	err := s.AddEmbedding(ctx, 3, goMemory)
+	if err != nil {
+		t.Fatalf("Failed to add embedding: %v", err)
+	}
+	
+	// Mock query embedding similar to Go memory
+	embedder.embeddings["Go programming"] = []float32{0.7, 0.3, 0.2}
+	
+	engine := NewEngineWithEmbedder(s, embedder)
+	
+	results, err := engine.Search(ctx, "Go programming", Options{Mode: ModeHybrid, Limit: 10})
+	if err != nil {
+		t.Fatalf("Hybrid search failed: %v", err)
+	}
+	
+	if len(results) == 0 {
+		t.Error("Expected hybrid search to find results")
+	}
+	
+	// Results should be marked as hybrid
+	for _, result := range results {
+		if result.MatchType != "hybrid" {
+			t.Errorf("Expected match type 'hybrid', got %q", result.MatchType)
+		}
+	}
+	
+	// RRF should produce non-zero scores
+	for _, result := range results {
+		if result.Score <= 0 {
+			t.Errorf("Expected positive RRF score, got %f", result.Score)
+		}
+	}
+}
+
+func TestSearchHybrid_FallbackNilEmbedder(t *testing.T) {
+	s := newTestStore(t)
+	seedTestData(t, s)
+	
+	engine := NewEngine(s) // No embedder
+	ctx := context.Background()
+	
+	results, err := engine.Search(ctx, "Go programming", Options{Mode: ModeHybrid, Limit: 10})
+	if err != nil {
+		t.Fatalf("Hybrid search without embedder should fall back to BM25: %v", err)
+	}
+	
+	if len(results) == 0 {
+		t.Error("Expected fallback BM25 search to find results")
+	}
+	
+	// Results should be marked as BM25 since we fell back
+	for _, result := range results {
+		if result.MatchType != "bm25" {
+			t.Errorf("Expected match type 'bm25' for fallback, got %q", result.MatchType)
+		}
 	}
 }
