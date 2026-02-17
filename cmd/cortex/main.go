@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/hurttlocker/cortex/internal/ingest"
+	"github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
@@ -25,16 +28,21 @@ func main() {
 			os.Exit(1)
 		}
 	case "search":
-		fmt.Println("cortex search: not yet implemented")
-		fmt.Println("Usage: cortex search <query> [--mode keyword|semantic|hybrid]")
+		if err := runSearch(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "stats":
+		if err := runStats(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "list":
 		fmt.Println("cortex list: not yet implemented")
 		fmt.Println("Usage: cortex list [--source <file>] [--since <date>]")
 	case "export":
 		fmt.Println("cortex export: not yet implemented")
 		fmt.Println("Usage: cortex export [--format json|markdown]")
-	case "stats":
-		fmt.Println("cortex stats: not yet implemented")
 	case "stale":
 		fmt.Println("cortex stale: not yet implemented")
 		fmt.Println("Usage: cortex stale [--days 30]")
@@ -117,6 +125,285 @@ func runImport(args []string) error {
 	return nil
 }
 
+func runSearch(args []string) error {
+	// Parse flags and query
+	var queryParts []string
+	mode := "keyword"
+	limit := 10
+	minConfidence := 0.0
+	jsonOutput := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--mode" && i+1 < len(args):
+			i++
+			mode = args[i]
+		case strings.HasPrefix(args[i], "--mode="):
+			mode = strings.TrimPrefix(args[i], "--mode=")
+		case args[i] == "--limit" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --limit value: %s", args[i])
+			}
+			limit = n
+		case strings.HasPrefix(args[i], "--limit="):
+			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--limit="))
+			if err != nil {
+				return fmt.Errorf("invalid --limit value: %s", args[i])
+			}
+			limit = n
+		case args[i] == "--min-confidence" && i+1 < len(args):
+			i++
+			f, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --min-confidence value: %s", args[i])
+			}
+			minConfidence = f
+		case strings.HasPrefix(args[i], "--min-confidence="):
+			f, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--min-confidence="), 64)
+			if err != nil {
+				return fmt.Errorf("invalid --min-confidence value: %s", args[i])
+			}
+			minConfidence = f
+		case args[i] == "--json":
+			jsonOutput = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		default:
+			queryParts = append(queryParts, args[i])
+		}
+	}
+
+	query := strings.Join(queryParts, " ")
+	if query == "" {
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--json]")
+	}
+
+	searchMode, err := search.ParseMode(mode)
+	if err != nil {
+		return err
+	}
+
+	// Open store
+	s, err := store.NewStore(store.StoreConfig{})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	engine := search.NewEngine(s)
+	ctx := context.Background()
+
+	opts := search.Options{
+		Mode:          searchMode,
+		Limit:         limit,
+		MinConfidence: minConfidence,
+	}
+
+	results, err := engine.Search(ctx, query, opts)
+	if err != nil {
+		return err
+	}
+
+	// Determine output format
+	if jsonOutput || !isTTY() {
+		return outputJSON(results)
+	}
+
+	// Hybrid mode note in Phase 1
+	if searchMode == search.ModeHybrid {
+		fmt.Println("Note: hybrid mode currently uses keyword search only (semantic search coming in Phase 2)")
+		fmt.Println()
+	}
+
+	return outputTTY(query, results)
+}
+
+func runStats(args []string) error {
+	jsonOutput := false
+	for _, arg := range args {
+		if arg == "--json" {
+			jsonOutput = true
+		}
+	}
+
+	// Open store
+	s, err := store.NewStore(store.StoreConfig{})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	stats, err := s.Stats(ctx)
+	if err != nil {
+		return fmt.Errorf("getting stats: %w", err)
+	}
+
+	// Get additional info: source file count and date range
+	sourceFiles, dateRange, err := getExtendedStats(ctx, s)
+	if err != nil {
+		return fmt.Errorf("getting extended stats: %w", err)
+	}
+
+	if jsonOutput || !isTTY() {
+		return outputStatsJSON(stats, sourceFiles, dateRange)
+	}
+
+	return outputStatsTTY(stats, sourceFiles, dateRange)
+}
+
+// getExtendedStats fetches source file count and import date range.
+func getExtendedStats(ctx context.Context, s store.Store) (int, string, error) {
+	// List memories to count distinct source files and get date range.
+	memories, err := s.ListMemories(ctx, store.ListOpts{Limit: 100000})
+	if err != nil {
+		return 0, "", err
+	}
+
+	if len(memories) == 0 {
+		return 0, "N/A", nil
+	}
+
+	files := make(map[string]bool)
+	var earliest, latest string
+
+	for _, m := range memories {
+		if m.SourceFile != "" {
+			files[m.SourceFile] = true
+		}
+		ts := m.ImportedAt.Format("2006-01-02")
+		if earliest == "" || ts < earliest {
+			earliest = ts
+		}
+		if latest == "" || ts > latest {
+			latest = ts
+		}
+	}
+
+	dateRange := "N/A"
+	if earliest != "" {
+		if earliest == latest {
+			dateRange = earliest
+		} else {
+			dateRange = earliest + " → " + latest
+		}
+	}
+
+	return len(files), dateRange, nil
+}
+
+func outputJSON(results []search.Result) error {
+	if results == nil {
+		results = []search.Result{}
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(results)
+}
+
+func outputTTY(query string, results []search.Result) error {
+	if len(results) == 0 {
+		fmt.Printf("No results for %q\n", query)
+		return nil
+	}
+
+	fmt.Printf("Results for %q (%d match", query, len(results))
+	if len(results) != 1 {
+		fmt.Print("es")
+	}
+	fmt.Println(")")
+	fmt.Println()
+
+	for i, r := range results {
+		content := search.TruncateContent(r.Content, 200)
+		// Replace newlines with spaces for display
+		content = strings.ReplaceAll(content, "\n", " ")
+
+		fmt.Printf("  %d. [%.2f] %s\n", i+1, r.Score, content)
+		if r.SourceFile != "" {
+			fmt.Printf("     📁 %s", r.SourceFile)
+			if r.SourceLine > 0 {
+				fmt.Printf(":%d", r.SourceLine)
+			}
+			fmt.Println()
+		}
+		fmt.Println()
+	}
+
+	return nil
+}
+
+type statsJSON struct {
+	Memories    int64  `json:"memories"`
+	Facts       int64  `json:"facts"`
+	Embeddings  int64  `json:"embeddings"`
+	Events      int64  `json:"events"`
+	SourceFiles int    `json:"source_files"`
+	DBSizeBytes int64  `json:"db_size_bytes"`
+	DateRange   string `json:"date_range"`
+}
+
+func outputStatsJSON(stats *store.StoreStats, sourceFiles int, dateRange string) error {
+	s := statsJSON{
+		Memories:    stats.MemoryCount,
+		Facts:       stats.FactCount,
+		Embeddings:  stats.EmbeddingCount,
+		Events:      stats.EventCount,
+		SourceFiles: sourceFiles,
+		DBSizeBytes: stats.DBSizeBytes,
+		DateRange:   dateRange,
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(s)
+}
+
+func outputStatsTTY(stats *store.StoreStats, sourceFiles int, dateRange string) error {
+	fmt.Println("Cortex Memory Statistics")
+	fmt.Println("========================")
+	fmt.Println()
+	fmt.Printf("  Memories:     %d\n", stats.MemoryCount)
+	fmt.Printf("  Facts:        %d\n", stats.FactCount)
+	fmt.Printf("  Embeddings:   %d\n", stats.EmbeddingCount)
+	fmt.Printf("  Events:       %d\n", stats.EventCount)
+	fmt.Printf("  Source Files: %d\n", sourceFiles)
+	fmt.Println()
+	fmt.Printf("  Date Range:   %s\n", dateRange)
+
+	if stats.DBSizeBytes > 0 {
+		fmt.Printf("  DB Size:      %s\n", formatBytes(stats.DBSizeBytes))
+	}
+	fmt.Println()
+
+	return nil
+}
+
+// isTTY returns true if stdout is a terminal.
+func isTTY() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// formatBytes formats bytes into a human-readable string.
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
 func printUsage() {
 	fmt.Printf(`cortex %s — Import-first memory layer for AI agents
 
@@ -125,17 +412,26 @@ Usage:
 
 Commands:
   import <path>       Import memory from a file or directory
-  search <query>      Search memory (hybrid BM25 + semantic by default)
+  search <query>      Search memory (keyword by default, hybrid coming in Phase 2)
+  stats               Show memory statistics and health
   list                List all memory entries
   export              Export memory in standard formats
-  stats               Show memory statistics and health
   stale               Find outdated memory entries
   conflicts           Detect contradictory facts
   version             Print version
 
+Search Flags:
+  --mode <mode>       Search mode: keyword, semantic, hybrid (default: keyword)
+  --limit <N>         Maximum results (default: 10)
+  --min-confidence <F> Minimum confidence threshold (default: 0.0)
+  --json              Force JSON output even in TTY
+
 Import Flags:
   -r, --recursive     Recursively import from directories
   -n, --dry-run       Show what would be imported without writing
+
+Stats Flags:
+  --json              Force JSON output even in TTY
 
 Flags:
   -h, --help          Show this help message
