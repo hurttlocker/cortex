@@ -10,50 +10,68 @@ import (
 
 	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/ingest"
+	"github.com/hurttlocker/cortex/internal/observe"
 	"github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
 const version = "0.1.0-dev"
 
+var (
+	globalDBPath string
+	globalVerbose bool
+)
+
 func main() {
-	if len(os.Args) < 2 {
+	// Parse global flags and filter them out of args
+	args := parseGlobalFlags(os.Args[1:])
+	
+	if len(args) < 1 {
 		printUsage()
 		os.Exit(0)
 	}
 
-	switch os.Args[1] {
+	switch args[0] {
 	case "import":
-		if err := runImport(os.Args[2:]); err != nil {
+		if err := runImport(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 	case "extract":
-		if err := runExtract(os.Args[2:]); err != nil {
+		if err := runExtract(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 	case "search":
-		if err := runSearch(os.Args[2:]); err != nil {
+		if err := runSearch(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 	case "stats":
-		if err := runStats(os.Args[2:]); err != nil {
+		if err := runStats(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 	case "list":
-		fmt.Println("cortex list: not yet implemented")
-		fmt.Println("Usage: cortex list [--source <file>] [--since <date>]")
+		if err := runList(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "export":
-		fmt.Println("cortex export: not yet implemented")
-		fmt.Println("Usage: cortex export [--format json|markdown]")
+		if err := runExport(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "stale":
-		fmt.Println("cortex stale: not yet implemented")
-		fmt.Println("Usage: cortex stale [--days 30]")
+		if err := runStale(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "conflicts":
-		fmt.Println("cortex conflicts: not yet implemented")
+		if err := runConflicts(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Printf("cortex %s\n", version)
 	case "--version", "-v":
@@ -61,10 +79,47 @@ func main() {
 	case "help", "--help", "-h":
 		printUsage()
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", args[0])
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+// parseGlobalFlags extracts global flags like --db and --verbose from args
+// Returns filtered args with global flags removed
+func parseGlobalFlags(args []string) []string {
+	var filtered []string
+	
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--db" && i+1 < len(args):
+			globalDBPath = args[i+1]
+			i++ // skip the value
+		case strings.HasPrefix(args[i], "--db="):
+			globalDBPath = strings.TrimPrefix(args[i], "--db=")
+		case args[i] == "--verbose" || args[i] == "-v":
+			globalVerbose = true
+		case strings.HasPrefix(args[i], "-"):
+			// Skip unknown flags but keep them for subcommand processing
+			filtered = append(filtered, args[i])
+		default:
+			filtered = append(filtered, args[i])
+		}
+	}
+	
+	return filtered
+}
+
+// getDBPath returns the database path using the resolution order:
+// --db flag > CORTEX_DB env var > default path
+func getDBPath() string {
+	if globalDBPath != "" {
+		return globalDBPath
+	}
+	if envPath := os.Getenv("CORTEX_DB"); envPath != "" {
+		return envPath
+	}
+	return "" // Let store.NewStore use its default
 }
 
 func runImport(args []string) error {
@@ -97,7 +152,7 @@ func runImport(args []string) error {
 	}
 
 	// Open store
-	s, err := store.NewStore(store.StoreConfig{})
+	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -206,7 +261,7 @@ func runSearch(args []string) error {
 	}
 
 	// Open store
-	s, err := store.NewStore(store.StoreConfig{})
+	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -249,7 +304,8 @@ func runStats(args []string) error {
 	}
 
 	// Open store
-	s, err := store.NewStore(store.StoreConfig{})
+	cfg := store.StoreConfig{DBPath: getDBPath()}
+	s, err := store.NewStore(cfg)
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -257,22 +313,144 @@ func runStats(args []string) error {
 
 	ctx := context.Background()
 
-	stats, err := s.Stats(ctx)
+	// Use observe engine for enhanced stats
+	dbPath := cfg.DBPath
+	if dbPath == "" {
+		dbPath = store.DefaultDBPath
+	}
+	engine := observe.NewEngine(s, dbPath)
+	observeStats, err := engine.GetStats(ctx)
 	if err != nil {
-		return fmt.Errorf("getting stats: %w", err)
+		return fmt.Errorf("getting observability stats: %w", err)
 	}
 
-	// Get additional info: source file count and date range
-	sourceFiles, dateRange, err := getExtendedStats(ctx, s)
+	// Get additional info: date range
+	_, dateRange, err := getExtendedStats(ctx, s)
 	if err != nil {
 		return fmt.Errorf("getting extended stats: %w", err)
 	}
 
 	if jsonOutput || !isTTY() {
-		return outputStatsJSON(stats, sourceFiles, dateRange)
+		return outputEnhancedStatsJSON(observeStats, dateRange)
 	}
 
-	return outputStatsTTY(stats, sourceFiles, dateRange)
+	return outputEnhancedStatsTTY(observeStats, dateRange)
+}
+
+func runStale(args []string) error {
+	opts := observe.StaleOpts{
+		MaxConfidence: 0.5,
+		MaxDays:       30,
+		Limit:         50,
+	}
+	jsonOutput := false
+
+	// Parse flags
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--days" && i+1 < len(args):
+			i++
+			days, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --days value: %s", args[i])
+			}
+			opts.MaxDays = days
+		case strings.HasPrefix(args[i], "--days="):
+			days, err := strconv.Atoi(strings.TrimPrefix(args[i], "--days="))
+			if err != nil {
+				return fmt.Errorf("invalid --days value: %s", args[i])
+			}
+			opts.MaxDays = days
+		case args[i] == "--min-confidence" && i+1 < len(args):
+			i++
+			conf, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --min-confidence value: %s", args[i])
+			}
+			opts.MaxConfidence = conf
+		case strings.HasPrefix(args[i], "--min-confidence="):
+			conf, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--min-confidence="), 64)
+			if err != nil {
+				return fmt.Errorf("invalid --min-confidence value: %s", args[i])
+			}
+			opts.MaxConfidence = conf
+		case args[i] == "--json":
+			jsonOutput = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		default:
+			return fmt.Errorf("unexpected argument: %s", args[i])
+		}
+	}
+
+	// Open store
+	cfg := store.StoreConfig{DBPath: getDBPath()}
+	s, err := store.NewStore(cfg)
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	dbPath := cfg.DBPath
+	if dbPath == "" {
+		dbPath = store.DefaultDBPath
+	}
+	engine := observe.NewEngine(s, dbPath)
+
+	staleFacts, err := engine.GetStaleFacts(ctx, opts)
+	if err != nil {
+		return fmt.Errorf("getting stale facts: %w", err)
+	}
+
+	if jsonOutput || !isTTY() {
+		return outputStaleJSON(staleFacts)
+	}
+
+	return outputStaleTTY(staleFacts, opts)
+}
+
+func runConflicts(args []string) error {
+	jsonOutput := false
+
+	// Parse flags
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return fmt.Errorf("unknown flag: %s", arg)
+			}
+			return fmt.Errorf("unexpected argument: %s", arg)
+		}
+	}
+
+	// Open store
+	cfg := store.StoreConfig{DBPath: getDBPath()}
+	s, err := store.NewStore(cfg)
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	dbPath := cfg.DBPath
+	if dbPath == "" {
+		dbPath = store.DefaultDBPath
+	}
+	engine := observe.NewEngine(s, dbPath)
+
+	conflicts, err := engine.GetConflicts(ctx)
+	if err != nil {
+		return fmt.Errorf("getting conflicts: %w", err)
+	}
+
+	if jsonOutput || !isTTY() {
+		return outputConflictsJSON(conflicts)
+	}
+
+	return outputConflictsTTY(conflicts)
 }
 
 func runExtract(args []string) error {
@@ -331,6 +509,151 @@ func runExtract(args []string) error {
 	}
 
 	return outputExtractTTY(filepath, facts)
+}
+
+func runList(args []string) error {
+	// Parse flags
+	var limit int = 20
+	var sourceFile, factType string
+	var listFacts, jsonOutput bool
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--facts":
+			listFacts = true
+		case args[i] == "--limit" && i+1 < len(args):
+			i++
+			var err error
+			if limit, err = strconv.Atoi(args[i]); err != nil {
+				return fmt.Errorf("invalid --limit value: %s", args[i])
+			}
+		case strings.HasPrefix(args[i], "--limit="):
+			var err error
+			if limit, err = strconv.Atoi(strings.TrimPrefix(args[i], "--limit=")); err != nil {
+				return fmt.Errorf("invalid --limit value: %s", args[i])
+			}
+		case args[i] == "--source" && i+1 < len(args):
+			i++
+			sourceFile = args[i]
+		case strings.HasPrefix(args[i], "--source="):
+			sourceFile = strings.TrimPrefix(args[i], "--source=")
+		case args[i] == "--type" && i+1 < len(args):
+			i++
+			factType = args[i]
+		case strings.HasPrefix(args[i], "--type="):
+			factType = strings.TrimPrefix(args[i], "--type=")
+		case args[i] == "--json":
+			jsonOutput = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		default:
+			return fmt.Errorf("unexpected argument: %s", args[i])
+		}
+	}
+
+	// Open store
+	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	opts := store.ListOpts{
+		Limit:      limit,
+		Offset:     0,
+		SourceFile: sourceFile,
+		FactType:   factType,
+	}
+
+	if listFacts {
+		facts, err := s.ListFacts(ctx, opts)
+		if err != nil {
+			return fmt.Errorf("listing facts: %w", err)
+		}
+
+		if jsonOutput || !isTTY() {
+			return outputListFactsJSON(facts)
+		}
+		return outputListFactsTTY(facts, opts)
+	} else {
+		memories, err := s.ListMemories(ctx, opts)
+		if err != nil {
+			return fmt.Errorf("listing memories: %w", err)
+		}
+
+		if jsonOutput || !isTTY() {
+			return outputListMemoriesJSON(memories)
+		}
+		return outputListMemoriesTTY(memories, opts)
+	}
+}
+
+func runExport(args []string) error {
+	// Parse flags
+	var format string = "json"
+	var outputFile string
+	var exportFacts bool
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--facts":
+			exportFacts = true
+		case args[i] == "--format" && i+1 < len(args):
+			i++
+			format = args[i]
+		case strings.HasPrefix(args[i], "--format="):
+			format = strings.TrimPrefix(args[i], "--format=")
+		case args[i] == "--output" && i+1 < len(args):
+			i++
+			outputFile = args[i]
+		case strings.HasPrefix(args[i], "--output="):
+			outputFile = strings.TrimPrefix(args[i], "--output=")
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		default:
+			return fmt.Errorf("unexpected argument: %s", args[i])
+		}
+	}
+
+	// Validate format
+	if format != "json" && format != "markdown" && format != "csv" {
+		return fmt.Errorf("unsupported format: %s (supported: json, markdown, csv)", format)
+	}
+
+	// Open store
+	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Set output destination
+	output := os.Stdout
+	if outputFile != "" {
+		file, err := os.Create(outputFile)
+		if err != nil {
+			return fmt.Errorf("creating output file: %w", err)
+		}
+		defer file.Close()
+		output = file
+	}
+
+	if exportFacts {
+		facts, err := s.ListFacts(ctx, store.ListOpts{Limit: 100000}) // Large limit to export all
+		if err != nil {
+			return fmt.Errorf("listing facts: %w", err)
+		}
+		return exportFactsInFormat(facts, format, output)
+	} else {
+		memories, err := s.ListMemories(ctx, store.ListOpts{Limit: 100000}) // Large limit to export all
+		if err != nil {
+			return fmt.Errorf("listing memories: %w", err)
+		}
+		return exportMemoriesInFormat(memories, format, output)
+	}
 }
 
 // ExtractionStats holds statistics about extraction run.
@@ -432,6 +755,267 @@ func outputExtractTTY(filepath string, facts []extract.ExtractedFact) error {
 		fmt.Println()
 	}
 
+	return nil
+}
+
+func outputListMemoriesJSON(memories []*store.Memory) error {
+	if memories == nil {
+		memories = []*store.Memory{}
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(memories)
+}
+
+func outputListMemoriesTTY(memories []*store.Memory, opts store.ListOpts) error {
+	if len(memories) == 0 {
+		fmt.Println("No memories found")
+		return nil
+	}
+
+	fmt.Printf("Recent Memories (%d", len(memories))
+	if opts.Limit > 0 {
+		fmt.Printf(" of latest %d", opts.Limit)
+	}
+	fmt.Println(")")
+	fmt.Println()
+
+	for i, memory := range memories {
+		// Format date
+		date := memory.ImportedAt.Format("2006-01-02")
+		
+		// Truncate content
+		content := memory.Content
+		if len(content) > 60 {
+			content = content[:57] + "..."
+		}
+		// Replace newlines with spaces for display
+		content = strings.ReplaceAll(content, "\n", " ")
+
+		fmt.Printf("  %d. [%s] %s\n", i+1, date, content)
+		
+		// Add source info if available
+		if memory.SourceFile != "" {
+			fmt.Printf("     📁 %s", memory.SourceFile)
+			if memory.SourceLine > 0 {
+				fmt.Printf(":%d", memory.SourceLine)
+			}
+			if memory.SourceSection != "" {
+				fmt.Printf(" · %s", memory.SourceSection)
+			}
+			fmt.Println()
+		}
+		
+		// Add verbose details if requested
+		if globalVerbose && len(memory.Content) > 60 {
+			fmt.Printf("     Full content: %s\n", memory.Content)
+		}
+		
+		fmt.Println()
+	}
+
+	return nil
+}
+
+func outputListFactsJSON(facts []*store.Fact) error {
+	if facts == nil {
+		facts = []*store.Fact{}
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(facts)
+}
+
+func outputListFactsTTY(facts []*store.Fact, opts store.ListOpts) error {
+	if len(facts) == 0 {
+		fmt.Println("No facts found")
+		return nil
+	}
+
+	fmt.Printf("Facts (%d", len(facts))
+	if opts.Limit > 0 {
+		fmt.Printf(" of latest %d", opts.Limit)
+	}
+	fmt.Println(")")
+	fmt.Println()
+
+	for i, fact := range facts {
+		// Format fact content
+		factContent := ""
+		if fact.Subject != "" {
+			factContent = fmt.Sprintf("%s %s %s", fact.Subject, fact.Predicate, fact.Object)
+		} else {
+			factContent = fmt.Sprintf("%s: %s", fact.Predicate, fact.Object)
+		}
+
+		// Truncate if too long and not verbose
+		if !globalVerbose && len(factContent) > 60 {
+			factContent = factContent[:57] + "..."
+		}
+
+		fmt.Printf("  %d. [%s] %s\n", i+1, fact.FactType, factContent)
+		fmt.Printf("     Confidence: %.2f · Decay: %.3f/day\n", 
+			fact.Confidence, fact.DecayRate)
+		
+		// Add source quote if available and verbose
+		if globalVerbose && fact.SourceQuote != "" {
+			fmt.Printf("     Source: %q\n", fact.SourceQuote)
+		}
+		
+		fmt.Println()
+	}
+
+	return nil
+}
+
+func exportMemoriesInFormat(memories []*store.Memory, format string, output *os.File) error {
+	switch format {
+	case "json":
+		return exportMemoriesJSON(memories, output)
+	case "markdown":
+		return exportMemoriesMarkdown(memories, output)
+	case "csv":
+		return exportMemoriesCSV(memories, output)
+	default:
+		return fmt.Errorf("unsupported format: %s", format)
+	}
+}
+
+func exportFactsInFormat(facts []*store.Fact, format string, output *os.File) error {
+	switch format {
+	case "json":
+		return exportFactsJSON(facts, output)
+	case "markdown":
+		return exportFactsMarkdown(facts, output)
+	case "csv":
+		return exportFactsCSV(facts, output)
+	default:
+		return fmt.Errorf("unsupported format: %s", format)
+	}
+}
+
+func exportMemoriesJSON(memories []*store.Memory, output *os.File) error {
+	enc := json.NewEncoder(output)
+	enc.SetIndent("", "  ")
+	return enc.Encode(memories)
+}
+
+func exportMemoriesMarkdown(memories []*store.Memory, output *os.File) error {
+	fmt.Fprintf(output, "# Cortex Memory Export\n\n")
+	
+	// Group by source file
+	sourceGroups := make(map[string][]*store.Memory)
+	for _, memory := range memories {
+		sourceFile := memory.SourceFile
+		if sourceFile == "" {
+			sourceFile = "Unknown Source"
+		}
+		sourceGroups[sourceFile] = append(sourceGroups[sourceFile], memory)
+	}
+	
+	for sourceFile, sourceMemories := range sourceGroups {
+		fmt.Fprintf(output, "## Source: %s\n\n", sourceFile)
+		
+		for _, memory := range sourceMemories {
+			if memory.SourceSection != "" {
+				fmt.Fprintf(output, "### %s", memory.SourceSection)
+				if memory.SourceLine > 0 {
+					fmt.Fprintf(output, " (line %d)", memory.SourceLine)
+				}
+				fmt.Fprintf(output, "\n\n")
+			}
+			
+			fmt.Fprintf(output, "%s\n\n", memory.Content)
+		}
+	}
+	
+	return nil
+}
+
+func exportMemoriesCSV(memories []*store.Memory, output *os.File) error {
+	// Write CSV header
+	fmt.Fprintf(output, "id,content,source_file,source_line,source_section,imported_at\n")
+	
+	for _, memory := range memories {
+		// Escape quotes in content
+		content := strings.ReplaceAll(memory.Content, `"`, `""`)
+		sourceFile := strings.ReplaceAll(memory.SourceFile, `"`, `""`)
+		sourceSection := strings.ReplaceAll(memory.SourceSection, `"`, `""`)
+		
+		fmt.Fprintf(output, `%d,"%s","%s",%d,"%s",%s`+"\n",
+			memory.ID,
+			content,
+			sourceFile,
+			memory.SourceLine,
+			sourceSection,
+			memory.ImportedAt.Format("2006-01-02T15:04:05Z07:00"))
+	}
+	
+	return nil
+}
+
+func exportFactsJSON(facts []*store.Fact, output *os.File) error {
+	enc := json.NewEncoder(output)
+	enc.SetIndent("", "  ")
+	return enc.Encode(facts)
+}
+
+func exportFactsMarkdown(facts []*store.Fact, output *os.File) error {
+	fmt.Fprintf(output, "# Cortex Facts Export\n\n")
+	
+	// Group by fact type
+	typeGroups := make(map[string][]*store.Fact)
+	for _, fact := range facts {
+		typeGroups[fact.FactType] = append(typeGroups[fact.FactType], fact)
+	}
+	
+	for factType, typeFacts := range typeGroups {
+		fmt.Fprintf(output, "## %s Facts\n\n", strings.Title(factType))
+		
+		for _, fact := range typeFacts {
+			if fact.Subject != "" {
+				fmt.Fprintf(output, "**%s** %s %s", fact.Subject, fact.Predicate, fact.Object)
+			} else {
+				fmt.Fprintf(output, "**%s**: %s", fact.Predicate, fact.Object)
+			}
+			
+			fmt.Fprintf(output, " *(confidence: %.2f)*\n", fact.Confidence)
+			
+			if fact.SourceQuote != "" {
+				fmt.Fprintf(output, "> %s\n", fact.SourceQuote)
+			}
+			
+			fmt.Fprintf(output, "\n")
+		}
+	}
+	
+	return nil
+}
+
+func exportFactsCSV(facts []*store.Fact, output *os.File) error {
+	// Write CSV header
+	fmt.Fprintf(output, "id,memory_id,subject,predicate,object,fact_type,confidence,decay_rate,source_quote,created_at\n")
+	
+	for _, fact := range facts {
+		// Escape quotes
+		subject := strings.ReplaceAll(fact.Subject, `"`, `""`)
+		predicate := strings.ReplaceAll(fact.Predicate, `"`, `""`)
+		object := strings.ReplaceAll(fact.Object, `"`, `""`)
+		sourceQuote := strings.ReplaceAll(fact.SourceQuote, `"`, `""`)
+		
+		fmt.Fprintf(output, `%d,%d,"%s","%s","%s",%s,%.6f,%.6f,"%s",%s`+"\n",
+			fact.ID,
+			fact.MemoryID,
+			subject,
+			predicate,
+			object,
+			fact.FactType,
+			fact.Confidence,
+			fact.DecayRate,
+			sourceQuote,
+			fact.CreatedAt.Format("2006-01-02T15:04:05Z07:00"))
+	}
+	
 	return nil
 }
 
@@ -585,6 +1169,159 @@ func outputStatsTTY(stats *store.StoreStats, sourceFiles int, dateRange string) 
 	return nil
 }
 
+// Enhanced stats output functions
+func outputEnhancedStatsJSON(stats *observe.Stats, dateRange string) error {
+	type enhancedStatsJSON struct {
+		*observe.Stats
+		DateRange string `json:"date_range"`
+	}
+
+	s := enhancedStatsJSON{
+		Stats:     stats,
+		DateRange: dateRange,
+	}
+	
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(s)
+}
+
+func outputEnhancedStatsTTY(stats *observe.Stats, dateRange string) error {
+	fmt.Println("╭─────────────────────────────────────────────╮")
+	fmt.Println("│              Cortex Memory Stats             │")
+	fmt.Println("├─────────────────────────────────────────────┤")
+	fmt.Printf("│ Memories:        %-27d │\n", stats.TotalMemories)
+	fmt.Printf("│ Facts:           %-27d │\n", stats.TotalFacts)
+	fmt.Printf("│ Sources:         %-27d │\n", stats.TotalSources)
+	if stats.StorageBytes > 0 {
+		fmt.Printf("│ Storage:         %-27s │\n", formatBytes(stats.StorageBytes))
+	}
+	fmt.Printf("│ Avg confidence:  %.2f%-22s │\n", stats.AvgConfidence, "")
+	
+	if len(stats.FactsByType) > 0 {
+		fmt.Println("├─────────────────────────────────────────────┤")
+		fmt.Println("│ Facts by Type                                │")
+		
+		// Calculate percentages and show top types
+		total := stats.TotalFacts
+		for factType, count := range stats.FactsByType {
+			if total > 0 {
+				percent := float64(count) * 100.0 / float64(total)
+				bars := int(percent / 10)
+				if bars > 10 {
+					bars = 10
+				}
+				barStr := strings.Repeat("█", bars) + strings.Repeat("░", 10-bars)
+				fmt.Printf("│   %-12s %5d (%4.1f%%)  %s │\n", factType+":", count, percent, barStr)
+			} else {
+				fmt.Printf("│   %-12s %5d             %10s │\n", factType+":", count, "")
+			}
+		}
+	}
+	
+	fmt.Println("├─────────────────────────────────────────────┤")
+	fmt.Println("│ Freshness                                    │")
+	fmt.Printf("│   Today:           %-25d │\n", stats.Freshness.Today)
+	fmt.Printf("│   This week:       %-25d │\n", stats.Freshness.ThisWeek)
+	fmt.Printf("│   This month:      %-25d │\n", stats.Freshness.ThisMonth)
+	fmt.Printf("│   Older:           %-25d │\n", stats.Freshness.Older)
+	
+	if dateRange != "N/A" {
+		fmt.Println("├─────────────────────────────────────────────┤")
+		fmt.Printf("│ Date Range:   %-29s │\n", dateRange)
+	}
+	
+	fmt.Println("╰─────────────────────────────────────────────╯")
+	return nil
+}
+
+// Stale facts output functions
+func outputStaleJSON(staleFacts []observe.StaleFact) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(staleFacts)
+}
+
+func outputStaleTTY(staleFacts []observe.StaleFact, opts observe.StaleOpts) error {
+	if len(staleFacts) == 0 {
+		fmt.Printf("No stale facts found (confidence < %.2f, not reinforced in %d+ days)\n", opts.MaxConfidence, opts.MaxDays)
+		return nil
+	}
+
+	fmt.Printf("Stale Facts (confidence < %.2f, not reinforced in %d+ days)\n\n", opts.MaxConfidence, opts.MaxDays)
+
+	for i, sf := range staleFacts {
+		if i >= opts.Limit {
+			break
+		}
+
+		// Format fact content
+		factContent := ""
+		if sf.Fact.Subject != "" {
+			factContent = fmt.Sprintf("%s %s %s", sf.Fact.Subject, sf.Fact.Predicate, sf.Fact.Object)
+		} else {
+			factContent = fmt.Sprintf("%s: %s", sf.Fact.Predicate, sf.Fact.Object)
+		}
+
+		fmt.Printf("⚠️  %.2f  \"%s\"\n", sf.EffectiveConfidence, factContent)
+		fmt.Printf("         %s · %d days old · original confidence: %.2f\n", 
+			sf.Fact.FactType, sf.DaysSinceReinforced, sf.Fact.Confidence)
+		
+		if sf.Fact.SourceQuote != "" {
+			fmt.Printf("         Source: %q\n", sf.Fact.SourceQuote)
+		}
+		fmt.Println()
+	}
+
+	fmt.Printf("✅  %d stale fact", len(staleFacts))
+	if len(staleFacts) != 1 {
+		fmt.Print("s")
+	}
+	fmt.Println(" found.")
+	return nil
+}
+
+// Conflicts output functions
+func outputConflictsJSON(conflicts []observe.Conflict) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(conflicts)
+}
+
+func outputConflictsTTY(conflicts []observe.Conflict) error {
+	if len(conflicts) == 0 {
+		fmt.Println("No conflicts detected.")
+		return nil
+	}
+
+	fmt.Printf("Conflicts Detected: %d\n\n", len(conflicts))
+
+	for _, c := range conflicts {
+		fmt.Println("❌ Attribute Conflict")
+		
+		fact1Content := ""
+		if c.Fact1.Subject != "" {
+			fact1Content = fmt.Sprintf("%s %s %s", c.Fact1.Subject, c.Fact1.Predicate, c.Fact1.Object)
+		} else {
+			fact1Content = fmt.Sprintf("%s: %s", c.Fact1.Predicate, c.Fact1.Object)
+		}
+		
+		fact2Content := ""
+		if c.Fact2.Subject != "" {
+			fact2Content = fmt.Sprintf("%s %s %s", c.Fact2.Subject, c.Fact2.Predicate, c.Fact2.Object)
+		} else {
+			fact2Content = fmt.Sprintf("%s: %s", c.Fact2.Predicate, c.Fact2.Object)
+		}
+
+		fmt.Printf("   \"%s\" (confidence: %.2f)\n", fact1Content, c.Fact1.Confidence)
+		fmt.Printf("   \"%s\" (confidence: %.2f)\n", fact2Content, c.Fact2.Confidence)
+		fmt.Printf("   Similarity: %.2f\n", c.Similarity)
+		fmt.Println()
+	}
+
+	return nil
+}
+
 // isTTY returns true if stdout is a terminal.
 func isTTY() bool {
 	fi, err := os.Stdout.Stat()
@@ -612,18 +1349,23 @@ func printUsage() {
 	fmt.Printf(`cortex %s — Import-first memory layer for AI agents
 
 Usage:
-  cortex <command> [arguments]
+  cortex [global-flags] <command> [arguments]
 
 Commands:
   import <path>       Import memory from a file or directory
   extract <file>      Extract facts from a single file (without importing)
   search <query>      Search memory (keyword by default, hybrid coming in Phase 2)
   stats               Show memory statistics and health
-  list                List all memory entries
-  export              Export memory in standard formats
+  list                List memories or facts from the store
+  export              Export the full memory store in different formats
   stale               Find outdated memory entries
   conflicts           Detect contradictory facts
   version             Print version
+
+Global Flags:
+  --db <path>         Database path (overrides CORTEX_DB env var)
+  --verbose, -v       Show detailed output
+  -h, --help          Show this help message
 
 Search Flags:
   --mode <mode>       Search mode: keyword, semantic, hybrid (default: keyword)
@@ -639,12 +1381,26 @@ Import Flags:
 Extract Flags:
   --json              Force JSON output even in TTY
 
+List Flags:
+  --facts             List facts instead of memories
+  --limit <N>         Maximum results (default: 20)
+  --source <file>     Filter by source file
+  --type <fact_type>  Filter facts by type (kv, temporal, identity, etc.)
+  --json              Force JSON output even in TTY
+
+Export Flags:
+  --format <fmt>      Output format: json, markdown, csv (default: json)
+  --output <file>     Write to file instead of stdout
+  --facts             Export facts instead of memories
+
 Stats Flags:
   --json              Force JSON output even in TTY
 
-Flags:
-  -h, --help          Show this help message
-  -v, --version       Print version
+Examples:
+  cortex list --limit 50
+  cortex list --facts --type kv
+  cortex export --format markdown --output memories.md
+  cortex --db ~/my-cortex.db list --source ~/notes.md
 
 Documentation:
   https://github.com/hurttlocker/cortex

@@ -63,18 +63,33 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 		opts.Limit = 100
 	}
 
-	query := `SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at
-		FROM facts`
+	query := `SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type, 
+			         f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at
+		      FROM facts f`
 	args := []interface{}{}
 
+	// Build WHERE clause
+	var where []string
 	if opts.FactType != "" {
-		query += " WHERE fact_type = ?"
+		where = append(where, "f.fact_type = ?")
 		args = append(args, opts.FactType)
 	}
+	if opts.SourceFile != "" {
+		query += " JOIN memories m ON f.memory_id = m.id"
+		where = append(where, "m.source_file = ?")
+		args = append(args, opts.SourceFile)
+	}
 
-	orderBy := "created_at DESC"
+	if len(where) > 0 {
+		query += " WHERE " + fmt.Sprintf("%s", where[0])
+		for _, clause := range where[1:] {
+			query += " AND " + clause
+		}
+	}
+
+	orderBy := "f.created_at DESC"
 	if opts.SortBy == "confidence" {
-		orderBy = "confidence DESC"
+		orderBy = "f.confidence DESC"
 	}
 	query += fmt.Sprintf(" ORDER BY %s LIMIT ? OFFSET ?", orderBy)
 	args = append(args, opts.Limit, opts.Offset)

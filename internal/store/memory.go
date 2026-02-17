@@ -71,17 +71,23 @@ func (s *SQLiteStore) ListMemories(ctx context.Context, opts ListOpts) ([]*Memor
 		opts.Limit = 100
 	}
 
+	query := `SELECT id, content, source_file, source_line, source_section, content_hash, imported_at, updated_at
+			  FROM memories WHERE deleted_at IS NULL`
+	args := []interface{}{}
+
+	if opts.SourceFile != "" {
+		query += " AND source_file = ?"
+		args = append(args, opts.SourceFile)
+	}
+
 	orderBy := "imported_at DESC"
 	if opts.SortBy == "date" {
 		orderBy = "imported_at DESC"
 	}
+	query += fmt.Sprintf(" ORDER BY %s LIMIT ? OFFSET ?", orderBy)
+	args = append(args, opts.Limit, opts.Offset)
 
-	rows, err := s.db.QueryContext(ctx,
-		fmt.Sprintf(
-			`SELECT id, content, source_file, source_line, source_section, content_hash, imported_at, updated_at
-			 FROM memories WHERE deleted_at IS NULL ORDER BY %s LIMIT ? OFFSET ?`, orderBy),
-		opts.Limit, opts.Offset,
-	)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing memories: %w", err)
 	}
