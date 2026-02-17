@@ -6,7 +6,7 @@ import (
 )
 
 // HashMemoryContent computes SHA-256 of source_path + content for deduplication.
-// 
+//
 // Including source path means the same content from two different files
 // creates two separate memories (different provenance). This is the canonical
 // hash function used throughout Cortex for memory deduplication.

@@ -19,7 +19,7 @@ func TestIssue12_SQLiteDateIncompatibleWithGoTimestamp(t *testing.T) {
 		SourceFile: "/example/file.md",
 		ImportedAt: now,
 	}
-	
+
 	_, err := store.AddMemory(ctx, m)
 	if err != nil {
 		t.Fatalf("failed to add memory: %v", err)
@@ -38,7 +38,7 @@ func TestIssue12_SQLiteDateIncompatibleWithGoTimestamp(t *testing.T) {
 	}
 
 	t.Logf("✅ Issue #12 resolved: Freshness distribution works with Go timestamps")
-	t.Logf("   Distribution: Today=%d, ThisWeek=%d, ThisMonth=%d, Older=%d", 
+	t.Logf("   Distribution: Today=%d, ThisWeek=%d, ThisMonth=%d, Older=%d",
 		freshness.Today, freshness.ThisWeek, freshness.ThisMonth, freshness.Older)
 }
 
@@ -47,7 +47,7 @@ func TestIssue12_SQLiteDateIncompatibleWithGoTimestamp(t *testing.T) {
 func TestIssue9_DualHashFunctions(t *testing.T) {
 	// Test that the shared hash function behaves correctly
 	content := "test content"
-	sourcePathA := "/path/a.md"  
+	sourcePathA := "/path/a.md"
 	sourcePathB := "/path/b.md"
 
 	// Same content, different source paths should produce different hashes (provenance matters)
@@ -71,7 +71,7 @@ func TestIssue9_DualHashFunctions(t *testing.T) {
 
 	t.Logf("✅ Issue #9 resolved: Single canonical hash function with provenance")
 	t.Logf("   Content+SourceA hash: %s", hashA[:8]+"...")
-	t.Logf("   Content+SourceB hash: %s", hashB[:8]+"...")  
+	t.Logf("   Content+SourceB hash: %s", hashB[:8]+"...")
 	t.Logf("   Content-only hash: %s", contentOnlyHash[:8]+"...")
 }
 
@@ -89,7 +89,7 @@ func TestBothBugsFixed_EndToEnd(t *testing.T) {
 		},
 		{
 			Content:    "Shared content", // Same content, different source
-			SourceFile: "/path/doc2.md", 
+			SourceFile: "/path/doc2.md",
 			ImportedAt: time.Now().UTC().AddDate(0, 0, -1), // Yesterday
 		},
 	}

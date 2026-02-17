@@ -20,7 +20,7 @@ func TestGoTimestampWithSubstrPattern(t *testing.T) {
 		SourceFile: "/test.md",
 		ImportedAt: now,
 	}
-	
+
 	id, err := store.AddMemory(ctx, m)
 	if err != nil {
 		t.Fatalf("failed to add memory: %v", err)
@@ -31,7 +31,7 @@ func TestGoTimestampWithSubstrPattern(t *testing.T) {
 	err = store.(*SQLiteStore).db.QueryRowContext(ctx,
 		"SELECT SUBSTR(imported_at, 1, 10) FROM memories WHERE id = ?", id,
 	).Scan(&extractedDate)
-	
+
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -41,12 +41,12 @@ func TestGoTimestampWithSubstrPattern(t *testing.T) {
 		t.Errorf("expected date %s, got %s", expectedDate, extractedDate)
 	}
 
-	// Test that SUBSTR(imported_at, 1, 19) extracts the datetime correctly  
+	// Test that SUBSTR(imported_at, 1, 19) extracts the datetime correctly
 	var extractedDateTime string
 	err = store.(*SQLiteStore).db.QueryRowContext(ctx,
 		"SELECT SUBSTR(imported_at, 1, 19) FROM memories WHERE id = ?", id,
 	).Scan(&extractedDateTime)
-	
+
 	if err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestGoTimestampWithSubstrPattern(t *testing.T) {
 	}
 }
 
-// TestSQLiteDateFunctionBreaks demonstrates that SQL DATE() function returns NULL 
+// TestSQLiteDateFunctionBreaks demonstrates that SQL DATE() function returns NULL
 // for Go's UTC timestamp format, which is why we use SUBSTR pattern.
 func TestSQLiteDateFunctionBreaks(t *testing.T) {
 	ctx := context.Background()
@@ -69,14 +69,14 @@ func TestSQLiteDateFunctionBreaks(t *testing.T) {
 		SourceFile: "/test.md",
 		ImportedAt: time.Now().UTC(),
 	}
-	
+
 	if _, err := store.AddMemory(ctx, m); err != nil {
 		t.Fatalf("failed to add memory: %v", err)
 	}
 
 	// Count records where DATE() returns NULL vs SUBSTR() returns valid dates
 	var nullDateCount, validSubstrCount int
-	
+
 	err := store.(*SQLiteStore).db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM memories WHERE DATE(imported_at) IS NULL",
 	).Scan(&nullDateCount)
@@ -95,11 +95,11 @@ func TestSQLiteDateFunctionBreaks(t *testing.T) {
 	if nullDateCount == 0 {
 		t.Skip("DATE() unexpectedly parsed Go timestamp - this may indicate SQLite version differences")
 	}
-	
+
 	if validSubstrCount != 1 {
 		t.Errorf("expected SUBSTR to work for 1 timestamp, got %d", validSubstrCount)
 	}
-	
+
 	t.Logf("DATE() returns NULL for %d Go timestamps (demonstrates the bug)", nullDateCount)
 	t.Logf("SUBSTR() works correctly for %d Go timestamps", validSubstrCount)
 }
@@ -113,10 +113,10 @@ func TestFreshnessDistributionUsesCorrectPattern(t *testing.T) {
 	// Add a memory with Go timestamp
 	m := &Memory{
 		Content:    "Test memory for freshness",
-		SourceFile: "/test.md", 
+		SourceFile: "/test.md",
 		ImportedAt: time.Now().UTC(),
 	}
-	
+
 	if _, err := store.AddMemory(ctx, m); err != nil {
 		t.Fatalf("failed to add memory: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestFreshnessDistributionUsesCorrectPattern(t *testing.T) {
 	if total == 0 {
 		t.Errorf("GetFreshnessDistribution returned all zeros - this suggests DATE() function is being used instead of SUBSTR")
 	}
-	
-	t.Logf("Freshness distribution: Today=%d, ThisWeek=%d, ThisMonth=%d, Older=%d", 
+
+	t.Logf("Freshness distribution: Today=%d, ThisWeek=%d, ThisMonth=%d, Older=%d",
 		freshness.Today, freshness.ThisWeek, freshness.ThisMonth, freshness.Older)
 }
