@@ -71,24 +71,21 @@ cortex import ~/notes/ --recursive
 cortex search "deployment process"
 cortex search "what timezone" --mode semantic
 
-# 3. See what your agent actually knows
+# 3. Generate embeddings for semantic search (optional, needs Ollama)
+cortex embed ollama/all-minilm --batch-size 20
+
+# 4. See what your agent actually knows
 cortex stats
 # {
-#   "memories": 796,
-#   "facts": 9408, 
-#   "sources": 30,
-#   "storage_bytes": 4018176,
+#   "memories": 1540,
+#   "facts": 8944, 
+#   "sources": 32,
+#   "storage_bytes": 4005888,
 #   "avg_confidence": 0.86,
 #   "facts_by_type": {
-#     "identity": 184,
-#     "kv": 8930,
-#     "temporal": 294
-#   },
-#   "freshness": {
-#     "today": 796,
-#     "this_week": 0,
-#     "this_month": 0,
-#     "older": 0
+#     "identity": 197,
+#     "kv": 8455,
+#     "temporal": 292
 #   }
 # }
 
@@ -126,15 +123,25 @@ cortex import ~/notes/ --recursive    # Walk an entire directory
 cortex import chat.txt --llm ollama/gemma2:2b   # Optional LLM-assist for unstructured text
 ```
 
-### 🔍 Dual Search — Two Engines, Zero API Keys
+### 🔍 Dual Search — Two Engines, Your Choice of Model
 
 | Mode | Engine | Best For |
 |------|--------|----------|
-| **Keyword** | BM25 via SQLite FTS5 | Exact matches, boolean queries (`AND`, `OR`, `NOT`) |
-| **Semantic** | Local ONNX embeddings (all-MiniLM-L6-v2) | Finding related concepts without keyword overlap |
+| **Keyword** | BM25 via SQLite FTS5 | Exact matches, boolean queries with AND→OR fallback |
+| **Semantic** | Embeddings via Ollama, OpenAI, or any provider | Finding related concepts without keyword overlap |
 | **Hybrid** (default) | Reciprocal Rank Fusion | Best of both — precision + recall |
 
-Everything runs locally. Works on an airplane. Works in a submarine. No network calls, ever.
+```bash
+# Generate embeddings (one-time, runs locally via Ollama)
+cortex embed ollama/all-minilm --batch-size 20
+
+# Search modes
+cortex search "deployment process"                           # BM25 keyword (instant)
+cortex search "what timezone" --mode semantic --embed ollama/all-minilm  # Semantic
+cortex search "deployment" --mode hybrid --embed ollama/all-minilm       # Both
+```
+
+Embedding is provider-agnostic: Ollama (local, free), OpenAI, DeepSeek, OpenRouter, or any custom endpoint. BM25 search works with zero setup — no embeddings needed.
 
 ### 📉 Confidence Decay — Memory That Fades Like Yours
 
@@ -274,7 +281,7 @@ Cortex isn't just another memory store. It brings ideas from **cognitive science
 | **Confidence decay** | ✅ Ebbinghaus curve | ❌ | ❌ | ❌ | ❌ |
 | **Provenance tracking** | ✅ Full chains | ❌ | ❌ | ❌ | ❌ |
 | **Self-hosted** | ✅ Single binary | 🟡 Complex | 🟡 Postgres | 🟡 Framework | ✅ |
-| **Semantic search** | ✅ Local ONNX | ✅ Cloud | ✅ Cloud | ✅ | ❌ |
+| **Semantic search** | ✅ Local or API | ✅ Cloud | ✅ Cloud | ✅ | ❌ |
 | **Works offline** | ✅ Fully | ❌ | ❌ | ❌ | ✅ |
 | **Export / portability** | ✅ JSON, MD, CSV | ❌ Locked in | ❌ | ❌ | 🟡 |
 | **Cross-platform** | ✅ Any framework | 🟡 Python-first | 🟡 | ❌ Letta only | 🟡 |
@@ -287,15 +294,58 @@ Cortex isn't just another memory store. It brings ideas from **cognitive science
 
 | Component | Choice | Why |
 |-----------|--------|-----|
-| **Language** | Go | Single binary, no runtime deps, fast compilation |
-| **Storage** | SQLite + FTS5 | Embedded, zero config, battle-tested full-text search |
-| **Embeddings** | ONNX Runtime + all-MiniLM-L6-v2 | Local inference, ~80MB model, no API keys |
-| **CLI** | Cobra | Standard Go CLI framework |
-| **NLP** | prose (Go) + custom rules | Local extraction, no external dependencies |
+| **Language** | Go 1.24+ | Single binary, no runtime deps, fast compilation |
+| **Storage** | SQLite + FTS5 (modernc.org/sqlite) | Pure Go, zero CGO, embedded, battle-tested |
+| **Embeddings** | API-based (Ollama, OpenAI, etc.) | Provider-agnostic, no bundled model weight |
+| **CLI** | Custom (no framework) | Zero dependencies, minimal binary size |
+| **NLP** | Custom rules + optional LLM | Rule-based extraction, LLM optional |
 
-No Docker. No Postgres. No Redis. No API keys. **Just a binary and a SQLite file.**
+No Docker. No Postgres. No Redis. No CGO. **Just a 15MB binary and a SQLite file.**
+
+### Embedding Providers
+
+| Provider | Endpoint | API Key | Notes |
+|----------|----------|---------|-------|
+| **Ollama** (recommended) | `localhost:11434` | None | Free, local, `ollama pull all-minilm` |
+| **OpenAI** | `api.openai.com` | `OPENAI_API_KEY` | `text-embedding-3-small` |
+| **DeepSeek** | `api.deepseek.com` | `DEEPSEEK_API_KEY` | Budget-friendly |
+| **OpenRouter** | `openrouter.ai` | `OPENROUTER_API_KEY` | Any model |
+| **Custom** | `CORTEX_EMBED_ENDPOINT` | `CORTEX_EMBED_API_KEY` | Any OpenAI-compatible API |
+
+### Smart Chunking
+
+Cortex automatically chunks content for optimal search and embedding:
+
+- **Max 500 chars per chunk** — fits within token limits of small embedding models
+- **Splits on paragraph boundaries** (`\n\n`), falls back to line breaks (`\n`), then word boundaries
+- **Merges tiny fragments** (<50 chars) with neighbors to avoid noise
+- **Preserves provenance** — every chunk tracks source file, line number, and section header
 
 ---
+
+## 📊 Search Benchmark (v0.1.1)
+
+Real-world benchmark on 1,540 memories from a production agent workspace. Embedding model: `all-minilm` (384 dimensions) via Ollama.
+
+| Query | BM25 (ms) | Semantic (ms) | Hybrid (ms) | Winner | Why |
+|-------|:---------:|:------------:|:-----------:|--------|-----|
+| "trading strategy QQQ options" | 20 | 54 | 52 | **Semantic** | Found actual strategy config (score 0.58) vs file list |
+| "Spear customer support workflow" | 17 | 51 | 51 | **Semantic** | Found email routing rules vs generic YC research |
+| "wedding venue villa plan" | 16 | 49 | 50 | **Semantic** | 5 hits at 0.73 score vs 1 hit at 0.04 |
+| "OpenClaw gateway configuration" | 16 | 53 | 54 | **Semantic** | Found actual config changes vs tangential mention |
+| "eBay David Yurman revenue" | 16 | 55 | 56 | **Tie** | Both found relevant results, different angles |
+| "agent heartbeat monitoring" | 16 | 49 | 49 | **Semantic** | Found heartbeat decision context (0.65) |
+| "crypto ADA Cardano trading" | 16 | 54 | 54 | **Semantic** | Found Alpaca crypto setup vs isolation rule |
+| "house hunting Philadelphia" | 17 | 50 | 49 | **BM25** | Exact keyword match on location + budget data |
+
+**Key findings:**
+- **BM25**: ~16ms avg, excellent for exact terms and proper nouns
+- **Semantic**: ~52ms avg, dramatically better for conceptual queries (3-16x more relevant top results)
+- **Hybrid**: ~52ms avg, good all-rounder but RRF weights need tuning (currently favors BM25 signal)
+- **Semantic wins 6/8 queries** — especially strong on intent-based searches
+- **BM25 wins on exact term matching** — "house hunting Philadelphia" hits exact keywords
+
+> **Recommendation:** Use `keyword` mode for known exact terms, `semantic` for exploratory/conceptual queries. Hybrid ranking weights will be tuned in future releases.
 
 ## 🗺️ Roadmap
 
@@ -327,14 +377,13 @@ No Docker. No Postgres. No Redis. No API keys. **Just a binary and a SQLite file
 - **Multi-agent Memory**: Scoped memory sharing between agents
 - **Graph Memory Layer**: Relationship-aware memory architecture
 
-### Current Open Issues (2026-02-17)
-Based on [RISKS.md](docs/RISKS.md) analysis:
-1. **Go NLP Limitations**: Enhance extraction quality for unstructured text
-2. **Cross-Platform Distribution**: ONNX compatibility across ARM/x64 platforms  
-3. **Deduplication Accuracy**: Improve conflict detection and resolution
-4. **Large Import Performance**: Optimize for 5K+ file imports
-5. **Search Parameter Tuning**: Fine-tune hybrid search ranking weights
-6. **Community Growth**: Expand contributor base and adoption
+### Current Open Issues (v0.1.1)
+1. **Hybrid RRF tuning**: BM25 vs semantic weight balance needs refinement (#18)
+2. **O(N) brute-force semantic search**: Currently scans all embeddings — needs ANN index for large datasets (#18)
+3. **Embed integration tests**: Zero test coverage on embedding pipeline (#19)
+4. **CLI test coverage**: 0% — all testing is on internal packages (#20)
+5. **Soft-deleted FTS cleanup**: Deleted memories leave FTS ghosts (#10)
+6. **Multi-agent conflict resolution**: Concurrent writes from multiple agents (#14)
 
 See [docs/RISKS.md](docs/RISKS.md) for detailed risk analysis and [docs/prd/](docs/prd/) for complete PRD specifications.
 
