@@ -237,7 +237,7 @@ func TestFindByHash(t *testing.T) {
 	content := "unique content for hashing"
 	s.AddMemory(ctx, &Memory{Content: content})
 
-	hash := hashContent(content)
+	hash := HashMemoryContent(content, "")
 	found, err := s.FindByHash(ctx, hash)
 	if err != nil {
 		t.Fatalf("FindByHash failed: %v", err)

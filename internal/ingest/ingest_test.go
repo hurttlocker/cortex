@@ -856,14 +856,14 @@ func TestProvenance_SourceSection(t *testing.T) {
 
 func TestHashMemoryContent(t *testing.T) {
 	// Same content, different source paths → different hashes
-	h1 := hashMemoryContent("hello world", "/path/a.md")
-	h2 := hashMemoryContent("hello world", "/path/b.md")
+	h1 := store.HashMemoryContent("hello world", "/path/a.md")
+	h2 := store.HashMemoryContent("hello world", "/path/b.md")
 	if h1 == h2 {
 		t.Error("Same content from different files should produce different hashes")
 	}
 
 	// Same content, same path → same hash
-	h3 := hashMemoryContent("hello world", "/path/a.md")
+	h3 := store.HashMemoryContent("hello world", "/path/a.md")
 	if h1 != h3 {
 		t.Error("Same content and path should produce identical hashes")
 	}
