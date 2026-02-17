@@ -17,7 +17,7 @@ import (
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 var (
 	globalDBPath  string
