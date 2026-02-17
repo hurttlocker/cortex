@@ -176,6 +176,7 @@ func (s *SQLiteStore) GetFactsByType(ctx context.Context) (map[string]int, error
 func (s *SQLiteStore) GetFreshnessDistribution(ctx context.Context) (*Freshness, error) {
 	freshness := &Freshness{}
 
+	// SQLite DATE() cannot parse Go's time format. Use SUBSTR(col, 1, 10) for date comparisons.
 	// Use SUBSTR to extract date portion since timestamps include timezone
 	queries := []struct {
 		query string

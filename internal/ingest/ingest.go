@@ -2,7 +2,6 @@ package ingest
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -197,7 +196,7 @@ func (e *Engine) ImportDir(ctx context.Context, dir string, opts ImportOptions) 
 
 // processMemory handles dedup and storage for a single memory chunk.
 func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOptions, result *ImportResult) error {
-	hash := hashMemoryContent(raw.Content, raw.SourceFile)
+	hash := store.HashMemoryContent(raw.Content, raw.SourceFile)
 
 	// Check for existing memory with same hash (dedup)
 	existing, err := e.store.FindByHash(ctx, hash)
@@ -278,16 +277,7 @@ func (e *Engine) sniffFormat(path string) Importer {
 	return &PlainTextImporter{}
 }
 
-// hashMemoryContent computes SHA-256 of source_path + content for dedup.
-// Including source path means the same content from two different files
-// creates two separate memories (different provenance).
-func hashMemoryContent(content, sourcePath string) string {
-	h := sha256.New()
-	h.Write([]byte(sourcePath))
-	h.Write([]byte{0}) // separator
-	h.Write([]byte(content))
-	return fmt.Sprintf("%x", h.Sum(nil))
-}
+// Hash function moved to store.HashMemoryContent for shared usage.
 
 // isBinaryFile checks if a file appears to be binary by reading the first 512 bytes.
 func isBinaryFile(path string) bool {

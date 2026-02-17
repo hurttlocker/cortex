@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"time"
@@ -16,7 +15,7 @@ func (s *SQLiteStore) AddMemory(ctx context.Context, m *Memory) (int64, error) {
 	}
 
 	if m.ContentHash == "" {
-		m.ContentHash = hashContent(m.Content)
+		m.ContentHash = HashMemoryContent(m.Content, m.SourceFile)
 	}
 
 	now := time.Now().UTC()
@@ -167,7 +166,7 @@ func (s *SQLiteStore) insertBatch(ctx context.Context, memories []*Memory) ([]in
 
 	for _, m := range memories {
 		if m.ContentHash == "" {
-			m.ContentHash = hashContent(m.Content)
+			m.ContentHash = HashMemoryContent(m.Content, m.SourceFile)
 		}
 		result, err := stmt.ExecContext(ctx,
 			m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, now, now,
@@ -209,8 +208,8 @@ func (s *SQLiteStore) FindByHash(ctx context.Context, hash string) (*Memory, err
 	return m, nil
 }
 
-// hashContent computes SHA-256 hash of content.
+// hashContent is deprecated. Use HashMemoryContent or HashContentOnly from hash.go.
+// This is kept for backwards compatibility with existing tests.
 func hashContent(content string) string {
-	h := sha256.Sum256([]byte(content))
-	return fmt.Sprintf("%x", h)
+	return HashContentOnly(content)
 }
