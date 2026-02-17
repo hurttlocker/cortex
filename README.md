@@ -73,14 +73,24 @@ cortex search "what timezone" --mode semantic
 
 # 3. See what your agent actually knows
 cortex stats
-# ┌─────────────────────────────────┐
-# │ Total memories:        1,847    │
-# │ Sources:               12 files │
-# │ Last import:           2 min ago│
-# │ Avg confidence:        0.82     │
-# │ Stale (>30d):          23       │
-# │ Potential conflicts:   3        │
-# └─────────────────────────────────┘
+# {
+#   "memories": 796,
+#   "facts": 9408, 
+#   "sources": 30,
+#   "storage_bytes": 4018176,
+#   "avg_confidence": 0.86,
+#   "facts_by_type": {
+#     "identity": 184,
+#     "kv": 8930,
+#     "temporal": 294
+#   },
+#   "freshness": {
+#     "today": 796,
+#     "this_week": 0,
+#     "this_month": 0,
+#     "older": 0
+#   }
+# }
 
 # 4. Find stale and contradictory memories
 cortex stale          # Facts fading from memory — reinforce or forget
@@ -289,19 +299,44 @@ No Docker. No Postgres. No Redis. No API keys. **Just a binary and a SQLite file
 
 ## 🗺️ Roadmap
 
-### Phase 1 — Foundation *(current)*
-Import engine (Markdown, JSON, YAML, CSV) · Dual search (BM25 + semantic) · Fact extraction (rule-based + LLM-assist) · CLI · Basic observability (`stats`, `stale`, `conflicts`)
+### ✅ Phase 1 — Foundation *(Complete)*
+**All 7 PRDs delivered** (10,122 lines of code, 4,896 lines of tests):
+- **Storage** (PRD-001): SQLite + FTS5 foundation
+- **Import** (PRD-002): Multi-format ingestion (Markdown, JSON, YAML, CSV, plain text)
+- **Extraction** (PRD-003): Rule-based + optional LLM-assisted fact extraction
+- **Search** (PRD-004): Dual search engine (BM25 + semantic) with hybrid fusion
+- **CLI** (PRD-005): Full command-line interface with import/search/stats/export
+- **Observability** (PRD-006): Memory stats, stale detection, conflict identification
+- **LLM-assist** (PRD-007): Optional LLM integration for enhanced extraction
 
-### Phase 2 — Intelligence
-Web dashboard · MCP server · Provenance chains · Confidence decay model · Additional importers (PDF, DOCX, HTML)
+### 🚧 Phase 2 — Intelligence *(Next 6 Months)*
+- **Web Dashboard**: Browser-based memory exploration and management
+- **MCP Server**: Model Context Protocol server for agent integrations
+- **Enhanced Observability**: Provenance chains, memory usage analytics
+- **Additional Importers**: PDF, DOCX, HTML support
+- **Search Quality Improvements**: Tuned hybrid ranking, query expansion
 
-### Phase 3 — Context
-Memory lenses (manual + auto-detect) · Differential memory (diff, log, snapshot, restore) · Plugin ecosystem for custom importers/extractors
+### 🔮 Phase 3 — Advanced Features
+- **Memory Lenses**: Context-aware memory filtering and boosting
+- **Differential Memory**: Version control for memory (diff, log, snapshot, restore)
+- **Scale Optimization**: Large-dataset performance improvements
+- **Plugin Ecosystem**: Custom importers and extractors
 
-### Phase 4 — Protocol
-Cortex Memory Protocol (CMP) specification · Multi-agent memory scoping · Graph memory layer · Community reference implementations
+### 🌟 Phase 4 — Protocol & Community
+- **Cortex Memory Protocol (CMP)**: Standardized agent-memory interface
+- **Multi-agent Memory**: Scoped memory sharing between agents
+- **Graph Memory Layer**: Relationship-aware memory architecture
 
-See [docs/MVP.md](docs/MVP.md) for detailed Phase 1 scope and [docs/NOVEL-IDEAS.md](docs/NOVEL-IDEAS.md) for the full vision.
+### Current Open Issues (2026-02-17)
+Based on [RISKS.md](docs/RISKS.md) analysis:
+1. **Go NLP Limitations**: Enhance extraction quality for unstructured text
+2. **Cross-Platform Distribution**: ONNX compatibility across ARM/x64 platforms  
+3. **Deduplication Accuracy**: Improve conflict detection and resolution
+4. **Large Import Performance**: Optimize for 5K+ file imports
+5. **Search Parameter Tuning**: Fine-tune hybrid search ranking weights
+6. **Community Growth**: Expand contributor base and adoption
+
+See [docs/RISKS.md](docs/RISKS.md) for detailed risk analysis and [docs/prd/](docs/prd/) for complete PRD specifications.
 
 ---
 
