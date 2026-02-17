@@ -125,3 +125,135 @@ func (s *SQLiteStore) SearchFTS(ctx context.Context, query string, limit int) ([
 	}
 	return results, rows.Err()
 }
+
+// GetSourceCount returns the number of distinct source files in memories.
+func (s *SQLiteStore) GetSourceCount(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT source_file) FROM memories WHERE deleted_at IS NULL AND source_file != ''`,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("getting source count: %w", err)
+	}
+	return count, nil
+}
+
+// GetAverageConfidence returns the average confidence across all facts.
+func (s *SQLiteStore) GetAverageConfidence(ctx context.Context) (float64, error) {
+	var avg float64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(AVG(confidence), 0.0) FROM facts`,
+	).Scan(&avg)
+	if err != nil {
+		return 0, fmt.Errorf("getting average confidence: %w", err)
+	}
+	return avg, nil
+}
+
+// GetFactsByType returns a distribution of facts grouped by type.
+func (s *SQLiteStore) GetFactsByType(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT fact_type, COUNT(*) FROM facts GROUP BY fact_type ORDER BY COUNT(*) DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("getting facts by type: %w", err)
+	}
+	defer rows.Close()
+
+	factsByType := make(map[string]int)
+	for rows.Next() {
+		var factType string
+		var count int
+		if err := rows.Scan(&factType, &count); err != nil {
+			return nil, fmt.Errorf("scanning facts by type: %w", err)
+		}
+		factsByType[factType] = count
+	}
+	return factsByType, rows.Err()
+}
+
+// GetFreshnessDistribution returns memory counts bucketed by import date.
+func (s *SQLiteStore) GetFreshnessDistribution(ctx context.Context) (*Freshness, error) {
+	freshness := &Freshness{}
+	
+	// Use SUBSTR to extract date portion since timestamps include timezone
+	queries := []struct {
+		query string
+		dest  *int
+	}{
+		{
+			`SELECT COUNT(*) FROM memories 
+			 WHERE deleted_at IS NULL 
+			   AND SUBSTR(imported_at, 1, 10) = date('now')`,
+			&freshness.Today,
+		},
+		{
+			`SELECT COUNT(*) FROM memories 
+			 WHERE deleted_at IS NULL 
+			   AND SUBSTR(imported_at, 1, 10) >= date('now', '-7 days')
+			   AND SUBSTR(imported_at, 1, 10) < date('now')`,
+			&freshness.ThisWeek,
+		},
+		{
+			`SELECT COUNT(*) FROM memories 
+			 WHERE deleted_at IS NULL 
+			   AND SUBSTR(imported_at, 1, 10) >= date('now', '-1 month')
+			   AND SUBSTR(imported_at, 1, 10) < date('now', '-7 days')`,
+			&freshness.ThisMonth,
+		},
+		{
+			`SELECT COUNT(*) FROM memories 
+			 WHERE deleted_at IS NULL 
+			   AND SUBSTR(imported_at, 1, 10) < date('now', '-1 month')`,
+			&freshness.Older,
+		},
+	}
+
+	for _, q := range queries {
+		if err := s.db.QueryRowContext(ctx, q.query).Scan(q.dest); err != nil {
+			return nil, fmt.Errorf("querying freshness distribution (%s): %w", q.query[:50], err)
+		}
+	}
+
+	return freshness, nil
+}
+
+// GetAttributeConflicts detects facts with same subject+predicate but different objects.
+func (s *SQLiteStore) GetAttributeConflicts(ctx context.Context) ([]Conflict, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT f1.id, f1.memory_id, f1.subject, f1.predicate, f1.object, f1.fact_type,
+		        f1.confidence, f1.decay_rate, f1.last_reinforced, f1.source_quote, f1.created_at,
+		        f2.id, f2.memory_id, f2.subject, f2.predicate, f2.object, f2.fact_type,
+		        f2.confidence, f2.decay_rate, f2.last_reinforced, f2.source_quote, f2.created_at
+		 FROM facts f1 JOIN facts f2 
+		   ON LOWER(f1.subject) = LOWER(f2.subject) 
+		  AND LOWER(f1.predicate) = LOWER(f2.predicate) 
+		  AND f1.object != f2.object 
+		  AND f1.id < f2.id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying attribute conflicts: %w", err)
+	}
+	defer rows.Close()
+
+	var conflicts []Conflict
+	for rows.Next() {
+		var f1, f2 Fact
+		if err := rows.Scan(
+			&f1.ID, &f1.MemoryID, &f1.Subject, &f1.Predicate, &f1.Object, &f1.FactType,
+			&f1.Confidence, &f1.DecayRate, &f1.LastReinforced, &f1.SourceQuote, &f1.CreatedAt,
+			&f2.ID, &f2.MemoryID, &f2.Subject, &f2.Predicate, &f2.Object, &f2.FactType,
+			&f2.Confidence, &f2.DecayRate, &f2.LastReinforced, &f2.SourceQuote, &f2.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scanning conflict row: %w", err)
+		}
+
+		conflicts = append(conflicts, Conflict{
+			Fact1:        f1,
+			Fact2:        f2,
+			ConflictType: "attribute",
+			Similarity:   1.0, // Exact subject+predicate match
+		})
+	}
+	return conflicts, rows.Err()
+}
