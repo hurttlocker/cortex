@@ -12,10 +12,12 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/hurttlocker/cortex/internal/ann"
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/store"
 )
@@ -118,6 +120,7 @@ type Searcher interface {
 type Engine struct {
 	store    store.Store
 	embedder embed.Embedder // nil = BM25 only
+	hnsw     *ann.Index     // nil = brute-force semantic search
 }
 
 // NewEngine creates a search engine backed by the given store.
@@ -128,6 +131,80 @@ func NewEngine(s store.Store) *Engine {
 // NewEngineWithEmbedder creates a search engine with semantic search capability.
 func NewEngineWithEmbedder(s store.Store, e embed.Embedder) *Engine {
 	return &Engine{store: s, embedder: e}
+}
+
+// SetHNSW attaches an HNSW index for fast approximate nearest neighbor search.
+// When set, semantic search uses HNSW instead of brute-force O(N) scan.
+func (e *Engine) SetHNSW(idx *ann.Index) {
+	e.hnsw = idx
+}
+
+// BuildHNSW constructs an HNSW index from all stored embeddings.
+// Returns the number of vectors indexed.
+func (e *Engine) BuildHNSW(ctx context.Context) (int, error) {
+	// Get all embeddings from store
+	ids, err := e.store.ListMemoryIDsWithEmbeddings(ctx, 0) // 0 = no limit
+	if err != nil {
+		return 0, fmt.Errorf("listing embedded memories: %w", err)
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	// Detect dimensions from first embedding
+	firstVec, err := e.store.GetEmbedding(ctx, ids[0])
+	if err != nil {
+		return 0, fmt.Errorf("getting first embedding: %w", err)
+	}
+
+	idx := ann.New(len(firstVec))
+	idx.Insert(ids[0], firstVec)
+
+	for i := 1; i < len(ids); i++ {
+		vec, err := e.store.GetEmbedding(ctx, ids[i])
+		if err != nil {
+			continue // skip errors, don't abort entire build
+		}
+		idx.Insert(ids[i], vec)
+	}
+
+	e.hnsw = idx
+	return idx.Len(), nil
+}
+
+// LoadOrBuildHNSW tries to load a persisted HNSW index from path.
+// If the file doesn't exist or is stale, builds a fresh index and saves it.
+// staleThreshold: rebuild if file is older than this many seconds (0 = always rebuild).
+func (e *Engine) LoadOrBuildHNSW(ctx context.Context, path string, staleThresholdSec int64) (int, error) {
+	// Try loading existing index
+	if info, err := os.Stat(path); err == nil {
+		age := time.Now().Unix() - info.ModTime().Unix()
+		if staleThresholdSec == 0 || age < staleThresholdSec {
+			loaded, err := ann.Load(path)
+			if err == nil {
+				e.hnsw = loaded
+				return loaded.Len(), nil
+			}
+			// Fall through to rebuild on load error
+		}
+	}
+
+	// Build fresh
+	count, err := e.BuildHNSW(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if e.hnsw == nil {
+		return 0, nil // no embeddings
+	}
+
+	// Save for next time
+	if err := e.hnsw.Save(path); err != nil {
+		// Non-fatal: index works in memory even if save fails
+		fmt.Fprintf(os.Stderr, "warning: could not save HNSW index: %v\n", err)
+	}
+
+	return count, nil
 }
 
 // Search performs a search using the specified mode.
@@ -508,8 +585,15 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 		}
 	}
 
-	// Search embeddings in store
 	minScore := effectiveMinScore(ModeSemantic, opts.MinScore)
+
+	// Use HNSW index if available (O(log N)), otherwise fall back to brute-force (O(N))
+	if e.hnsw != nil && opts.Project == "" {
+		return e.searchSemanticHNSW(ctx, queryEmbedding, opts, minScore)
+	}
+
+	// Brute-force fallback (also used when project filter is active,
+	// since HNSW doesn't support filtered search natively)
 	storeResults, err := e.store.SearchEmbeddingWithProject(ctx, queryEmbedding, opts.Limit, minScore, opts.Project)
 	if err != nil {
 		return nil, fmt.Errorf("semantic search failed: %w", err)
@@ -517,7 +601,6 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 
 	results := make([]Result, 0, len(storeResults))
 	for _, sr := range storeResults {
-		// Store already filters by minSimilarity, so no need to double-check
 		r := Result{
 			Content:       sr.Memory.Content,
 			SourceFile:    sr.Memory.SourceFile,
@@ -534,7 +617,59 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 		results = append(results, r)
 	}
 
-	// Already sorted by score in store
+	return results, nil
+}
+
+// SaveHNSW persists the current HNSW index to disk.
+func (e *Engine) SaveHNSW(path string) error {
+	if e.hnsw == nil {
+		return fmt.Errorf("no HNSW index loaded")
+	}
+	return e.hnsw.Save(path)
+}
+
+// searchSemanticHNSW performs semantic search using the HNSW index.
+// Converts cosine distance to similarity, fetches memory details from store.
+func (e *Engine) searchSemanticHNSW(ctx context.Context, queryVec []float32, opts Options, minScore float64) ([]Result, error) {
+	// HNSW returns cosine distance; we need extra candidates since we filter by minScore after
+	ef := opts.Limit * 3
+	if ef < 50 {
+		ef = 50
+	}
+
+	annResults := e.hnsw.SearchEf(queryVec, opts.Limit*2, ef)
+
+	var results []Result
+	for _, ar := range annResults {
+		similarity := 1.0 - float64(ar.Distance) // cosine_distance = 1 - cosine_similarity
+		if similarity < minScore {
+			continue
+		}
+
+		// Fetch full memory from store
+		mem, err := e.store.GetMemory(ctx, ar.ID)
+		if err != nil || mem == nil {
+			continue // memory may have been deleted since index was built
+		}
+
+		results = append(results, Result{
+			Content:       mem.Content,
+			SourceFile:    mem.SourceFile,
+			SourceLine:    mem.SourceLine,
+			SourceSection: mem.SourceSection,
+			Project:       mem.Project,
+			Metadata:      mem.Metadata,
+			Score:         similarity,
+			MatchType:     "semantic",
+			MemoryID:      mem.ID,
+			ImportedAt:    mem.ImportedAt,
+		})
+
+		if len(results) >= opts.Limit {
+			break
+		}
+	}
+
 	return results, nil
 }
 

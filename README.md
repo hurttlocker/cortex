@@ -510,7 +510,7 @@ No Docker. No Postgres. No Redis. No CGO. **Just a ~12MB binary and a SQLite fil
 | **OpenRouter** | `openrouter.ai` | `OPENROUTER_API_KEY` | Any model |
 | **Custom** | `CORTEX_EMBED_ENDPOINT` | `CORTEX_EMBED_API_KEY` | Any OpenAI-compatible API |
 
-### Smart Chunking
+### Smart Chunking + Context Enrichment
 
 Cortex automatically chunks content for optimal search and embedding:
 
@@ -518,6 +518,13 @@ Cortex automatically chunks content for optimal search and embedding:
 - **Splits on paragraph boundaries** (`\n\n`), falls back to line breaks (`\n`), then word boundaries
 - **Merges tiny fragments** (<50 chars) with neighbors to avoid noise
 - **Preserves provenance** — every chunk tracks source file, line number, and section header
+- **Multi-column FTS5** — BM25 searches content, source file, AND section header (not just chunk body)
+- **Context-enriched embeddings** — `[filename > Section]` prefix prepended before embedding, giving semantic search topic signal from parent document
+
+```bash
+# After upgrading, re-embed with context enrichment:
+cortex embed ollama/nomic-embed-text --force
+```
 
 ---
 
@@ -562,6 +569,9 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 - ✅ **`cortex reimport --embed`**: One command to wipe and rebuild entire knowledge base with optional embeddings ([#25](https://github.com/hurttlocker/cortex/issues/25))
 - ✅ **Project Tagging**: Auto-tag memories by project using path-based and content-keyword rules, search scoped to project ([#29](https://github.com/hurttlocker/cortex/issues/29))
 - ✅ **Recursive Reasoning (RLM)**: LLM reasoning layer with iterative search loop inspired by [Recursive Language Models](https://arxiv.org/abs/2512.24601). 5 built-in presets, smart model routing, confidence-aware prompting, `cortex bench` for model comparison ([#31](https://github.com/hurttlocker/cortex/issues/31))
+- ✅ **Metadata Capture**: Session context (agent, channel, model, tokens) automatically captured with every memory — enables "who said what, when" queries ([#30](https://github.com/hurttlocker/cortex/issues/30))
+- ✅ **Conflict Resolution**: 4 strategies (last-write-wins, highest-confidence, newest, manual) with dry-run, Ebbinghaus-aware scoring, O(N) detection rewrite ([#14](https://github.com/hurttlocker/cortex/issues/14))
+- ✅ **Context-Aware Search**: Multi-column FTS5 (content + source_file + source_section) and context-enriched embeddings — BM25 and semantic search now match section headers and filenames, not just chunk body ([#26](https://github.com/hurttlocker/cortex/issues/26))
 - **Web Dashboard**: Browser-based memory exploration and management
 - **Additional Importers**: PDF, DOCX, HTML support
 

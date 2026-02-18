@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -52,6 +53,11 @@ func main() {
 		}
 	case "embed":
 		if err := runEmbed(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "index":
+		if err := runIndex(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -180,6 +186,13 @@ func getDBPath() string {
 // getStoreConfig returns a StoreConfig with the global DB path and read-only flag.
 func getStoreConfig() store.StoreConfig {
 	return store.StoreConfig{DBPath: getDBPath(), ReadOnly: globalReadOnly}
+}
+
+// getHNSWPath returns the path for the persisted HNSW index file.
+// Stored alongside the database in ~/.cortex/hnsw.idx
+func getHNSWPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".cortex", "hnsw.idx")
 }
 
 func runImport(args []string) error {
@@ -451,6 +464,14 @@ func runSearch(args []string) error {
 		}
 
 		engine = search.NewEngineWithEmbedder(s, embedder)
+
+		// Load or build HNSW index for fast semantic search
+		hnswPath := getHNSWPath()
+		if count, err := engine.LoadOrBuildHNSW(context.Background(), hnswPath, 3600); err == nil && count > 0 {
+			if globalVerbose {
+				fmt.Fprintf(os.Stderr, "  HNSW index: %d vectors loaded\n", count)
+			}
+		}
 	} else {
 		engine = search.NewEngine(s)
 	}
@@ -1409,6 +1430,48 @@ Resources:
 
 	// Default: stdio transport
 	return server.ServeStdio(mcpServer)
+}
+
+func runIndex(args []string) error {
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	engine := search.NewEngine(s)
+
+	hnswPath := getHNSWPath()
+	fmt.Println("Building HNSW index from stored embeddings...")
+
+	start := time.Now()
+	count, err := engine.BuildHNSW(ctx)
+	if err != nil {
+		return fmt.Errorf("building HNSW index: %w", err)
+	}
+
+	if count == 0 {
+		fmt.Println("No embeddings found. Run 'cortex embed <provider/model>' first.")
+		return nil
+	}
+
+	buildTime := time.Since(start)
+
+	// Save to disk
+	if err := engine.SaveHNSW(hnswPath); err != nil {
+		return fmt.Errorf("saving HNSW index: %w", err)
+	}
+
+	info, _ := os.Stat(hnswPath)
+	sizeMB := float64(info.Size()) / (1024 * 1024)
+
+	fmt.Printf("HNSW index built:\n")
+	fmt.Printf("  Vectors: %d\n", count)
+	fmt.Printf("  Build time: %s\n", buildTime.Round(time.Millisecond))
+	fmt.Printf("  File: %s (%.1f MB)\n", hnswPath, sizeMB)
+	fmt.Printf("  Search: O(log N) vs O(N) brute-force\n")
+	return nil
 }
 
 func runEmbed(args []string) error {

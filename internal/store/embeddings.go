@@ -191,6 +191,37 @@ func (s *SQLiteStore) ListMemoryIDsWithoutEmbeddings(ctx context.Context, limit 
 	return ids, rows.Err()
 }
 
+// ListMemoryIDsWithEmbeddings returns memory IDs that DO have embeddings.
+// Used to build the HNSW index from existing embeddings.
+// If limit is 0, returns all IDs.
+func (s *SQLiteStore) ListMemoryIDsWithEmbeddings(ctx context.Context, limit int) ([]int64, error) {
+	query := `SELECT e.memory_id FROM embeddings e
+		 JOIN memories m ON e.memory_id = m.id
+		 WHERE m.deleted_at IS NULL`
+	args := []interface{}{}
+
+	if limit > 0 {
+		query += " LIMIT ?"
+		args = append(args, limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing memory IDs with embeddings: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning memory ID: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetMemoriesByIDs retrieves multiple memories by their IDs in a single query.
 func (s *SQLiteStore) GetMemoriesByIDs(ctx context.Context, ids []int64) ([]*Memory, error) {
 	if len(ids) == 0 {
