@@ -19,10 +19,10 @@ type BenchModel struct {
 // Covers the cost/speed/quality spectrum. Updated as new models drop.
 var DefaultBenchModels = []BenchModel{
 	{Label: "gemini-2.5-flash", Provider: "openrouter", Model: "google/gemini-2.5-flash"},
+	{Label: "gemini-3-flash", Provider: "openrouter", Model: "google/gemini-3-flash-preview"},
+	{Label: "deepseek-v3.2", Provider: "openrouter", Model: "deepseek/deepseek-v3.2"},
 	{Label: "deepseek-chat", Provider: "openrouter", Model: "deepseek/deepseek-chat"},
 	{Label: "llama-4-maverick", Provider: "openrouter", Model: "meta-llama/llama-4-maverick"},
-	{Label: "grok-4.1-fast", Provider: "openrouter", Model: "x-ai/grok-4.1-fast"},
-	{Label: "minimax-m2.5", Provider: "openrouter", Model: "minimax/minimax-m2.5"},
 }
 
 // LocalBenchModels are the local ollama models to test.
@@ -46,16 +46,21 @@ var DefaultBenchPresets = []BenchPreset{
 }
 
 // Pricing per million tokens (input, output) — updated Feb 2026.
+// Models with {0, 0} are free tier / preview / pricing TBD.
 var ModelPricing = map[string][2]float64{
-	"google/gemini-2.5-flash":      {0.15, 0.60},
-	"deepseek/deepseek-chat":       {0.14, 0.28},
-	"meta-llama/llama-4-maverick":  {0.20, 0.60},
-	"x-ai/grok-4.1-fast":          {0.20, 0.50},
-	"minimax/minimax-m2.5":         {0.10, 1.10},
-	"deepseek/deepseek-r1":         {0.55, 2.19},
-	"google/gemini-2.5-pro":        {1.25, 10.00},
-	"anthropic/claude-sonnet-4":    {3.00, 15.00},
-	"qwen/qwen-3-235b":            {0.20, 1.20},
+	"google/gemini-2.5-flash":         {0.15, 0.60},
+	"google/gemini-3-flash-preview":   {0.15, 0.60},  // Preview pricing, may change
+	"deepseek/deepseek-chat":          {0.14, 0.28},
+	"deepseek/deepseek-v3.2":          {0.14, 0.28},  // Same tier as v3
+	"meta-llama/llama-4-maverick":     {0.20, 0.60},
+	"x-ai/grok-4.1-fast":             {0.20, 0.50},
+	"minimax/minimax-m2.5":            {0.10, 1.10},
+	"deepseek/deepseek-r1":            {0.55, 2.19},
+	"google/gemini-2.5-pro":           {1.25, 10.00},
+	"anthropic/claude-sonnet-4":       {3.00, 15.00},
+	"qwen/qwen-3-235b":               {0.20, 1.20},
+	"openai/gpt-oss-120b":             {0, 0},         // Preview/free
+	"openai/gpt-oss-safeguard-20b":    {0, 0},         // Preview/free
 }
 
 // BenchResult holds one model × preset test result.
