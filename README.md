@@ -51,13 +51,50 @@ Cortex says: **bring everything.**
 ### Install
 
 ```bash
-# Go install
+# Go install (if you have Go 1.24+)
 go install github.com/hurttlocker/cortex/cmd/cortex@latest
 
-# Or download the binary
-curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-$(uname -s)-$(uname -m) -o cortex
-chmod +x cortex && sudo mv cortex /usr/local/bin/
+# Or download a prebuilt binary
+# macOS (Apple Silicon)
+curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-darwin-arm64.tar.gz | tar xz
+sudo mv cortex /usr/local/bin/
+
+# macOS (Intel)
+curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-darwin-amd64.tar.gz | tar xz
+sudo mv cortex /usr/local/bin/
+
+# Linux (x86_64)
+curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-linux-amd64.tar.gz | tar xz
+sudo mv cortex /usr/local/bin/
 ```
+
+### Use with Claude Code (MCP)
+
+```bash
+# Import your notes, then wire it up — that's it
+cortex import ~/my-notes/ --recursive
+claude mcp add cortex -- cortex mcp
+```
+
+Claude Code now has access to `cortex_search`, `cortex_import`, `cortex_stats`, `cortex_facts`, and `cortex_stale` as tools.
+
+<details>
+<summary>Claude Desktop / Cursor setup</summary>
+
+Add to your MCP config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "cortex": {
+      "command": "cortex",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+</details>
 
 ### Import → Search → Observe
 
@@ -350,7 +387,7 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 ## 🗺️ Roadmap
 
 ### ✅ Phase 1 — Foundation *(Complete)*
-**All 7 PRDs delivered** (13,100 lines of code, 6,446 lines of tests, 225 test functions):
+**All 7 PRDs delivered** (14,000+ lines of code, 6,800+ lines of tests, 234 test functions):
 - **Storage** (PRD-001): SQLite + FTS5 foundation
 - **Import** (PRD-002): Multi-format ingestion (Markdown, JSON, YAML, CSV, plain text) with quality filters
 - **Extraction** (PRD-003): Rule-based fact extraction with subject inference from section headers + filenames; optional LLM-assist
@@ -360,9 +397,9 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 - **LLM-assist** (PRD-007): Optional LLM integration for enhanced extraction
 - **Data integrity**: FTS ghost cleanup on soft-delete, import garbage filtering, `cortex cleanup` command
 
-### 🚧 Phase 2 — Distribution & Intelligence *(Up Next)*
-- **🔥 MCP Server**: Model Context Protocol server — plug Cortex into Claude, Cursor, OpenClaw, or any MCP-compatible client
-- **Goreleaser CI**: Automated cross-platform binary builds on every tag
+### 🚧 Phase 2 — Distribution & Intelligence *(In Progress)*
+- ✅ **MCP Server**: Model Context Protocol server — plug Cortex into Claude Code, Claude Desktop, Cursor, OpenClaw, or any MCP-compatible client ([#22](https://github.com/hurttlocker/cortex/issues/22))
+- ✅ **Goreleaser CI**: Automated cross-platform binary builds on every tag ([#23](https://github.com/hurttlocker/cortex/issues/23))
 - **Activate Confidence Decay**: Make Ebbinghaus curve operational (facts lose confidence over time if not reinforced)
 - **`cortex reimport --embed`**: One command to rebuild entire knowledge base
 - **Web Dashboard**: Browser-based memory exploration and management

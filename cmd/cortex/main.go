@@ -19,7 +19,8 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-const version = "0.1.3"
+// version is set by goreleaser via ldflags at build time.
+var version = "0.1.3"
 
 var (
 	globalDBPath  string
@@ -999,8 +1000,9 @@ Resources:
 	defer s.Close()
 
 	mcpCfg := cortexmcp.ServerConfig{
-		Store:  s,
-		DBPath: getDBPath(),
+		Store:   s,
+		DBPath:  getDBPath(),
+		Version: version,
 	}
 
 	// Wire up embedder if requested

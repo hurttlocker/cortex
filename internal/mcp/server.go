@@ -24,14 +24,20 @@ import (
 type ServerConfig struct {
 	Store    store.Store
 	DBPath   string
+	Version  string         // version string for MCP server info
 	Embedder embed.Embedder // optional, for semantic/hybrid search
 }
 
 // NewServer creates a configured MCP server with all Cortex tools and resources.
 func NewServer(cfg ServerConfig) *server.MCPServer {
+	ver := cfg.Version
+	if ver == "" {
+		ver = "dev"
+	}
+
 	s := server.NewMCPServer(
 		"Cortex",
-		"0.1.3",
+		ver,
 		server.WithToolCapabilities(false),
 		server.WithResourceCapabilities(true, false),
 	)

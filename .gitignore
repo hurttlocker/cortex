@@ -32,3 +32,4 @@ Thumbs.db
 *.onnx
 models/
 dist-v0.1.3/
+dist/

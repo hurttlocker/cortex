@@ -1,0 +1,84 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: cortex
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: cortex
+    main: ./cmd/cortex/
+    binary: cortex
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: "cortex-{{ .Os }}-{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  github:
+    owner: hurttlocker
+    name: cortex
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
+  header: |
+    ## Cortex v{{.Version}}
+
+    Import-first, observable memory layer for AI agents.
+
+    ### Quick Install
+    ```bash
+    # macOS (Apple Silicon)
+    curl -sSL https://github.com/hurttlocker/cortex/releases/download/v{{.Version}}/cortex-darwin-arm64.tar.gz | tar xz
+    sudo mv cortex /usr/local/bin/
+
+    # macOS (Intel)
+    curl -sSL https://github.com/hurttlocker/cortex/releases/download/v{{.Version}}/cortex-darwin-amd64.tar.gz | tar xz
+    sudo mv cortex /usr/local/bin/
+
+    # Linux (x86_64)
+    curl -sSL https://github.com/hurttlocker/cortex/releases/download/v{{.Version}}/cortex-linux-amd64.tar.gz | tar xz
+    sudo mv cortex /usr/local/bin/
+    ```
+
+    ### MCP Setup (Claude Code)
+    ```bash
+    cortex import ~/my-notes/ --recursive
+    claude mcp add cortex -- cortex mcp
+    ```
