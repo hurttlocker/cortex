@@ -69,6 +69,24 @@ interface CortexStats {
   };
 }
 
+/** Structured metadata attached to memories (Issue #30). */
+interface CortexMetadata {
+  session_key?: string;
+  channel?: string;
+  channel_id?: string;
+  channel_name?: string;
+  agent_id?: string;
+  agent_name?: string;
+  model?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  message_count?: number;
+  surface?: string;
+  chat_type?: string;
+  timestamp_start?: string;
+  timestamp_end?: string;
+}
+
 // ============================================================================
 // Config Parser
 // ============================================================================
@@ -152,7 +170,7 @@ class CortexCLI {
     }
   }
 
-  async importText(text: string, source: string, extract = true): Promise<void> {
+  async importText(text: string, source: string, extract = true, metadata?: CortexMetadata): Promise<void> {
     // Write text to a temp file, import it, then clean up
     const tmpDir = await mkdtemp(join(tmpdir(), "cortex-capture-"));
     const tmpFile = join(tmpDir, `${source}.md`);
@@ -161,6 +179,21 @@ class CortexCLI {
       await writeFile(tmpFile, text, "utf-8");
       const args = ["import", tmpFile];
       if (extract) args.push("--extract");
+
+      // Attach structured metadata if provided (Issue #30)
+      if (metadata) {
+        // Strip undefined/null values for clean JSON
+        const clean: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(metadata)) {
+          if (v !== undefined && v !== null && v !== "" && v !== 0) {
+            clean[k] = v;
+          }
+        }
+        if (Object.keys(clean).length > 0) {
+          args.push("--metadata", JSON.stringify(clean));
+        }
+      }
+
       await this.exec(args, 60_000);
     } finally {
       try {
@@ -332,14 +365,24 @@ const cortexPlugin = {
           },
           required: ["text"],
         },
-        async execute(_toolCallId, params) {
+        async execute(_toolCallId, params, context) {
           const { text, source = "manual", extract = true } = params as {
             text: string;
             source?: string;
             extract?: boolean;
           };
 
-          await cli.importText(text, source, extract);
+          // Build metadata from tool call context (Issue #30)
+          const ctx = (context ?? {}) as Record<string, unknown>;
+          const metadata: CortexMetadata = {
+            timestamp_start: new Date().toISOString(),
+          };
+          if (typeof ctx.sessionKey === "string") metadata.session_key = ctx.sessionKey;
+          if (typeof ctx.channel === "string") metadata.channel = ctx.channel;
+          if (typeof ctx.agentId === "string") metadata.agent_id = ctx.agentId;
+          if (typeof ctx.model === "string") metadata.model = ctx.model;
+
+          await cli.importText(text, source, extract, metadata);
 
           return {
             content: [{ type: "text", text: `Stored in Cortex: "${text.slice(0, 100)}..."${extract ? " (facts extracted)" : ""}` }],
@@ -510,6 +553,7 @@ const cortexPlugin = {
           // Extract user and assistant messages from this turn
           let userText = "";
           let assistantText = "";
+          let messageCount = 0;
 
           for (const msg of event.messages) {
             if (!msg || typeof msg !== "object") continue;
@@ -529,25 +573,69 @@ const cortexPlugin = {
 
             if (role === "user" && shouldCapture(text, cfg.captureMaxChars)) {
               userText = text;
+              messageCount++;
             } else if (role === "assistant" && text.length > 20) {
               assistantText = text;
+              messageCount++;
             }
           }
 
           if (!userText && !assistantText) return;
 
+          // Build metadata from session context (Issue #30)
+          // OpenClaw's agent_end event exposes session info that we capture
+          const ev = event as Record<string, unknown>;
+          const metadata: CortexMetadata = {
+            timestamp_start: new Date().toISOString(),
+            message_count: messageCount,
+          };
+
+          // Session key (e.g. "agent:main:main", "agent:sage:main")
+          if (typeof ev.sessionKey === "string") metadata.session_key = ev.sessionKey;
+          else if (typeof ev.session_key === "string") metadata.session_key = ev.session_key;
+
+          // Channel (e.g. "discord", "telegram", "signal")
+          if (typeof ev.channel === "string") metadata.channel = ev.channel;
+          if (typeof ev.channelId === "string") metadata.channel_id = ev.channelId;
+          else if (typeof ev.channel_id === "string") metadata.channel_id = ev.channel_id;
+          if (typeof ev.channelName === "string") metadata.channel_name = ev.channelName;
+          else if (typeof ev.channel_name === "string") metadata.channel_name = ev.channel_name;
+
+          // Agent info
+          if (typeof ev.agentId === "string") metadata.agent_id = ev.agentId;
+          else if (typeof ev.agent_id === "string") metadata.agent_id = ev.agent_id;
+          if (typeof ev.agentName === "string") metadata.agent_name = ev.agentName;
+          else if (typeof ev.agent_name === "string") metadata.agent_name = ev.agent_name;
+
+          // Model
+          if (typeof ev.model === "string") metadata.model = ev.model;
+
+          // Token usage
+          if (typeof ev.inputTokens === "number") metadata.input_tokens = ev.inputTokens;
+          else if (typeof ev.input_tokens === "number") metadata.input_tokens = ev.input_tokens;
+          if (typeof ev.outputTokens === "number") metadata.output_tokens = ev.outputTokens;
+          else if (typeof ev.output_tokens === "number") metadata.output_tokens = ev.output_tokens;
+
+          // Surface and chat type
+          if (typeof ev.surface === "string") metadata.surface = ev.surface;
+          if (typeof ev.chatType === "string") metadata.chat_type = ev.chatType;
+          else if (typeof ev.chat_type === "string") metadata.chat_type = ev.chat_type;
+
           // Format the exchange
           const exchange = formatCapturedExchange(
             userText || "(no user message)",
             assistantText || "(no assistant message)",
-            (event as any).channel,
+            metadata.channel,
           );
 
-          // Import into Cortex with fact extraction
-          await cli.importText(exchange, "auto-capture", cfg.extractFacts);
+          // Import into Cortex with fact extraction + metadata
+          await cli.importText(exchange, "auto-capture", cfg.extractFacts, metadata);
 
+          const metaFields = Object.keys(metadata).filter(
+            (k) => metadata[k as keyof CortexMetadata] !== undefined,
+          ).length;
           api.logger.info(
-            `cortex: auto-captured exchange (${userText.length + assistantText.length} chars, extract: ${cfg.extractFacts})`,
+            `cortex: auto-captured exchange (${userText.length + assistantText.length} chars, ${metaFields} metadata fields, extract: ${cfg.extractFacts})`,
           );
         } catch (err: any) {
           api.logger.warn(`cortex: auto-capture failed: ${err.message}`);

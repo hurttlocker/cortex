@@ -184,7 +184,7 @@ func getStoreConfig() store.StoreConfig {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--project <name>] [--auto-tag] [--llm <provider/model>] [--embed <provider/model>]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--project <name>] [--auto-tag] [--metadata <json>] [--llm <provider/model>] [--embed <provider/model>]")
 	}
 
 	// Parse flags
@@ -415,7 +415,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--json]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--json] [--agent <id>] [--channel <name>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 
 	searchMode, err := search.ParseMode(mode)

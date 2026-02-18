@@ -215,6 +215,23 @@ cortex search "deployment" --mode hybrid --embed ollama/nomic-embed-text       #
 
 Embedding is provider-agnostic: Ollama (local, free), OpenAI, DeepSeek, OpenRouter, or any custom endpoint. BM25 search works with zero setup — no embeddings needed.
 
+### 📋 Metadata-Enriched Capture — Know Who Said What, Where
+
+Every memory can carry structured metadata: which agent created it, what channel, which model, token usage, and timestamps. This enables precise queries across your entire memory:
+
+```bash
+# Import with metadata
+cortex import notes.md --metadata '{"agent_id":"sage","channel":"discord","model":"sonnet-4.5"}'
+
+# Search with metadata filters
+cortex search "trading analysis" --agent mister        # Only Mister's memories
+cortex search "research report" --channel telegram     # Only from Telegram
+cortex search "decisions" --after 2026-02-15           # Only recent
+cortex search "anything" --show-metadata               # See agent/channel/model in output
+```
+
+The OpenClaw plugin automatically captures session context on every conversation — agent ID, channel, model, token usage — with zero configuration. Over time, your memory becomes a structured knowledge graph of *who knew what, when, and where*.
+
 ### 📉 Confidence Decay — Memory That Fades Like Yours
 
 Inspired by [Ebbinghaus's forgetting curve](https://en.wikipedia.org/wiki/Forgetting_curve) from cognitive science. Facts decay over time unless reinforced — just like human memory.
