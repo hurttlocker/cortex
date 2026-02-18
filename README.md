@@ -284,7 +284,7 @@ Take your memory to any other tool, platform, or agent framework. No lock-in. Ev
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         cortex CLI                              │
-│   import · search · list · export · stats · stale · conflicts   │
+│  import · reimport · search · reinforce · stats · stale · mcp   │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
         ┌──────────────────┼──────────────────┐
@@ -418,7 +418,7 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 ## 🗺️ Roadmap
 
 ### ✅ Phase 1 — Foundation *(Complete)*
-**All 7 PRDs delivered** (14,000+ lines of code, 6,800+ lines of tests, 234 test functions):
+**All 7 PRDs delivered** (14,000+ lines of code, 6,800+ lines of tests, 270 test functions):
 - **Storage** (PRD-001): SQLite + FTS5 foundation
 - **Import** (PRD-002): Multi-format ingestion (Markdown, JSON, YAML, CSV, plain text) with quality filters
 - **Extraction** (PRD-003): Rule-based fact extraction with subject inference from section headers + filenames; optional LLM-assist
@@ -448,7 +448,7 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 - **Graph Memory Layer**: Relationship-aware memory architecture
 - **HN / Reddit Launch**: Community launch once Phase 2 MCP server is ready
 
-### Current Open Issues (v0.1.3)
+### Current Open Issues (v0.1.7)
 1. **O(N) brute-force semantic search**: Loads all embeddings into RAM — needs ANN index at scale ([#18](https://github.com/hurttlocker/cortex/issues/18))
 2. **No multi-agent conflict resolution**: Conflict detection works, but no merge/resolution workflow ([#14](https://github.com/hurttlocker/cortex/issues/14))
 
