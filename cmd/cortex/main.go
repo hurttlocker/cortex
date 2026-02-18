@@ -8,12 +8,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/ingest"
 	cortexmcp "github.com/hurttlocker/cortex/internal/mcp"
 	"github.com/hurttlocker/cortex/internal/observe"
+	"github.com/hurttlocker/cortex/internal/reason"
 	"github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
 	"github.com/mark3labs/mcp-go/server"
@@ -105,6 +107,16 @@ func main() {
 		}
 	case "tag":
 		if err := runTag(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "reason":
+		if err := runReason(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "bench":
+		if err := runBench(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -2015,6 +2027,296 @@ func formatBytes(b int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
+func runReason(args []string) error {
+	// Parse flags
+	var queryParts []string
+	presetName := ""
+	modelFlag := ""
+	projectFlag := ""
+	maxTokens := 0
+	maxContext := 8000
+	jsonOutput := false
+	embedFlag := ""
+	listPresets := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--preset" && i+1 < len(args):
+			i++
+			presetName = args[i]
+		case strings.HasPrefix(args[i], "--preset="):
+			presetName = strings.TrimPrefix(args[i], "--preset=")
+		case args[i] == "--model" && i+1 < len(args):
+			i++
+			modelFlag = args[i]
+		case strings.HasPrefix(args[i], "--model="):
+			modelFlag = strings.TrimPrefix(args[i], "--model=")
+		case args[i] == "--project" && i+1 < len(args):
+			i++
+			projectFlag = args[i]
+		case strings.HasPrefix(args[i], "--project="):
+			projectFlag = strings.TrimPrefix(args[i], "--project=")
+		case args[i] == "--max-tokens" && i+1 < len(args):
+			i++
+			if v, err := strconv.Atoi(args[i]); err == nil {
+				maxTokens = v
+			}
+		case args[i] == "--max-context" && i+1 < len(args):
+			i++
+			if v, err := strconv.Atoi(args[i]); err == nil {
+				maxContext = v
+			}
+		case args[i] == "--embed" && i+1 < len(args):
+			i++
+			embedFlag = args[i]
+		case strings.HasPrefix(args[i], "--embed="):
+			embedFlag = strings.TrimPrefix(args[i], "--embed=")
+		case args[i] == "--json":
+			jsonOutput = true
+		case args[i] == "--list":
+			listPresets = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		default:
+			queryParts = append(queryParts, args[i])
+		}
+	}
+
+	// Handle --list
+	if listPresets {
+		configDir := getConfigDir()
+		presets := reason.ListPresets(configDir)
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(presets)
+		}
+		fmt.Println("Available presets:")
+		for _, p := range presets {
+			fmt.Printf("  %-20s %s\n", p.Name, p.Description)
+		}
+		return nil
+	}
+
+	query := strings.Join(queryParts, " ")
+	if query == "" && presetName == "" {
+		return fmt.Errorf("usage: cortex reason <query> [--preset <name>] [--model <provider/model>] [--project <name>] [--list]")
+	}
+
+	// Default model: gemini-2.5-flash on OpenRouter (sub-second, cheapest quality option)
+	// Falls back to phi4-mini local if no OPENROUTER_API_KEY set
+	if modelFlag == "" {
+		if os.Getenv("OPENROUTER_API_KEY") != "" {
+			modelFlag = "google/gemini-2.5-flash"
+		} else {
+			modelFlag = "phi4-mini"
+		}
+	}
+
+	// Parse provider/model
+	provider, model := reason.ParseProviderModel(modelFlag)
+
+	// Create LLM client
+	llm, err := reason.NewLLM(reason.LLMConfig{
+		Provider: provider,
+		Model:    model,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Open store
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	// Create search engine
+	var searchEngine *search.Engine
+	if embedFlag != "" {
+		cfg, err := embed.ParseEmbedFlag(embedFlag)
+		if err != nil {
+			return fmt.Errorf("parsing embed provider: %w", err)
+		}
+		client, err := embed.NewClient(cfg)
+		if err != nil {
+			return fmt.Errorf("creating embedder: %w", err)
+		}
+		searchEngine = search.NewEngineWithEmbedder(s, client)
+	} else {
+		searchEngine = search.NewEngine(s)
+	}
+	configDir := getConfigDir()
+
+	// Create reason engine
+	engine := reason.NewEngine(reason.EngineConfig{
+		SearchEngine: searchEngine,
+		Store:        s,
+		LLM:         llm,
+		ConfigDir:    configDir,
+	})
+
+	// Run reasoning
+	ctx := context.Background()
+	result, err := engine.Reason(ctx, reason.ReasonOptions{
+		Query:      query,
+		Preset:     presetName,
+		Project:    projectFlag,
+		MaxTokens:  maxTokens,
+		MaxContext:  maxContext,
+		JSONOutput: jsonOutput,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Output
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(result)
+	}
+
+	// TTY output
+	fmt.Println(result.Content)
+	fmt.Println()
+	fmt.Printf("─── %s/%s | %d memories, %d facts | search %s, llm %s | %d→%d tokens ───\n",
+		result.Provider, result.Model,
+		result.MemoriesUsed, result.FactsUsed,
+		result.SearchTime.Round(time.Millisecond),
+		result.LLMTime.Round(time.Millisecond),
+		result.TokensIn, result.TokensOut,
+	)
+
+	return nil
+}
+
+func runBench(args []string) error {
+	embedFlag := ""
+	includeLocal := false
+	jsonOutput := false
+	outputFile := ""
+	var customModels []string
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--embed" && i+1 < len(args):
+			i++
+			embedFlag = args[i]
+		case strings.HasPrefix(args[i], "--embed="):
+			embedFlag = strings.TrimPrefix(args[i], "--embed=")
+		case args[i] == "--local":
+			includeLocal = true
+		case args[i] == "--json":
+			jsonOutput = true
+		case args[i] == "--output" && i+1 < len(args):
+			i++
+			outputFile = args[i]
+		case strings.HasPrefix(args[i], "--output="):
+			outputFile = strings.TrimPrefix(args[i], "--output=")
+		case args[i] == "--models" && i+1 < len(args):
+			i++
+			customModels = strings.Split(args[i], ",")
+		case strings.HasPrefix(args[i], "--models="):
+			customModels = strings.Split(strings.TrimPrefix(args[i], "--models="), ",")
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s\nUsage: cortex bench [--embed <provider/model>] [--local] [--models m1,m2] [--output file.md] [--json]", args[i])
+		}
+	}
+
+	// Open store
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	// Create search engine
+	var searchEngine *search.Engine
+	if embedFlag != "" {
+		cfg, err := embed.ParseEmbedFlag(embedFlag)
+		if err != nil {
+			return fmt.Errorf("parsing embed provider: %w", err)
+		}
+		client, err := embed.NewClient(cfg)
+		if err != nil {
+			return fmt.Errorf("creating embedder: %w", err)
+		}
+		searchEngine = search.NewEngineWithEmbedder(s, client)
+	} else {
+		searchEngine = search.NewEngine(s)
+	}
+
+	// Create a placeholder LLM (bench creates its own per model)
+	placeholderLLM, _ := reason.NewLLM(reason.LLMConfig{Provider: "ollama", Model: "phi4-mini"})
+
+	engine := reason.NewEngine(reason.EngineConfig{
+		SearchEngine: searchEngine,
+		Store:        s,
+		LLM:          placeholderLLM,
+		ConfigDir:    getConfigDir(),
+	})
+
+	// Build model list
+	var models []reason.BenchModel
+	if len(customModels) > 0 {
+		for _, m := range customModels {
+			m = strings.TrimSpace(m)
+			provider, model := reason.ParseProviderModel(m)
+			models = append(models, reason.BenchModel{
+				Label:    m,
+				Provider: provider,
+				Model:    model,
+			})
+		}
+	}
+
+	fmt.Println("🧪 Cortex Reason Benchmark")
+	fmt.Println("─────────────────────────")
+
+	opts := reason.BenchOptions{
+		Models:       models, // nil = defaults
+		IncludeLocal: includeLocal,
+		MaxContext:   8000,
+		ProgressFn: func(model, preset string, i, total int) {
+			fmt.Printf("  [%d/%d] %s × %s...\n", i, total, model, preset)
+		},
+	}
+
+	ctx := context.Background()
+	report, err := engine.RunBenchmark(ctx, opts)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+
+	// Markdown output
+	md := report.FormatMarkdown()
+	fmt.Println()
+	fmt.Println(md)
+
+	// Save to file if requested
+	if outputFile != "" {
+		if err := os.WriteFile(outputFile, []byte(md), 0644); err != nil {
+			return fmt.Errorf("writing output: %w", err)
+		}
+		fmt.Printf("📄 Report saved to %s\n", outputFile)
+	}
+
+	return nil
+}
+
+func getConfigDir() string {
+	home, _ := os.UserHomeDir()
+	return home + "/.cortex"
+}
+
 func runProjects(args []string) error {
 	jsonOutput := false
 	for _, arg := range args {
@@ -2218,6 +2520,8 @@ Commands:
   stale               Find outdated memory entries
   conflicts           Detect contradictory facts
   cleanup             Remove garbage memories and headless facts
+  reason <query>      LLM reasoning over memories (search → prompt → analyze)
+  bench               Benchmark LLM models for reason (speed, cost, quality)
   projects            List all project tags with memory/fact counts
   tag                 Tag memories by project (--project, --source, --id, --auto)
   mcp                 Start MCP (Model Context Protocol) server
