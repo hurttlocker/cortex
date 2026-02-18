@@ -12,9 +12,11 @@ import (
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/ingest"
+	cortexmcp "github.com/hurttlocker/cortex/internal/mcp"
 	"github.com/hurttlocker/cortex/internal/observe"
 	"github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
+	"github.com/mark3labs/mcp-go/server"
 )
 
 const version = "0.1.3"
@@ -81,6 +83,11 @@ func main() {
 		}
 	case "cleanup":
 		if err := runCleanup(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "mcp":
+		if err := runMCP(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -933,6 +940,96 @@ func runCleanup(args []string) error {
 	return nil
 }
 
+func runMCP(args []string) error {
+	var port int
+	var embedModel string
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--port" && i+1 < len(args):
+			p, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				return fmt.Errorf("invalid port: %s", args[i+1])
+			}
+			port = p
+			i++
+		case strings.HasPrefix(args[i], "--port="):
+			p, err := strconv.Atoi(strings.TrimPrefix(args[i], "--port="))
+			if err != nil {
+				return fmt.Errorf("invalid port: %s", strings.TrimPrefix(args[i], "--port="))
+			}
+			port = p
+		case args[i] == "--embed" && i+1 < len(args):
+			embedModel = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--embed="):
+			embedModel = strings.TrimPrefix(args[i], "--embed=")
+		case args[i] == "--help" || args[i] == "-h":
+			fmt.Println(`cortex mcp — Start Model Context Protocol server
+
+Usage:
+  cortex mcp                         Start MCP server (stdio transport)
+  cortex mcp --port 8080             Start MCP server (HTTP+SSE transport)
+
+Flags:
+  --port <N>                         HTTP+SSE port (default: stdio)
+  --embed <provider/model>           Enable semantic/hybrid search
+  -h, --help                         Show this help
+
+Tools exposed:
+  cortex_search    Hybrid search across memories
+  cortex_import    Add new memories from text
+  cortex_stats     Get memory statistics
+  cortex_facts     Query extracted facts
+  cortex_stale     Get stale facts
+
+Resources:
+  cortex://stats   Memory statistics
+  cortex://recent  Recently imported memories`)
+			return nil
+		default:
+			return fmt.Errorf("unknown argument: %s", args[i])
+		}
+	}
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	mcpCfg := cortexmcp.ServerConfig{
+		Store:  s,
+		DBPath: getDBPath(),
+	}
+
+	// Wire up embedder if requested
+	if embedModel != "" {
+		embedCfg, err := embed.NewEmbedConfig(embedModel)
+		if err != nil {
+			return fmt.Errorf("invalid embed model: %w", err)
+		}
+		embedder, err := embed.NewClient(embedCfg)
+		if err != nil {
+			return fmt.Errorf("creating embedder: %w", err)
+		}
+		mcpCfg.Embedder = embedder
+	}
+
+	mcpServer := cortexmcp.NewServer(mcpCfg)
+
+	if port > 0 {
+		// HTTP+SSE transport
+		sseServer := server.NewSSEServer(mcpServer)
+		addr := fmt.Sprintf(":%d", port)
+		fmt.Fprintf(os.Stderr, "Cortex MCP server listening on http://localhost%s/sse\n", addr)
+		return sseServer.Start(addr)
+	}
+
+	// Default: stdio transport
+	return server.ServeStdio(mcpServer)
+}
+
 func runEmbed(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: cortex embed <provider/model> [--batch-size N]")
@@ -1691,6 +1788,7 @@ Commands:
   export              Export the full memory store in different formats
   stale               Find outdated memory entries
   conflicts           Detect contradictory facts
+  mcp                 Start MCP (Model Context Protocol) server
   version             Print version
 
 Global Flags:
@@ -1731,11 +1829,17 @@ Export Flags:
 Stats Flags:
   --json              Force JSON output even in TTY
 
+MCP Flags:
+  --port <N>          Start HTTP+SSE transport on port (default: stdio)
+  --embed <provider/model> Enable semantic/hybrid search via embeddings
+
 Examples:
   cortex list --limit 50
   cortex list --facts --type kv
   cortex export --format markdown --output memories.md
   cortex --db ~/my-cortex.db list --source ~/notes.md
+  cortex mcp                          # Start MCP server (stdio, for Claude Desktop/Cursor)
+  cortex mcp --port 8080              # Start MCP server (HTTP+SSE)
 
 Documentation:
   https://github.com/hurttlocker/cortex
