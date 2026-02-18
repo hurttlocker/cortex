@@ -212,6 +212,7 @@ type Store interface {
 	GetFactsByType(ctx context.Context) (map[string]int, error)
 	GetFreshnessDistribution(ctx context.Context) (*Freshness, error)
 	GetAttributeConflicts(ctx context.Context) ([]Conflict, error)
+	GetAttributeConflictsLimit(ctx context.Context, limit int) ([]Conflict, error)
 
 	// Maintenance
 	Vacuum(ctx context.Context) error

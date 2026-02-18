@@ -202,7 +202,12 @@ func (e *Engine) GetStaleFacts(ctx context.Context, opts StaleOpts) ([]StaleFact
 
 // GetConflicts detects attribute conflicts between facts.
 func (e *Engine) GetConflicts(ctx context.Context) ([]Conflict, error) {
-	storeConflicts, err := e.store.GetAttributeConflicts(ctx)
+	return e.GetConflictsLimit(ctx, 100)
+}
+
+// GetConflictsLimit detects attribute conflicts with a configurable limit.
+func (e *Engine) GetConflictsLimit(ctx context.Context, limit int) ([]Conflict, error) {
+	storeConflicts, err := e.store.GetAttributeConflictsLimit(ctx, limit)
 	if err != nil {
 		return nil, fmt.Errorf("getting attribute conflicts: %w", err)
 	}

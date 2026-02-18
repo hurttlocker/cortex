@@ -611,17 +611,56 @@ func runStale(args []string) error {
 
 func runConflicts(args []string) error {
 	jsonOutput := false
+	resolveStrategy := ""
+	dryRun := false
+	limitFlag := 100
+	keepFlag := int64(0)
+	dropFlag := int64(0)
 
 	// Parse flags
-	for _, arg := range args {
-		switch arg {
-		case "--json":
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--json":
 			jsonOutput = true
-		default:
-			if strings.HasPrefix(arg, "-") {
-				return fmt.Errorf("unknown flag: %s", arg)
+		case args[i] == "--dry-run" || args[i] == "-n":
+			dryRun = true
+		case args[i] == "--resolve" && i+1 < len(args):
+			i++
+			resolveStrategy = args[i]
+		case strings.HasPrefix(args[i], "--resolve="):
+			resolveStrategy = strings.TrimPrefix(args[i], "--resolve=")
+		case args[i] == "--limit" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --limit: %s", args[i])
 			}
-			return fmt.Errorf("unexpected argument: %s", arg)
+			limitFlag = n
+		case strings.HasPrefix(args[i], "--limit="):
+			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--limit="))
+			if err != nil {
+				return fmt.Errorf("invalid --limit: %s", args[i])
+			}
+			limitFlag = n
+		case args[i] == "--keep" && i+1 < len(args):
+			i++
+			n, err := strconv.ParseInt(args[i], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid --keep: %s", args[i])
+			}
+			keepFlag = n
+		case args[i] == "--drop" && i+1 < len(args):
+			i++
+			n, err := strconv.ParseInt(args[i], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid --drop: %s", args[i])
+			}
+			dropFlag = n
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				return fmt.Errorf("unknown flag: %s", args[i])
+			}
+			return fmt.Errorf("unexpected argument: %s", args[i])
 		}
 	}
 
@@ -639,8 +678,67 @@ func runConflicts(args []string) error {
 		dbPath = store.DefaultDBPath
 	}
 	engine := observe.NewEngine(s, dbPath)
+	resolver := observe.NewResolver(s, engine)
 
-	conflicts, err := engine.GetConflicts(ctx)
+	// Manual resolution: --keep X --drop Y
+	if keepFlag > 0 && dropFlag > 0 {
+		res, err := resolver.ResolveByID(ctx, keepFlag, dropFlag)
+		if err != nil {
+			return fmt.Errorf("manual resolve: %w", err)
+		}
+		if jsonOutput || !isTTY() {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(res)
+		}
+		fmt.Printf("✅ Resolved: kept fact %d, suppressed fact %d\n", res.WinnerID, res.LoserID)
+		fmt.Printf("   %s\n", res.Reason)
+		return nil
+	}
+
+	// Auto-resolution with strategy
+	if resolveStrategy != "" {
+		strategy, err := observe.ParseStrategy(resolveStrategy)
+		if err != nil {
+			return err
+		}
+
+		batch, err := resolver.DetectAndResolve(ctx, strategy, dryRun)
+		if err != nil {
+			return fmt.Errorf("resolving conflicts: %w", err)
+		}
+
+		if jsonOutput || !isTTY() {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(batch)
+		}
+
+		prefix := ""
+		if dryRun {
+			prefix = "[DRY RUN] "
+		}
+		fmt.Printf("%sConflict Resolution: %s\n", prefix, strategy)
+		fmt.Printf("  Total:    %d\n", batch.Total)
+		fmt.Printf("  Resolved: %d\n", batch.Resolved)
+		fmt.Printf("  Skipped:  %d\n", batch.Skipped)
+		fmt.Printf("  Errors:   %d\n", batch.Errors)
+		fmt.Println()
+
+		for _, r := range batch.Results {
+			status := "✅"
+			if r.Winner == "manual" {
+				status = "🔍"
+			} else if !r.Applied && !dryRun {
+				status = "❌"
+			}
+			fmt.Printf("  %s %s.%s: %s\n", status, r.Conflict.Fact1.Subject, r.Conflict.Fact1.Predicate, r.Reason)
+		}
+		return nil
+	}
+
+	// Detection only (default)
+	conflicts, err := engine.GetConflictsLimit(ctx, limitFlag)
 	if err != nil {
 		return fmt.Errorf("getting conflicts: %w", err)
 	}

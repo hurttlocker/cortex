@@ -249,46 +249,105 @@ func (s *SQLiteStore) GetFreshnessDistribution(ctx context.Context) (*Freshness,
 }
 
 // GetAttributeConflicts detects facts with same subject+predicate but different objects.
+// Uses a two-phase approach to avoid O(N²) self-join timeout on large fact tables:
+// Phase 1: Find subject+predicate pairs with multiple distinct objects (fast GROUP BY)
+// Phase 2: Fetch the actual conflicting facts for those pairs
 func (s *SQLiteStore) GetAttributeConflicts(ctx context.Context) ([]Conflict, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT f1.id, f1.memory_id, f1.subject, f1.predicate, f1.object, f1.fact_type,
-		        f1.confidence, f1.decay_rate, f1.last_reinforced, f1.source_quote, f1.created_at,
-		        f2.id, f2.memory_id, f2.subject, f2.predicate, f2.object, f2.fact_type,
-		        f2.confidence, f2.decay_rate, f2.last_reinforced, f2.source_quote, f2.created_at
-		 FROM facts f1
-		 JOIN facts f2
-		   ON LOWER(f1.subject) = LOWER(f2.subject)
-		  AND LOWER(f1.predicate) = LOWER(f2.predicate)
-		  AND f1.object != f2.object
-		  AND f1.id < f2.id
-		 JOIN memories m1 ON f1.memory_id = m1.id AND m1.deleted_at IS NULL
-		 JOIN memories m2 ON f2.memory_id = m2.id AND m2.deleted_at IS NULL
-		 WHERE f1.subject != '' AND f1.subject IS NOT NULL
-		   AND f2.subject != '' AND f2.subject IS NOT NULL`,
+	return s.GetAttributeConflictsLimit(ctx, 100)
+}
+
+// GetAttributeConflictsLimit is like GetAttributeConflicts but with a configurable limit.
+func (s *SQLiteStore) GetAttributeConflictsLimit(ctx context.Context, limit int) ([]Conflict, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	// Phase 1: Find conflicting (subject, predicate) pairs efficiently.
+	// Only considers facts with confidence > 0 (skip already-resolved/suppressed facts).
+	pairRows, err := s.db.QueryContext(ctx,
+		`SELECT LOWER(f.subject), LOWER(f.predicate), COUNT(DISTINCT f.object) as obj_count
+		 FROM facts f
+		 JOIN memories m ON f.memory_id = m.id AND m.deleted_at IS NULL
+		 WHERE f.subject != '' AND f.subject IS NOT NULL
+		   AND f.confidence > 0
+		 GROUP BY LOWER(f.subject), LOWER(f.predicate)
+		 HAVING COUNT(DISTINCT f.object) > 1
+		 ORDER BY obj_count DESC
+		 LIMIT ?`, limit,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("querying attribute conflicts: %w", err)
+		return nil, fmt.Errorf("finding conflicting pairs: %w", err)
 	}
-	defer rows.Close()
 
+	type pair struct {
+		subject   string
+		predicate string
+	}
+	var pairs []pair
+	for pairRows.Next() {
+		var p pair
+		var cnt int
+		if err := pairRows.Scan(&p.subject, &p.predicate, &cnt); err != nil {
+			pairRows.Close()
+			return nil, fmt.Errorf("scanning pair: %w", err)
+		}
+		pairs = append(pairs, p)
+	}
+	pairRows.Close()
+	if err := pairRows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(pairs) == 0 {
+		return nil, nil
+	}
+
+	// Phase 2: For each conflicting pair, get the actual facts.
 	var conflicts []Conflict
-	for rows.Next() {
-		var f1, f2 Fact
-		if err := rows.Scan(
-			&f1.ID, &f1.MemoryID, &f1.Subject, &f1.Predicate, &f1.Object, &f1.FactType,
-			&f1.Confidence, &f1.DecayRate, &f1.LastReinforced, &f1.SourceQuote, &f1.CreatedAt,
-			&f2.ID, &f2.MemoryID, &f2.Subject, &f2.Predicate, &f2.Object, &f2.FactType,
-			&f2.Confidence, &f2.DecayRate, &f2.LastReinforced, &f2.SourceQuote, &f2.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scanning conflict row: %w", err)
+	for _, p := range pairs {
+		factRows, err := s.db.QueryContext(ctx,
+			`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type,
+			        f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at
+			 FROM facts f
+			 JOIN memories m ON f.memory_id = m.id AND m.deleted_at IS NULL
+			 WHERE LOWER(f.subject) = ? AND LOWER(f.predicate) = ?
+			   AND f.confidence > 0
+			 ORDER BY f.created_at DESC
+			 LIMIT 10`,
+			p.subject, p.predicate,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("fetching facts for pair: %w", err)
 		}
 
-		conflicts = append(conflicts, Conflict{
-			Fact1:        f1,
-			Fact2:        f2,
-			ConflictType: "attribute",
-			Similarity:   1.0, // Exact subject+predicate match
-		})
+		var facts []Fact
+		for factRows.Next() {
+			var f Fact
+			if err := factRows.Scan(
+				&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object, &f.FactType,
+				&f.Confidence, &f.DecayRate, &f.LastReinforced, &f.SourceQuote, &f.CreatedAt,
+			); err != nil {
+				factRows.Close()
+				return nil, fmt.Errorf("scanning fact: %w", err)
+			}
+			facts = append(facts, f)
+		}
+		factRows.Close()
+
+		// Generate pairwise conflicts (first vs each other)
+		for i := 0; i < len(facts); i++ {
+			for j := i + 1; j < len(facts); j++ {
+				if facts[i].Object != facts[j].Object {
+					conflicts = append(conflicts, Conflict{
+						Fact1:        facts[i],
+						Fact2:        facts[j],
+						ConflictType: "attribute",
+						Similarity:   1.0,
+					})
+				}
+			}
+		}
 	}
-	return conflicts, rows.Err()
+
+	return conflicts, nil
 }
