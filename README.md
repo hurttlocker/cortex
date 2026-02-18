@@ -77,15 +77,15 @@ cortex embed ollama/nomic-embed-text --batch-size 10
 # 4. See what your agent actually knows
 cortex stats
 # {
-#   "memories": 1540,
-#   "facts": 8944, 
+#   "memories": 967,
+#   "facts": 5220, 
 #   "sources": 32,
-#   "storage_bytes": 4005888,
+#   "storage_bytes": 8306688,
 #   "avg_confidence": 0.86,
 #   "facts_by_type": {
-#     "identity": 197,
-#     "kv": 8455,
-#     "temporal": 292
+#     "identity": 234,
+#     "kv": 4619,
+#     "temporal": 367
 #   }
 # }
 
@@ -93,7 +93,10 @@ cortex stats
 cortex stale          # Facts fading from memory — reinforce or forget
 cortex conflicts      # Contradictions to resolve
 
-# 5. Export — take your memory anywhere
+# 5. Clean up garbage data
+cortex cleanup        # Purge short/numeric junk + headless facts
+
+# 6. Export — take your memory anywhere
 cortex export --format json > my-memory.json
 cortex export --format markdown > MEMORY-PORTABLE.md
 ```
@@ -129,7 +132,7 @@ cortex import chat.txt --llm ollama/gemma2:2b   # Optional LLM-assist for unstru
 |------|--------|----------|
 | **Keyword** | BM25 via SQLite FTS5 | Exact matches, boolean queries with AND→OR fallback |
 | **Semantic** | Embeddings via Ollama, OpenAI, or any provider | Finding related concepts without keyword overlap |
-| **Hybrid** (default) | Reciprocal Rank Fusion | Best of both — precision + recall |
+| **Hybrid** (default) | Weighted Score Fusion | Best of both — precision + recall |
 
 ```bash
 # Generate embeddings (one-time, runs locally via Ollama)
@@ -323,7 +326,7 @@ Cortex automatically chunks content for optimal search and embedding:
 
 ---
 
-## 📊 Search Benchmark (v0.1.2)
+## 📊 Search Benchmark (v0.1.3)
 
 Real-world benchmark on 967 memories from a production agent workspace. Embedding model: `nomic-embed-text` (768 dimensions) via Ollama.
 
@@ -347,40 +350,39 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 ## 🗺️ Roadmap
 
 ### ✅ Phase 1 — Foundation *(Complete)*
-**All 7 PRDs delivered** (10,122 lines of code, 4,896 lines of tests):
+**All 7 PRDs delivered** (13,100 lines of code, 6,446 lines of tests, 225 test functions):
 - **Storage** (PRD-001): SQLite + FTS5 foundation
-- **Import** (PRD-002): Multi-format ingestion (Markdown, JSON, YAML, CSV, plain text)
-- **Extraction** (PRD-003): Rule-based + optional LLM-assisted fact extraction
-- **Search** (PRD-004): Dual search engine (BM25 + semantic) with hybrid fusion
-- **CLI** (PRD-005): Full command-line interface with import/search/stats/export
+- **Import** (PRD-002): Multi-format ingestion (Markdown, JSON, YAML, CSV, plain text) with quality filters
+- **Extraction** (PRD-003): Rule-based fact extraction with subject inference from section headers + filenames; optional LLM-assist
+- **Search** (PRD-004): Dual search engine (BM25 + semantic) with Weighted Score Fusion hybrid
+- **CLI** (PRD-005): Full command-line interface with import/search/stats/export/cleanup
 - **Observability** (PRD-006): Memory stats, stale detection, conflict identification
 - **LLM-assist** (PRD-007): Optional LLM integration for enhanced extraction
+- **Data integrity**: FTS ghost cleanup on soft-delete, import garbage filtering, `cortex cleanup` command
 
-### 🚧 Phase 2 — Intelligence *(Next 6 Months)*
+### 🚧 Phase 2 — Distribution & Intelligence *(Up Next)*
+- **🔥 MCP Server**: Model Context Protocol server — plug Cortex into Claude, Cursor, OpenClaw, or any MCP-compatible client
+- **Goreleaser CI**: Automated cross-platform binary builds on every tag
+- **Activate Confidence Decay**: Make Ebbinghaus curve operational (facts lose confidence over time if not reinforced)
+- **`cortex reimport --embed`**: One command to rebuild entire knowledge base
 - **Web Dashboard**: Browser-based memory exploration and management
-- **MCP Server**: Model Context Protocol server for agent integrations
-- **Enhanced Observability**: Provenance chains, memory usage analytics
 - **Additional Importers**: PDF, DOCX, HTML support
-- **Search Quality Improvements**: Tuned hybrid ranking, query expansion
 
 ### 🔮 Phase 3 — Advanced Features
 - **Memory Lenses**: Context-aware memory filtering and boosting
 - **Differential Memory**: Version control for memory (diff, log, snapshot, restore)
-- **Scale Optimization**: Large-dataset performance improvements
+- **ANN Index**: Replace O(N) brute-force vector search with HNSW for 10K+ scale (#18)
 - **Plugin Ecosystem**: Custom importers and extractors
 
 ### 🌟 Phase 4 — Protocol & Community
 - **Cortex Memory Protocol (CMP)**: Standardized agent-memory interface
-- **Multi-agent Memory**: Scoped memory sharing between agents
+- **Multi-agent Memory**: Scoped memory sharing between agents (#14)
 - **Graph Memory Layer**: Relationship-aware memory architecture
+- **HN / Reddit Launch**: Community launch once Phase 2 MCP server is ready
 
-### Current Open Issues (v0.1.2)
-1. **Hybrid RRF tuning**: BM25 vs semantic weight balance needs refinement (#18)
-2. **O(N) brute-force semantic search**: Currently scans all embeddings — needs ANN index for large datasets (#18)
-3. **Embed integration tests**: Zero test coverage on embedding pipeline (#19)
-4. **CLI test coverage**: 0% — all testing is on internal packages (#20)
-5. **Soft-deleted FTS cleanup**: Deleted memories leave FTS ghosts (#10)
-6. **Multi-agent conflict resolution**: Concurrent writes from multiple agents (#14)
+### Current Open Issues (v0.1.3)
+1. **O(N) brute-force semantic search**: Loads all embeddings into RAM — needs ANN index at scale ([#18](https://github.com/hurttlocker/cortex/issues/18))
+2. **No multi-agent conflict resolution**: Conflict detection works, but no merge/resolution workflow ([#14](https://github.com/hurttlocker/cortex/issues/14))
 
 See [docs/RISKS.md](docs/RISKS.md) for detailed risk analysis and [docs/prd/](docs/prd/) for complete PRD specifications.
 

@@ -61,3 +61,17 @@ Every significant decision logged with rationale. This is the project's institut
 **Context:** Mem0 has $24M funding, 25K GitHub stars, and just launched an OpenClaw plugin. We cannot compete head-on.  
 **Decision:** Position as "the tool you use before and between memory providers." Import into Cortex, export to anything. Not "better Mem0" — a different tool entirely.  
 **Rationale:** Competing on features against a $24M company is suicide. Competing on portability and openness is a game they can't play because their business model requires lock-in.
+
+## ADR-008: Weighted Score Fusion over RRF for Hybrid Search
+**Date:** 2026-02-17  
+**Status:** Accepted  
+**Context:** Reciprocal Rank Fusion (RRF, k=60) was designed for large result sets. With only 5-15 candidates from each engine, all RRF scores compressed to 0.016-0.033 (indistinguishable).  
+**Decision:** Replace RRF with Weighted Score Fusion (WSF): α=0.3 BM25, 0.7 semantic, min-max normalization per engine. BM25 scores normalized via `tanh(|rank|/10)`.  
+**Rationale:** WSF produces meaningful score differentiation at small candidate counts. Hybrid now wins 4/6 real-world queries.
+
+## ADR-009: Subject Inference from Section Headers
+**Date:** 2026-02-17  
+**Status:** Accepted  
+**Context:** Rule-based fact extraction produced 10K+ facts with empty subjects, making conflict detection and provenance chains non-functional.  
+**Decision:** Infer subject from: (1) source section header path if available, (2) filename stem otherwise. Populated at extraction time via metadata passthrough.  
+**Rationale:** Section headers are the natural semantic context in markdown notes. "Wedding Planning > Vendor Contacts" is more meaningful than leaving subject empty. Filename is a reasonable fallback for flat files.
