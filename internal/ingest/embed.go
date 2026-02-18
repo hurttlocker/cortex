@@ -135,10 +135,13 @@ type batchResult struct {
 func (e *EmbedEngine) processBatch(ctx context.Context, memories []*store.Memory) (*batchResult, error) {
 	result := &batchResult{}
 
-	// Extract texts and memory IDs for batch embedding
+	// Extract texts with context enrichment (Issue #26).
+	// Prepend source file stem + section header to give the embedding model
+	// topic/source signal that raw chunk text may lack.
+	// Example: "[2026-02-18 > Cortex Audit] Conflicts query hanging..."
 	texts := make([]string, len(memories))
 	for i, memory := range memories {
-		texts[i] = memory.Content
+		texts[i] = store.EnrichedContent(memory.Content, memory.SourceFile, memory.SourceSection)
 	}
 
 	// Generate embeddings for batch

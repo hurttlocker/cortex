@@ -1413,11 +1413,12 @@ Resources:
 
 func runEmbed(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex embed <provider/model> [--batch-size N]")
+		return fmt.Errorf("usage: cortex embed <provider/model> [--batch-size N] [--force]")
 	}
 
 	embedFlag := args[0]
 	batchSize := 10 // Default: 10 for local models (Ollama), increase for API providers
+	forceReembed := false
 	for i := 1; i < len(args); i++ {
 		switch {
 		case args[i] == "--batch-size" && i+1 < len(args):
@@ -1425,6 +1426,8 @@ func runEmbed(args []string) error {
 			fmt.Sscanf(args[i], "%d", &batchSize)
 		case strings.HasPrefix(args[i], "--batch-size="):
 			fmt.Sscanf(strings.TrimPrefix(args[i], "--batch-size="), "%d", &batchSize)
+		case args[i] == "--force" || args[i] == "-f":
+			forceReembed = true
 		}
 	}
 
@@ -1436,6 +1439,17 @@ func runEmbed(args []string) error {
 	defer s.Close()
 
 	ctx := context.Background()
+
+	// If --force, delete all existing embeddings first so they get regenerated
+	// with context-enriched content (Issue #26).
+	if forceReembed {
+		fmt.Println("Force mode: deleting all existing embeddings for re-generation with context enrichment...")
+		result, err := s.DeleteAllEmbeddings(ctx)
+		if err != nil {
+			return fmt.Errorf("deleting embeddings: %w", err)
+		}
+		fmt.Printf("  Deleted %d existing embeddings\n", result)
+	}
 
 	// Configure embedder
 	embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
@@ -1457,7 +1471,11 @@ func runEmbed(args []string) error {
 	// Create embedding engine
 	embedEngine := ingest.NewEmbedEngine(s, embedder)
 
-	fmt.Println("Generating embeddings for all memories without embeddings...")
+	if forceReembed {
+		fmt.Println("Re-generating all embeddings with context-enriched content...")
+	} else {
+		fmt.Println("Generating embeddings for memories without embeddings...")
+	}
 
 	// Embed all memories without embeddings
 	opts := ingest.DefaultEmbedOptions()

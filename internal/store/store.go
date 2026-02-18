@@ -187,6 +187,7 @@ type Store interface {
 	// Embeddings
 	AddEmbedding(ctx context.Context, memoryID int64, vector []float32) error
 	GetEmbedding(ctx context.Context, memoryID int64) ([]float32, error)
+	DeleteAllEmbeddings(ctx context.Context) (int64, error)
 	ListMemoryIDsWithoutEmbeddings(ctx context.Context, limit int) ([]int64, error)
 	GetMemoriesByIDs(ctx context.Context, ids []int64) ([]*Memory, error)
 	GetEmbeddingDimensions(ctx context.Context) (int, error)

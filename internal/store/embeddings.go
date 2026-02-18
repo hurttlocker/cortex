@@ -229,6 +229,21 @@ func (s *SQLiteStore) GetMemoriesByIDs(ctx context.Context, ids []int64) ([]*Mem
 	return memories, rows.Err()
 }
 
+// DeleteAllEmbeddings removes all stored embeddings.
+// Used with --force to re-generate embeddings with context enrichment (Issue #26).
+// Returns the number of embeddings deleted.
+func (s *SQLiteStore) DeleteAllEmbeddings(ctx context.Context) (int64, error) {
+	result, err := s.db.ExecContext(ctx, "DELETE FROM embeddings")
+	if err != nil {
+		return 0, fmt.Errorf("deleting all embeddings: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("getting rows affected: %w", err)
+	}
+	return count, nil
+}
+
 // GetEmbeddingDimensions returns the dimensionality of stored embeddings.
 // Returns an error if no embeddings exist.
 func (s *SQLiteStore) GetEmbeddingDimensions(ctx context.Context) (int, error) {

@@ -162,6 +162,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating metadata column: %w", err)
 	}
 
+	// Schema evolution: multi-column FTS5 with source context (v0.2.0 — Issue #26)
+	if err := s.migrateFTSMultiColumn(); err != nil {
+		return fmt.Errorf("migrating FTS multi-column: %w", err)
+	}
+
 	return nil
 }
 
@@ -200,6 +205,104 @@ func (s *SQLiteStore) migrateProjectColumn() error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing project migration: %w", err)
 	}
+	return nil
+}
+
+// migrateFTSMultiColumn upgrades FTS5 from single-column (content only) to
+// multi-column (content + source_file + source_section) for Issue #26.
+//
+// This enables BM25 to match against section headers and filenames,
+// dramatically improving search quality for domain-specific queries.
+// Example: "cortex conflicts timeout" now matches chunks where "cortex"
+// appears in the section header even if the chunk body only says "timeout".
+//
+// The migration is idempotent: checks a meta key to avoid re-running.
+// After upgrading, existing FTS data is rebuilt from the memories table.
+func (s *SQLiteStore) migrateFTSMultiColumn() error {
+	// Check if already migrated
+	var val string
+	err := s.db.QueryRow("SELECT value FROM meta WHERE key = 'fts_multi_column'").Scan(&val)
+	if err == nil && val == "true" {
+		return nil // Already migrated
+	}
+
+	// Drop old triggers + FTS table, recreate with multi-column schema
+	stmts := []string{
+		// Drop old triggers
+		`DROP TRIGGER IF EXISTS memories_ai`,
+		`DROP TRIGGER IF EXISTS memories_ad`,
+		`DROP TRIGGER IF EXISTS memories_au`,
+
+		// Drop old single-column FTS table
+		`DROP TABLE IF EXISTS memories_fts`,
+
+		// Create new multi-column FTS table
+		// content=memories + content_rowid=id makes this a content-synced table
+		// Three columns: content (main text), source_file (path), source_section (header)
+		`CREATE VIRTUAL TABLE memories_fts USING fts5(
+			content,
+			source_file,
+			source_section,
+			content=memories,
+			content_rowid=id,
+			tokenize='porter unicode61'
+		)`,
+
+		// New triggers that populate all 3 FTS columns
+		`CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+			INSERT INTO memories_fts(rowid, content, source_file, source_section)
+			VALUES (new.id, new.content, COALESCE(new.source_file, ''), COALESCE(new.source_section, ''));
+		END`,
+
+		`CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+			INSERT INTO memories_fts(memories_fts, rowid, content, source_file, source_section)
+			VALUES('delete', old.id, old.content, COALESCE(old.source_file, ''), COALESCE(old.source_section, ''));
+		END`,
+
+		// Update trigger: delete old entry, insert new only if not soft-deleted
+		`CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+			INSERT INTO memories_fts(memories_fts, rowid, content, source_file, source_section)
+			VALUES('delete', old.id, old.content, COALESCE(old.source_file, ''), COALESCE(old.source_section, ''));
+			INSERT INTO memories_fts(rowid, content, source_file, source_section)
+				SELECT new.id, new.content, COALESCE(new.source_file, ''), COALESCE(new.source_section, '')
+				WHERE new.deleted_at IS NULL;
+		END`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("executing FTS migration %q: %w", truncate(stmt, 80), err)
+		}
+	}
+
+	// Rebuild FTS index from existing memories
+	result, err := s.db.Exec(`
+		INSERT INTO memories_fts(rowid, content, source_file, source_section)
+		SELECT id, content, COALESCE(source_file, ''), COALESCE(source_section, '')
+		FROM memories
+		WHERE deleted_at IS NULL
+	`)
+	if err != nil {
+		return fmt.Errorf("rebuilding FTS index: %w", err)
+	}
+	rebuilt, _ := result.RowsAffected()
+
+	// Mark migration as done
+	if _, err := s.db.Exec(
+		"INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_multi_column', 'true')",
+	); err != nil {
+		return fmt.Errorf("marking FTS migration complete: %w", err)
+	}
+
+	// Also remove the stale FTS ghost cleanup since we just rebuilt from scratch
+	if _, err := s.db.Exec(
+		"DELETE FROM memories_fts WHERE rowid IN (SELECT id FROM memories WHERE deleted_at IS NOT NULL)",
+	); err != nil {
+		// Non-fatal: ghost cleanup is best-effort
+		_ = err
+	}
+
+	fmt.Printf("  FTS multi-column migration complete: %d memories indexed with source context\n", rebuilt)
 	return nil
 }
 
