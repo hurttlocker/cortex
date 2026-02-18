@@ -39,7 +39,7 @@ func (s *SQLiteStore) Stats(ctx context.Context) (*StoreStats, error) {
 		dest  *int64
 	}{
 		{"SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL", &stats.MemoryCount},
-		{"SELECT COUNT(*) FROM facts", &stats.FactCount},
+		{"SELECT COUNT(*) FROM facts WHERE superseded_by IS NULL", &stats.FactCount},
 		{"SELECT COUNT(*) FROM embeddings", &stats.EmbeddingCount},
 		{"SELECT COUNT(*) FROM memory_events", &stats.EventCount},
 	}
@@ -171,7 +171,7 @@ func (s *SQLiteStore) GetSourceCount(ctx context.Context) (int, error) {
 func (s *SQLiteStore) GetAverageConfidence(ctx context.Context) (float64, error) {
 	var avg float64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(AVG(confidence), 0.0) FROM facts`,
+		`SELECT COALESCE(AVG(confidence), 0.0) FROM facts WHERE superseded_by IS NULL`,
 	).Scan(&avg)
 	if err != nil {
 		return 0, fmt.Errorf("getting average confidence: %w", err)
@@ -182,7 +182,7 @@ func (s *SQLiteStore) GetAverageConfidence(ctx context.Context) (float64, error)
 // GetFactsByType returns a distribution of facts grouped by type.
 func (s *SQLiteStore) GetFactsByType(ctx context.Context) (map[string]int, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT fact_type, COUNT(*) FROM facts GROUP BY fact_type ORDER BY COUNT(*) DESC`,
+		`SELECT fact_type, COUNT(*) FROM facts WHERE superseded_by IS NULL GROUP BY fact_type ORDER BY COUNT(*) DESC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("getting facts by type: %w", err)
@@ -253,28 +253,37 @@ func (s *SQLiteStore) GetFreshnessDistribution(ctx context.Context) (*Freshness,
 // Phase 1: Find subject+predicate pairs with multiple distinct objects (fast GROUP BY)
 // Phase 2: Fetch the actual conflicting facts for those pairs
 func (s *SQLiteStore) GetAttributeConflicts(ctx context.Context) ([]Conflict, error) {
-	return s.GetAttributeConflictsLimit(ctx, 100)
+	return s.GetAttributeConflictsLimitWithSuperseded(ctx, 100, false)
 }
 
 // GetAttributeConflictsLimit is like GetAttributeConflicts but with a configurable limit.
 func (s *SQLiteStore) GetAttributeConflictsLimit(ctx context.Context, limit int) ([]Conflict, error) {
+	return s.GetAttributeConflictsLimitWithSuperseded(ctx, limit, false)
+}
+
+// GetAttributeConflictsLimitWithSuperseded includes superseded facts when requested.
+func (s *SQLiteStore) GetAttributeConflictsLimitWithSuperseded(ctx context.Context, limit int, includeSuperseded bool) ([]Conflict, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 
-	// Phase 1: Find conflicting (subject, predicate) pairs efficiently.
-	// Only considers facts with confidence > 0 (skip already-resolved/suppressed facts).
-	pairRows, err := s.db.QueryContext(ctx,
-		`SELECT LOWER(f.subject), LOWER(f.predicate), COUNT(DISTINCT f.object) as obj_count
+	supersededClause := "AND f.superseded_by IS NULL"
+	if includeSuperseded {
+		supersededClause = ""
+	}
+
+	pairQuery := fmt.Sprintf(`SELECT LOWER(f.subject), LOWER(f.predicate), COUNT(DISTINCT f.object) as obj_count
 		 FROM facts f
 		 JOIN memories m ON f.memory_id = m.id AND m.deleted_at IS NULL
 		 WHERE f.subject != '' AND f.subject IS NOT NULL
 		   AND f.confidence > 0
+		   %s
 		 GROUP BY LOWER(f.subject), LOWER(f.predicate)
 		 HAVING COUNT(DISTINCT f.object) > 1
 		 ORDER BY obj_count DESC
-		 LIMIT ?`, limit,
-	)
+		 LIMIT ?`, supersededClause)
+
+	pairRows, err := s.db.QueryContext(ctx, pairQuery, limit)
 	if err != nil {
 		return nil, fmt.Errorf("finding conflicting pairs: %w", err)
 	}
@@ -302,20 +311,19 @@ func (s *SQLiteStore) GetAttributeConflictsLimit(ctx context.Context, limit int)
 		return nil, nil
 	}
 
-	// Phase 2: For each conflicting pair, get the actual facts.
 	var conflicts []Conflict
 	for _, p := range pairs {
-		factRows, err := s.db.QueryContext(ctx,
-			`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type,
-			        f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at
+		factQuery := fmt.Sprintf(`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type,
+			        f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.superseded_by
 			 FROM facts f
 			 JOIN memories m ON f.memory_id = m.id AND m.deleted_at IS NULL
 			 WHERE LOWER(f.subject) = ? AND LOWER(f.predicate) = ?
 			   AND f.confidence > 0
+			   %s
 			 ORDER BY f.created_at DESC
-			 LIMIT 10`,
-			p.subject, p.predicate,
-		)
+			 LIMIT 10`, supersededClause)
+
+		factRows, err := s.db.QueryContext(ctx, factQuery, p.subject, p.predicate)
 		if err != nil {
 			return nil, fmt.Errorf("fetching facts for pair: %w", err)
 		}
@@ -323,18 +331,22 @@ func (s *SQLiteStore) GetAttributeConflictsLimit(ctx context.Context, limit int)
 		var facts []Fact
 		for factRows.Next() {
 			var f Fact
+			var supersededBy sql.NullInt64
 			if err := factRows.Scan(
 				&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object, &f.FactType,
-				&f.Confidence, &f.DecayRate, &f.LastReinforced, &f.SourceQuote, &f.CreatedAt,
+				&f.Confidence, &f.DecayRate, &f.LastReinforced, &f.SourceQuote, &f.CreatedAt, &supersededBy,
 			); err != nil {
 				factRows.Close()
 				return nil, fmt.Errorf("scanning fact: %w", err)
+			}
+			if supersededBy.Valid {
+				v := supersededBy.Int64
+				f.SupersededBy = &v
 			}
 			facts = append(facts, f)
 		}
 		factRows.Close()
 
-		// Generate pairwise conflicts (first vs each other)
 		for i := 0; i < len(facts); i++ {
 			for j := i + 1; j < len(facts); j++ {
 				if facts[i].Object != facts[j].Object {

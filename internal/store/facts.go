@@ -43,18 +43,23 @@ func (s *SQLiteStore) AddFact(ctx context.Context, f *Fact) (int64, error) {
 // GetFact retrieves a fact by ID.
 func (s *SQLiteStore) GetFact(ctx context.Context, id int64) (*Fact, error) {
 	f := &Fact{}
+	var supersededBy sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at
+		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at, superseded_by
 		 FROM facts WHERE id = ?`, id,
 	).Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 		&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-		&f.SourceQuote, &f.CreatedAt)
+		&f.SourceQuote, &f.CreatedAt, &supersededBy)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("getting fact %d: %w", id, err)
+	}
+	if supersededBy.Valid {
+		v := supersededBy.Int64
+		f.SupersededBy = &v
 	}
 	return f, nil
 }
@@ -66,7 +71,7 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 	}
 
 	query := `SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type, 
-			         f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at
+			         f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.superseded_by
 		      FROM facts f`
 	args := []interface{}{}
 
@@ -75,6 +80,9 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 	if opts.FactType != "" {
 		where = append(where, "f.fact_type = ?")
 		args = append(args, opts.FactType)
+	}
+	if !opts.IncludeSuperseded {
+		where = append(where, "f.superseded_by IS NULL")
 	}
 	if opts.SourceFile != "" {
 		query += " JOIN memories m ON f.memory_id = m.id"
@@ -105,10 +113,15 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 	var facts []*Fact
 	for rows.Next() {
 		f := &Fact{}
+		var supersededBy sql.NullInt64
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt); err != nil {
+			&f.SourceQuote, &f.CreatedAt, &supersededBy); err != nil {
 			return nil, fmt.Errorf("scanning fact row: %w", err)
+		}
+		if supersededBy.Valid {
+			v := supersededBy.Int64
+			f.SupersededBy = &v
 		}
 		facts = append(facts, f)
 	}
@@ -154,8 +167,65 @@ func (s *SQLiteStore) ReinforceFact(ctx context.Context, id int64) error {
 	return nil
 }
 
-// GetFactsByMemoryIDs retrieves all facts linked to the given memory IDs.
+// SupersedeFact marks oldFactID as superseded by newFactID.
+// The old fact is preserved for audit history but excluded from active retrieval by default.
+func (s *SQLiteStore) SupersedeFact(ctx context.Context, oldFactID, newFactID int64, reason string) error {
+	if oldFactID <= 0 || newFactID <= 0 {
+		return fmt.Errorf("old and new fact IDs must be > 0")
+	}
+	if oldFactID == newFactID {
+		return fmt.Errorf("cannot supersede a fact with itself")
+	}
+
+	oldFact, err := s.GetFact(ctx, oldFactID)
+	if err != nil {
+		return err
+	}
+	if oldFact == nil {
+		return fmt.Errorf("old fact %d not found", oldFactID)
+	}
+	newFact, err := s.GetFact(ctx, newFactID)
+	if err != nil {
+		return err
+	}
+	if newFact == nil {
+		return fmt.Errorf("new fact %d not found", newFactID)
+	}
+
+	// Tombstone old fact: keep row, mark superseded_by, and lower confidence to avoid ranking leakage.
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE facts SET superseded_by = ?, confidence = 0.0 WHERE id = ?`,
+		newFactID, oldFactID,
+	); err != nil {
+		return fmt.Errorf("marking fact %d as superseded by %d: %w", oldFactID, newFactID, err)
+	}
+
+	if reason == "" {
+		reason = "superseded"
+	}
+	_ = s.LogEvent(ctx, &MemoryEvent{
+		EventType: "update",
+		FactID:    oldFactID,
+		OldValue:  fmt.Sprintf("active fact:%d", oldFactID),
+		NewValue:  fmt.Sprintf("superseded_by:%d reason:%s", newFactID, reason),
+		Source:    "supersede",
+	})
+
+	return nil
+}
+
+// GetFactsByMemoryIDs retrieves active (non-superseded) facts linked to the given memory IDs.
 func (s *SQLiteStore) GetFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) ([]*Fact, error) {
+	return s.getFactsByMemoryIDs(ctx, memoryIDs, false)
+}
+
+// GetFactsByMemoryIDsIncludingSuperseded returns all facts (active + superseded)
+// linked to the provided memory IDs.
+func (s *SQLiteStore) GetFactsByMemoryIDsIncludingSuperseded(ctx context.Context, memoryIDs []int64) ([]*Fact, error) {
+	return s.getFactsByMemoryIDs(ctx, memoryIDs, true)
+}
+
+func (s *SQLiteStore) getFactsByMemoryIDs(ctx context.Context, memoryIDs []int64, includeSuperseded bool) ([]*Fact, error) {
 	if len(memoryIDs) == 0 {
 		return nil, nil
 	}
@@ -168,10 +238,13 @@ func (s *SQLiteStore) GetFactsByMemoryIDs(ctx context.Context, memoryIDs []int64
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at
+		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at, superseded_by
 		 FROM facts WHERE memory_id IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
+	if !includeSuperseded {
+		query += " AND superseded_by IS NULL"
+	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -182,10 +255,15 @@ func (s *SQLiteStore) GetFactsByMemoryIDs(ctx context.Context, memoryIDs []int64
 	var facts []*Fact
 	for rows.Next() {
 		f := &Fact{}
+		var supersededBy sql.NullInt64
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt); err != nil {
+			&f.SourceQuote, &f.CreatedAt, &supersededBy); err != nil {
 			return nil, fmt.Errorf("scanning fact: %w", err)
+		}
+		if supersededBy.Valid {
+			v := supersededBy.Int64
+			f.SupersededBy = &v
 		}
 		facts = append(facts, f)
 	}
@@ -211,7 +289,7 @@ func (s *SQLiteStore) ReinforceFactsByMemoryIDs(ctx context.Context, memoryIDs [
 	}
 
 	query := fmt.Sprintf(
-		"UPDATE facts SET last_reinforced = ? WHERE memory_id IN (%s)",
+		"UPDATE facts SET last_reinforced = ? WHERE memory_id IN (%s) AND superseded_by IS NULL",
 		strings.Join(placeholders, ","),
 	)
 
@@ -231,7 +309,7 @@ func (s *SQLiteStore) ReinforceFactsByMemoryIDs(ctx context.Context, memoryIDs [
 // It calculates effective confidence using Ebbinghaus decay: confidence * exp(-decay_rate * days).
 func (s *SQLiteStore) GetConfidenceDistribution(ctx context.Context) (*ConfidenceDistribution, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT confidence, decay_rate, last_reinforced FROM facts`)
+		`SELECT confidence, decay_rate, last_reinforced FROM facts WHERE superseded_by IS NULL`)
 	if err != nil {
 		return nil, fmt.Errorf("querying facts for confidence distribution: %w", err)
 	}
@@ -270,10 +348,11 @@ func (s *SQLiteStore) StaleFacts(ctx context.Context, maxConfidence float64, day
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type,
-		        f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at
+		        f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.superseded_by
 		 FROM facts f
 		 WHERE f.confidence <= ?
 		   AND f.last_reinforced < ?
+		   AND f.superseded_by IS NULL
 		 ORDER BY f.confidence ASC`,
 		maxConfidence, cutoff,
 	)
@@ -285,10 +364,15 @@ func (s *SQLiteStore) StaleFacts(ctx context.Context, maxConfidence float64, day
 	var facts []*Fact
 	for rows.Next() {
 		f := &Fact{}
+		var supersededBy sql.NullInt64
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt); err != nil {
+			&f.SourceQuote, &f.CreatedAt, &supersededBy); err != nil {
 			return nil, fmt.Errorf("scanning stale fact: %w", err)
+		}
+		if supersededBy.Valid {
+			v := supersededBy.Int64
+			f.SupersededBy = &v
 		}
 		facts = append(facts, f)
 	}

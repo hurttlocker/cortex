@@ -75,6 +75,7 @@ type Fact struct {
 	LastReinforced time.Time
 	SourceQuote    string
 	CreatedAt      time.Time
+	SupersededBy   *int64 // Fact ID that superseded this fact (nil = active)
 }
 
 // MemoryEvent represents an entry in the append-only event log.
@@ -90,17 +91,18 @@ type MemoryEvent struct {
 
 // ListOpts controls pagination and filtering for List operations.
 type ListOpts struct {
-	Limit         int
-	Offset        int
-	SortBy        string   // "date", "confidence", "recalls"
-	FactType      string   // filter by fact type
-	SourceFile    string   // filter by source file
-	Project       string   // filter by project tag
-	MemoryClasses []string // filter by memory class
-	Agent         string   // filter by metadata agent_id
-	Channel       string   // filter by metadata channel
-	After         string   // filter memories imported after this date (YYYY-MM-DD)
-	Before        string   // filter memories imported before this date (YYYY-MM-DD)
+	Limit             int
+	Offset            int
+	SortBy            string   // "date", "confidence", "recalls"
+	FactType          string   // filter by fact type
+	SourceFile        string   // filter by source file
+	Project           string   // filter by project tag
+	MemoryClasses     []string // filter by memory class
+	Agent             string   // filter by metadata agent_id
+	Channel           string   // filter by metadata channel
+	After             string   // filter memories imported after this date (YYYY-MM-DD)
+	Before            string   // filter memories imported before this date (YYYY-MM-DD)
+	IncludeSuperseded bool     // include superseded facts where relevant
 }
 
 // SearchResult holds a search result with score and optional snippet.
@@ -176,8 +178,10 @@ type Store interface {
 	ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, error)
 	UpdateFactConfidence(ctx context.Context, id int64, confidence float64) error
 	ReinforceFact(ctx context.Context, id int64) error
+	SupersedeFact(ctx context.Context, oldFactID, newFactID int64, reason string) error
 	ReinforceFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) (int, error)
 	GetFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) ([]*Fact, error)
+	GetFactsByMemoryIDsIncludingSuperseded(ctx context.Context, memoryIDs []int64) ([]*Fact, error)
 	GetConfidenceDistribution(ctx context.Context) (*ConfidenceDistribution, error)
 
 	// Search
@@ -217,6 +221,7 @@ type Store interface {
 	GetFreshnessDistribution(ctx context.Context) (*Freshness, error)
 	GetAttributeConflicts(ctx context.Context) ([]Conflict, error)
 	GetAttributeConflictsLimit(ctx context.Context, limit int) ([]Conflict, error)
+	GetAttributeConflictsLimitWithSuperseded(ctx context.Context, limit int, includeSuperseded bool) ([]Conflict, error)
 
 	// Maintenance
 	Vacuum(ctx context.Context) error

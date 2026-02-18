@@ -282,6 +282,22 @@ The OpenClaw plugin also supports:
 - burst coalescing windows for short rapid-fire turns
 - low-signal acknowledgement filters (`ok`, `got it`, etc.)
 
+### 🪦 Superseded/Tombstone Facts — Keep History, Hide Stale Truth
+
+When a fact is replaced, you can mark the old fact as superseded without deleting it:
+
+```bash
+cortex supersede 12345 --by 12399 --reason "policy updated"
+```
+
+By default, superseded facts are excluded from active listings/conflict scans and from search results tied only to superseded facts. Use `--include-superseded` for historical/debug views:
+
+```bash
+cortex list --facts --include-superseded
+cortex conflicts --include-superseded
+cortex search "old policy" --include-superseded
+```
+
 ### 📉 Confidence Decay — Memory That Fades Like Yours
 
 Inspired by [Ebbinghaus's forgetting curve](https://en.wikipedia.org/wiki/Forgetting_curve) from cognitive science. Facts decay over time unless reinforced — just like human memory.
@@ -420,10 +436,12 @@ Generates a markdown report with timing, token usage, cost estimates, and output
 ```bash
 cortex stats        # Overview: counts, freshness, storage, top facts
 cortex stale        # What's fading — reinforce, delete, or skip
-cortex conflicts    # Contradictions — merge, keep both, or delete one
+cortex conflicts    # Contradictions among active facts
 cortex conflicts --resolve highest-confidence  # Auto-resolve by confidence
 cortex conflicts --resolve newest --dry-run    # Preview before applying
 cortex conflicts --keep 12345 --drop 12346     # Surgical manual resolution
+cortex supersede 12345 --by 12399 --reason "policy updated"
+cortex search "deployment policy" --include-superseded
 ```
 
 No more black-box memory. No more hoping the agent remembers correctly.

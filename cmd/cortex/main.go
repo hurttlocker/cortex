@@ -98,6 +98,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "supersede":
+		if err := runSupersede(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "reimport":
 		if err := runReimport(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -430,6 +435,7 @@ func runSearch(args []string) error {
 	afterFlag := ""
 	beforeFlag := ""
 	showMetadata := false
+	includeSuperseded := false
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -467,6 +473,8 @@ func runSearch(args []string) error {
 			beforeFlag = strings.TrimPrefix(args[i], "--before=")
 		case args[i] == "--show-metadata":
 			showMetadata = true
+		case args[i] == "--include-superseded":
+			includeSuperseded = true
 		case args[i] == "--mode" && i+1 < len(args):
 			i++
 			mode = args[i]
@@ -520,7 +528,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--class rule,decision] [--no-class-boost] [--json] [--agent <id>] [--channel <name>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--json] [--agent <id>] [--channel <name>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 
 	searchMode, err := search.ParseMode(mode)
@@ -586,6 +594,7 @@ func runSearch(args []string) error {
 		Channel:           channelFlag,
 		After:             afterFlag,
 		Before:            beforeFlag,
+		IncludeSuperseded: includeSuperseded,
 	}
 
 	results, err := engine.Search(ctx, query, opts)
@@ -683,6 +692,8 @@ func runStale(args []string) error {
 			opts.MaxConfidence = conf
 		case args[i] == "--json":
 			jsonOutput = true
+		case args[i] == "--include-superseded":
+			opts.IncludeSuperseded = true
 		case strings.HasPrefix(args[i], "-"):
 			return fmt.Errorf("unknown flag: %s", args[i])
 		default:
@@ -736,6 +747,7 @@ func runConflicts(args []string) error {
 	limitFlag := 100
 	keepFlag := int64(0)
 	dropFlag := int64(0)
+	includeSuperseded := false
 
 	// Parse flags
 	for i := 0; i < len(args); i++ {
@@ -776,6 +788,8 @@ func runConflicts(args []string) error {
 				return fmt.Errorf("invalid --drop: %s", args[i])
 			}
 			dropFlag = n
+		case args[i] == "--include-superseded":
+			includeSuperseded = true
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return fmt.Errorf("unknown flag: %s", args[i])
@@ -811,7 +825,7 @@ func runConflicts(args []string) error {
 			enc.SetIndent("", "  ")
 			return enc.Encode(res)
 		}
-		fmt.Printf("✅ Resolved: kept fact %d, suppressed fact %d\n", res.WinnerID, res.LoserID)
+		fmt.Printf("✅ Resolved: kept fact %d, superseded fact %d\n", res.WinnerID, res.LoserID)
 		fmt.Printf("   %s\n", res.Reason)
 		return nil
 	}
@@ -823,9 +837,21 @@ func runConflicts(args []string) error {
 			return err
 		}
 
-		batch, err := resolver.DetectAndResolve(ctx, strategy, dryRun)
-		if err != nil {
-			return fmt.Errorf("resolving conflicts: %w", err)
+		var batch *observe.ResolveBatch
+		if includeSuperseded {
+			conflicts, err := engine.GetConflictsLimitWithSuperseded(ctx, limitFlag, true)
+			if err != nil {
+				return fmt.Errorf("resolving conflicts: %w", err)
+			}
+			batch, err = resolver.ResolveConflicts(ctx, conflicts, strategy, dryRun)
+			if err != nil {
+				return fmt.Errorf("resolving conflicts: %w", err)
+			}
+		} else {
+			batch, err = resolver.DetectAndResolve(ctx, strategy, dryRun)
+			if err != nil {
+				return fmt.Errorf("resolving conflicts: %w", err)
+			}
 		}
 
 		if jsonOutput || !isTTY() {
@@ -858,7 +884,7 @@ func runConflicts(args []string) error {
 	}
 
 	// Detection only (default)
-	conflicts, err := engine.GetConflictsLimit(ctx, limitFlag)
+	conflicts, err := engine.GetConflictsLimitWithSuperseded(ctx, limitFlag, includeSuperseded)
 	if err != nil {
 		return fmt.Errorf("getting conflicts: %w", err)
 	}
@@ -953,7 +979,7 @@ func runList(args []string) error {
 	// Parse flags
 	var limit int = 20
 	var sourceFile, factType, classFlag string
-	var listFacts, jsonOutput bool
+	var listFacts, jsonOutput, includeSuperseded bool
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -987,6 +1013,8 @@ func runList(args []string) error {
 			factType = strings.TrimPrefix(args[i], "--type=")
 		case args[i] == "--json":
 			jsonOutput = true
+		case args[i] == "--include-superseded":
+			includeSuperseded = true
 		case strings.HasPrefix(args[i], "-"):
 			return fmt.Errorf("unknown flag: %s", args[i])
 		default:
@@ -1011,11 +1039,12 @@ func runList(args []string) error {
 	}
 
 	opts := store.ListOpts{
-		Limit:         limit,
-		Offset:        0,
-		SourceFile:    sourceFile,
-		FactType:      factType,
-		MemoryClasses: classes,
+		Limit:             limit,
+		Offset:            0,
+		SourceFile:        sourceFile,
+		FactType:          factType,
+		MemoryClasses:     classes,
+		IncludeSuperseded: includeSuperseded,
 	}
 
 	if listFacts {
@@ -1270,6 +1299,66 @@ func runReinforce(args []string) error {
 	}
 
 	fmt.Printf("Reinforced %d fact(s)\n", reinforced)
+	return nil
+}
+
+func runSupersede(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex supersede <old_fact_id> --by <new_fact_id> [--reason <text>]")
+	}
+
+	oldFactID, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid old fact id %q", args[0])
+	}
+
+	newFactID := int64(0)
+	reason := ""
+	for i := 1; i < len(args); i++ {
+		switch {
+		case args[i] == "--by" && i+1 < len(args):
+			i++
+			v, err := strconv.ParseInt(args[i], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid --by value %q", args[i])
+			}
+			newFactID = v
+		case strings.HasPrefix(args[i], "--by="):
+			v, err := strconv.ParseInt(strings.TrimPrefix(args[i], "--by="), 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid --by value %q", args[i])
+			}
+			newFactID = v
+		case args[i] == "--reason" && i+1 < len(args):
+			i++
+			reason = args[i]
+		case strings.HasPrefix(args[i], "--reason="):
+			reason = strings.TrimPrefix(args[i], "--reason=")
+		default:
+			return fmt.Errorf("unknown argument: %s", args[i])
+		}
+	}
+
+	if newFactID <= 0 {
+		return fmt.Errorf("--by <new_fact_id> is required")
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	if err := s.SupersedeFact(ctx, oldFactID, newFactID, reason); err != nil {
+		return err
+	}
+
+	fmt.Printf("Fact %d superseded by fact %d", oldFactID, newFactID)
+	if reason != "" {
+		fmt.Printf(" (%s)", reason)
+	}
+	fmt.Println()
 	return nil
 }
 
@@ -2214,6 +2303,9 @@ func outputListFactsTTY(facts []*store.Fact, opts store.ListOpts) error {
 		fmt.Printf("  %d. [%s] %s\n", i+1, fact.FactType, factContent)
 		fmt.Printf("     Confidence: %.2f · Decay: %.3f/day\n",
 			fact.Confidence, fact.DecayRate)
+		if fact.SupersededBy != nil {
+			fmt.Printf("     Superseded by fact: %d\n", *fact.SupersededBy)
+		}
 
 		// Add source quote if available and verbose
 		if globalVerbose && fact.SourceQuote != "" {
@@ -3312,6 +3404,7 @@ Commands:
   embed [provider/model] Generate embeddings for missing memories (or run daemon with --watch)
   search <query>      Search memory (keyword, semantic, or hybrid)
   reinforce <id>      Reinforce a fact (reset its decay timer)
+  supersede <id>      Mark a fact as superseded by a newer fact
   stats               Show memory statistics and health
   list                List memories or facts from the store
   export              Export the full memory store in different formats
@@ -3339,6 +3432,7 @@ Search Flags:
   --project <name>    Scope search to a specific project (e.g., --project trading)
   --class <list>      Filter by memory class (e.g., --class rule,decision)
   --no-class-boost    Disable class-aware ranking boosts
+  --include-superseded Include memories tied only to superseded facts
   --json              Force JSON output even in TTY
 
 Import Flags:
@@ -3370,6 +3464,7 @@ List Flags:
   --source <file>     Filter by source file
   --class <list>      Filter memories by class (e.g., --class rule,decision)
   --type <fact_type>  Filter facts by type (kv, temporal, identity, etc.)
+  --include-superseded Include superseded facts in --facts output
   --json              Force JSON output even in TTY
 
 Export Flags:
@@ -3379,6 +3474,9 @@ Export Flags:
 
 Stats Flags:
   --json              Force JSON output even in TTY
+
+Stale/Conflict Flags:
+  --include-superseded Include superseded facts in stale/conflict views
 
 Reimport Flags:
   -r, --recursive     Recursively import from directories
@@ -3396,6 +3494,9 @@ Embed Flags:
 Reinforce:
   cortex reinforce <fact_id> [fact_id...]   Reset decay timer for specified facts
 
+Supersede:
+  cortex supersede <old_fact_id> --by <new_fact_id> [--reason <text>]
+
 MCP Flags:
   --port <N>          Start HTTP+SSE transport on port (default: stdio)
   --embed <provider/model> Enable semantic/hybrid search via embeddings
@@ -3407,6 +3508,8 @@ Examples:
   cortex --db ~/my-cortex.db list --source ~/notes.md
   cortex embed ollama/nomic-embed-text --batch-size 10
   cortex embed ollama/nomic-embed-text --watch --interval 30m --batch-size 10
+  cortex supersede 101 --by 204 --reason "policy updated"
+  cortex search "deployment rule" --include-superseded
   cortex mcp                          # Start MCP server (stdio, for Claude Desktop/Cursor)
   cortex mcp --port 8080              # Start MCP server (HTTP+SSE)
 
