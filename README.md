@@ -85,6 +85,7 @@ claude mcp add cortex -- cortex mcp
 |------|-------------|
 | `cortex_search` | Search memories (keyword, semantic, or hybrid) |
 | `cortex_import` | Save new memories |
+| `cortex_reason` | LLM reasoning over memories (single-pass or recursive) |
 | `cortex_stats` | Memory statistics |
 | `cortex_facts` | Query extracted facts |
 | `cortex_stale` | Find fading/outdated facts |
@@ -257,6 +258,96 @@ cortex search "what's the plan?" --lens technical  # → architecture, roadmap, 
 
 Lenses filter, boost, and shape results without duplicating data.
 
+### 🔄 Recursive Reasoning (RLM) — Memory That Thinks
+
+Inspired by the [Recursive Language Models paper](https://arxiv.org/abs/2512.24601) (MIT, Dec 2025). Instead of a single LLM call, Cortex reason can **loop** — searching for more context, decomposing sub-questions, and synthesizing iteratively until it has a complete answer.
+
+```bash
+# Single-pass reasoning (fast, simple queries)
+cortex reason "What happened today?" --preset daily-digest --embed ollama/nomic-embed-text
+
+# Recursive reasoning (deep, complex queries)
+cortex reason "How has our trading strategy evolved?" --recursive -v --embed ollama/nomic-embed-text
+
+# Full control
+cortex reason "Analyze all project risks" \
+  --recursive \
+  --max-iterations 12 \
+  --max-depth 2 \
+  --model google/gemini-2.5-flash \
+  --project myproject \
+  --embed ollama/nomic-embed-text \
+  -v
+```
+
+**How it works:**
+
+```
+Iteration 1: LLM reviews initial search results
+             → "I need more context about crypto strategies"
+             → SEARCH(crypto SRB ML220 strategy)
+
+Iteration 2: LLM reviews new results + previous context
+             → "Now I need options performance data"  
+             → SEARCH(0DTE options strategy performance)
+
+Iteration 3: LLM reviews all accumulated context
+             → "I have enough. Here's my synthesis."
+             → FINAL(complete structured analysis)
+```
+
+The LLM has 5 actions available in each iteration:
+
+| Action | What It Does |
+|--------|-------------|
+| `SEARCH(query)` | Run a new Cortex search with different terms |
+| `FACTS(keyword)` | Search extracted facts (subject-predicate-object triples) |
+| `PEEK(memory_id)` | Retrieve full content of a specific memory |
+| `SUB_QUERY(question)` | Recursive sub-call for component questions (depth-limited) |
+| `FINAL(answer)` | Return the synthesized answer |
+
+**Confidence-aware prompting** — the LLM sees decay scores (`[0.95]` fresh, `[0.45] ⚠️ STALE`) and can weight its reasoning accordingly. No other tool does this.
+
+**5 built-in presets** — or define your own in `~/.cortex/presets.yaml`:
+
+| Preset | Purpose | Default Model |
+|--------|---------|---------------|
+| `daily-digest` | Daily activity summary | gemini-2.5-flash |
+| `fact-audit` | Find stale/contradictory facts | deepseek-v3.2 |
+| `weekly-dive` | Deep analysis of a topic | deepseek-v3.2 |
+| `conflict-check` | Find contradictions | gemini-2.5-flash |
+| `agent-review` | Review agent performance | gemini-2.5-flash |
+
+**Use any LLM** — local (Ollama) or cloud (OpenRouter):
+
+```bash
+# Local (free, private — great for GPU users)
+cortex reason "query" --recursive --model phi4-mini --embed ollama/nomic-embed-text
+
+# Cloud (fast, cheap)
+cortex reason "query" --recursive --model google/gemini-2.5-flash --embed ollama/nomic-embed-text
+
+# Smart defaults: set OPENROUTER_API_KEY and Cortex auto-selects the best model per preset
+export OPENROUTER_API_KEY=sk-or-...
+cortex reason "query" --recursive --preset weekly-dive  # → auto-selects deepseek-v3.2
+```
+
+**Local models work great for scheduled/cron use** — even on CPU-only hardware, a 4B model can run recursive reasoning in 60-90s, perfect for nightly digests and audits. Users with GPUs (especially Apple Silicon with Metal) get interactive-speed local reasoning.
+
+### 📊 Benchmark Command — Test Any Model
+
+```bash
+# Compare models on your own memory
+cortex bench --models "google/gemini-2.5-flash,deepseek/deepseek-chat" \
+  --embed ollama/nomic-embed-text \
+  --output benchmark-report.md
+
+# Include local models
+cortex bench --local --embed ollama/nomic-embed-text
+```
+
+Generates a markdown report with timing, token usage, cost estimates, and output quality for each model × preset combination. Run it whenever a new model drops.
+
 ### 👁️ Observability — Finally See What Your Agent Knows
 
 ```bash
@@ -282,40 +373,50 @@ Take your memory to any other tool, platform, or agent framework. No lock-in. Ev
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         cortex CLI                              │
-│  import · reimport · search · reinforce · stats · stale · mcp   │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │
-        ┌──────────────────┼──────────────────┐
-        │                  │                  │
-        ▼                  ▼                  ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│   Importers  │  │    Search    │  │  Observability│
-│              │  │              │  │              │
-│ Markdown     │  │ BM25 (FTS5)  │  │ Stats        │
-│ JSON / YAML  │  │ Semantic     │  │ Stale        │
-│ CSV / Text   │  │ Hybrid (RRF) │  │ Conflicts    │
-└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-       │                 │                 │
-       ▼                 │                 │
-┌──────────────┐         │                 │
-│  Extraction  │         │                 │
-│              │         │                 │
-│ Tier 1: Rules│         │                 │
-│ Tier 2: LLM  │         │                 │
-│   (optional) │         │                 │
-└──────┬───────┘         │                 │
-       │                 │                 │
-       ▼                 ▼                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     SQLite + FTS5                               │
-│                                                                 │
-│  memories │ facts │ embeddings │ recall_log │ memory_events     │
-│                                                                 │
-│  Single file: ~/.cortex/cortex.db                               │
-│  WAL mode · Zero config · Trivially portable                   │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              cortex CLI                                 │
+│  import · search · reason · bench · stats · stale · conflicts · mcp     │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+     ┌───────────────┬───────────┼───────────┬───────────────┐
+     │               │           │           │               │
+     ▼               ▼           ▼           ▼               ▼
+┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+│ Importers│  │  Search   │  │  Reason  │  │Observabi-│  │   MCP    │
+│          │  │          │  │  Engine   │  │  lity    │  │  Server  │
+│ Markdown │  │ BM25     │  │          │  │          │  │          │
+│ JSON     │  │ Semantic │  │ Single-  │  │ Stats    │  │ 7 tools  │
+│ YAML     │  │ Hybrid   │  │  pass    │  │ Stale    │  │ 2 res.   │
+│ CSV/Text │  │ (WSF)    │  │ Recursive│  │ Conflicts│  │ stdio+   │
+│          │  │          │  │  (RLM)   │  │          │  │ HTTP/SSE │
+└────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
+     │             │             │              │              │
+     │             │      ┌──────┴──────┐       │              │
+     │             │      ▼             ▼       │              │
+     │             │  ┌────────┐  ┌─────────┐   │              │
+     │             │  │  LLM   │  │ Presets  │   │              │
+     │             │  │        │  │          │   │              │
+     │             │  │ Ollama │  │ Built-in │   │              │
+     │             │  │ OpenAI │  │  Custom  │   │              │
+     │             │  │ OpenR. │  │ (~/.yaml)│   │              │
+     │             │  └────────┘  └─────────┘   │              │
+     ▼             │                            │              │
+┌──────────┐       │                            │              │
+│Extraction│       │                            │              │
+│          │       │                            │              │
+│ Rules    │       │                            │              │
+│ LLM opt. │       │                            │              │
+└────┬─────┘       │                            │              │
+     │             │                            │              │
+     ▼             ▼                            ▼              ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          SQLite + FTS5                                   │
+│                                                                         │
+│  memories │ facts │ embeddings │ recall_log │ memory_events │ projects  │
+│                                                                         │
+│  Single file: ~/.cortex/cortex.db                                       │
+│  WAL mode · Zero config · Trivially portable                           │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Design principles:**
@@ -332,7 +433,9 @@ Cortex isn't just another memory store. It brings ideas from **cognitive science
 
 | Concept | Inspiration | What It Does |
 |---------|------------|--------------|
+| **Recursive Reasoning** | [RLM Paper](https://arxiv.org/abs/2512.24601) (MIT) | Iterative search→reason loop — LLM decides what to search next |
 | **Confidence Decay** | Ebbinghaus forgetting curve | Facts fade unless reinforced — type-aware decay rates |
+| **Confidence-Aware Prompts** | Cognitive load theory | LLM sees `[0.95]` vs `[0.45] ⚠️ STALE` — weights reasoning accordingly |
 | **Provenance Chains** | Academic citation graphs | Track what facts influenced, cascade analysis |
 | **Memory Lenses** | Database views | Context-dependent filtering and boosting |
 | **Differential Memory** | Git version control | Diff, log, snapshot, restore — full audit trail |
@@ -348,6 +451,9 @@ Cortex isn't just another memory store. It brings ideas from **cognitive science
 | **Import existing memory** | ✅ Core feature | ❌ Start fresh | ❌ | ❌ | ❌ |
 | **Zero LLM dependency** | ✅ | ❌ Needs GPT | ❌ Needs LLM | ❌ Needs LLM | ✅ |
 | **LLM-assist (optional)** | ✅ Any provider | 🟡 GPT only | ❌ | Depends | ❌ |
+| **Recursive reasoning (RLM)** | ✅ Built-in | ❌ | ❌ | ❌ | ❌ |
+| **Confidence-aware prompting** | ✅ Decay scores in prompt | ❌ | ❌ | ❌ | ❌ |
+| **Model benchmarking** | ✅ `cortex bench` | ❌ | ❌ | ❌ | ❌ |
 | **Observability** | ✅ Stats/stale/conflicts | ❌ | ❌ | Basic | ❌ |
 | **Confidence decay** | ✅ Ebbinghaus curve | ❌ | ❌ | ❌ | ❌ |
 | **Provenance tracking** | ✅ Full chains | ❌ | ❌ | ❌ | ❌ |
@@ -371,7 +477,7 @@ Cortex isn't just another memory store. It brings ideas from **cognitive science
 | **CLI** | Custom (no framework) | Zero dependencies, minimal binary size |
 | **NLP** | Custom rules + optional LLM | Rule-based extraction, LLM optional |
 
-No Docker. No Postgres. No Redis. No CGO. **Just a 15MB binary and a SQLite file.**
+No Docker. No Postgres. No Redis. No CGO. **Just a ~12MB binary and a SQLite file.**
 
 ### Embedding Providers
 
@@ -418,7 +524,7 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 ## 🗺️ Roadmap
 
 ### ✅ Phase 1 — Foundation *(Complete)*
-**All 7 PRDs delivered** (14,000+ lines of code, 6,800+ lines of tests, 270 test functions):
+**All 7 PRDs delivered** (16,000+ lines of code, 7,500+ lines of tests, 300+ test functions):
 - **Storage** (PRD-001): SQLite + FTS5 foundation
 - **Import** (PRD-002): Multi-format ingestion (Markdown, JSON, YAML, CSV, plain text) with quality filters
 - **Extraction** (PRD-003): Rule-based fact extraction with subject inference from section headers + filenames; optional LLM-assist
@@ -433,6 +539,8 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 - ✅ **Goreleaser CI**: Automated cross-platform binary builds on every tag ([#23](https://github.com/hurttlocker/cortex/issues/23))
 - ✅ **Confidence Decay Activated**: Ebbinghaus curve is now operational — search results weighted by effective confidence, facts auto-reinforced on recall, `cortex reinforce` command for manual reinforcement ([#24](https://github.com/hurttlocker/cortex/issues/24))
 - ✅ **`cortex reimport --embed`**: One command to wipe and rebuild entire knowledge base with optional embeddings ([#25](https://github.com/hurttlocker/cortex/issues/25))
+- ✅ **Project Tagging**: Auto-tag memories by project using path-based and content-keyword rules, search scoped to project ([#29](https://github.com/hurttlocker/cortex/issues/29))
+- ✅ **Recursive Reasoning (RLM)**: LLM reasoning layer with iterative search loop inspired by [Recursive Language Models](https://arxiv.org/abs/2512.24601). 5 built-in presets, smart model routing, confidence-aware prompting, `cortex bench` for model comparison ([#31](https://github.com/hurttlocker/cortex/issues/31))
 - **Web Dashboard**: Browser-based memory exploration and management
 - **Additional Importers**: PDF, DOCX, HTML support
 

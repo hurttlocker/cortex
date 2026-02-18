@@ -2038,6 +2038,10 @@ func runReason(args []string) error {
 	jsonOutput := false
 	embedFlag := ""
 	listPresets := false
+	recursive := false
+	maxIterations := 8
+	maxDepth := 1
+	verbose := false
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -2075,6 +2079,20 @@ func runReason(args []string) error {
 			jsonOutput = true
 		case args[i] == "--list":
 			listPresets = true
+		case args[i] == "--recursive", args[i] == "-R":
+			recursive = true
+		case args[i] == "--max-iterations" && i+1 < len(args):
+			i++
+			if v, err := strconv.Atoi(args[i]); err == nil {
+				maxIterations = v
+			}
+		case args[i] == "--max-depth" && i+1 < len(args):
+			i++
+			if v, err := strconv.Atoi(args[i]); err == nil {
+				maxDepth = v
+			}
+		case args[i] == "--verbose", args[i] == "-v":
+			verbose = true
 		case strings.HasPrefix(args[i], "-"):
 			return fmt.Errorf("unknown flag: %s", args[i])
 		default:
@@ -2167,6 +2185,54 @@ func runReason(args []string) error {
 
 	// Run reasoning
 	ctx := context.Background()
+
+	if recursive {
+		// Recursive mode — iterative loop with actions
+		if verbose {
+			fmt.Printf("🔄 Recursive reasoning: max %d iterations, depth %d\n\n", maxIterations, maxDepth)
+		}
+		rResult, err := engine.ReasonRecursive(ctx, reason.RecursiveOptions{
+			Query:         query,
+			Preset:        presetName,
+			Project:       projectFlag,
+			MaxIterations: maxIterations,
+			MaxDepth:      maxDepth,
+			MaxTokens:     maxTokens,
+			MaxContext:     maxContext,
+			JSONOutput:    jsonOutput,
+			Verbose:       verbose,
+		})
+		if err != nil {
+			return err
+		}
+
+		// Output
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(rResult)
+		}
+
+		// TTY output
+		fmt.Println(rResult.Content)
+		fmt.Println()
+		fmt.Printf("─── %s/%s | %d iterations, %d calls | %d memories, %d facts | search %s, llm %s | %d→%d tokens",
+			rResult.Provider, rResult.Model,
+			rResult.Iterations, rResult.TotalCalls,
+			rResult.MemoriesUsed, rResult.FactsUsed,
+			rResult.SearchTime.Round(time.Millisecond),
+			rResult.LLMTime.Round(time.Millisecond),
+			rResult.TokensIn, rResult.TokensOut,
+		)
+		if len(rResult.SubQueries) > 0 {
+			fmt.Printf(" | %d sub-queries", len(rResult.SubQueries))
+		}
+		fmt.Println(" ───")
+
+		return nil
+	}
+
+	// Single-pass mode (default)
 	result, err := engine.Reason(ctx, reason.ReasonOptions{
 		Query:      query,
 		Preset:     presetName,
