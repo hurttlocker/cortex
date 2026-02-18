@@ -74,8 +74,8 @@ const (
 // DefaultOptions returns sensible defaults.
 func DefaultOptions() Options {
 	return Options{
-		Mode:          ModeKeyword,
-		Limit:         10,
+		Mode:     ModeKeyword,
+		Limit:    10,
 		MinScore: -1, // -1 = use mode-dependent default
 	}
 }

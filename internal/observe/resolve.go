@@ -274,7 +274,7 @@ func (r *Resolver) ResolveByID(ctx context.Context, winnerID, loserID int64) (*R
 		Winner:   "manual",
 		WinnerID: winnerID,
 		LoserID:  loserID,
-		Reason:   fmt.Sprintf("Manually resolved: kept fact %d (%s: %s), suppressed fact %d (%s: %s)",
+		Reason: fmt.Sprintf("Manually resolved: kept fact %d (%s: %s), suppressed fact %d (%s: %s)",
 			winnerID, winnerFact.Predicate, winnerFact.Object,
 			loserID, loserFact.Predicate, loserFact.Object),
 		Applied: true,

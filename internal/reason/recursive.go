@@ -35,12 +35,12 @@ type RecursiveOptions struct {
 
 // RecursiveResult extends ReasonResult with recursion metadata.
 type RecursiveResult struct {
-	ReasonResult                   // Embed base result
-	Iterations   int               `json:"iterations"`
-	TotalCalls   int               `json:"total_calls"`
-	Actions      []ActionRecord    `json:"actions"`
-	SubQueries   []SubQueryResult  `json:"sub_queries,omitempty"`
-	Depth        int               `json:"depth"`
+	ReasonResult                  // Embed base result
+	Iterations   int              `json:"iterations"`
+	TotalCalls   int              `json:"total_calls"`
+	Actions      []ActionRecord   `json:"actions"`
+	SubQueries   []SubQueryResult `json:"sub_queries,omitempty"`
+	Depth        int              `json:"depth"`
 }
 
 // ActionRecord logs each action the LLM took during reasoning.

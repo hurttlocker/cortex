@@ -13,11 +13,11 @@ import (
 type Preset struct {
 	Name        string `yaml:"name" json:"name"`
 	Description string `yaml:"description" json:"description"`
-	System      string `yaml:"system" json:"system"`           // System prompt
-	Template    string `yaml:"template" json:"template"`       // User prompt template ({{context}} and {{query}} are replaced)
-	MaxTokens   int    `yaml:"max_tokens" json:"max_tokens"`   // Max output tokens (default: 1024)
+	System      string `yaml:"system" json:"system"`             // System prompt
+	Template    string `yaml:"template" json:"template"`         // User prompt template ({{context}} and {{query}} are replaced)
+	MaxTokens   int    `yaml:"max_tokens" json:"max_tokens"`     // Max output tokens (default: 1024)
 	SearchLimit int    `yaml:"search_limit" json:"search_limit"` // How many memories to search for context (default: 20)
-	SearchMode  string `yaml:"search_mode" json:"search_mode"` // "hybrid", "bm25", "semantic" (default: "hybrid")
+	SearchMode  string `yaml:"search_mode" json:"search_mode"`   // "hybrid", "bm25", "semantic" (default: "hybrid")
 }
 
 // BuiltinPresets are the presets that ship with Cortex.

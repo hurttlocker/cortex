@@ -39,10 +39,10 @@ type Index struct {
 
 // node represents a single vector in the HNSW graph.
 type node struct {
-	id      int64       // external memory ID
-	vector  []float32   // embedding vector
-	friends [][]int     // friends[layer] = sorted list of neighbor node indices
-	level   int         // max level for this node
+	id      int64     // external memory ID
+	vector  []float32 // embedding vector
+	friends [][]int   // friends[layer] = sorted list of neighbor node indices
+	level   int       // max level for this node
 }
 
 // Result represents a search result with distance.
@@ -271,7 +271,7 @@ func (idx *Index) searchLayer(query []float32, ep int, ef int, layer int) []cand
 
 	epDist := cosineDistance(query, idx.nodes[ep].vector)
 	candidates := []candidate{{idx: ep, dist: epDist}} // min-heap behavior via sort
-	results := []candidate{{idx: ep, dist: epDist}}     // max-heap behavior (we keep closest ef)
+	results := []candidate{{idx: ep, dist: epDist}}    // max-heap behavior (we keep closest ef)
 
 	for len(candidates) > 0 {
 		// Pop closest candidate

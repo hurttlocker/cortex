@@ -126,7 +126,6 @@ func (s *SQLiteStore) migrate() error {
 			key   TEXT PRIMARY KEY,
 			value TEXT
 		)`,
-
 	}
 
 	tx, err := s.db.Begin()
