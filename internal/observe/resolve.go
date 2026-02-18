@@ -108,8 +108,8 @@ func (r *Resolver) ResolveConflicts(ctx context.Context, conflicts []Conflict, s
 		resolution := r.resolveOne(c, strategy)
 
 		if !dryRun && resolution.Winner != "manual" && resolution.LoserID > 0 {
-			// Apply: zero out the losing fact's confidence (soft-suppress)
-			err := r.store.UpdateFactConfidence(ctx, resolution.LoserID, 0.0)
+			// Apply tombstone semantics: old conflicting fact is superseded (not deleted).
+			err := r.store.SupersedeFact(ctx, resolution.LoserID, resolution.WinnerID, fmt.Sprintf("strategy:%s", strategy))
 			if err != nil {
 				batch.Errors++
 				resolution.Reason += fmt.Sprintf(" (apply error: %v)", err)
@@ -118,15 +118,6 @@ func (r *Resolver) ResolveConflicts(ctx context.Context, conflicts []Conflict, s
 
 				// Reinforce the winner
 				_ = r.store.ReinforceFact(ctx, resolution.WinnerID)
-
-				// Log the resolution event
-				_ = r.store.LogEvent(ctx, &store.MemoryEvent{
-					EventType: "conflict_resolved",
-					FactID:    resolution.WinnerID,
-					OldValue:  fmt.Sprintf("fact:%d", resolution.LoserID),
-					NewValue:  fmt.Sprintf("strategy:%s", strategy),
-					Source:    "resolver",
-				})
 			}
 			batch.Resolved++
 		} else if resolution.Winner == "manual" {
@@ -252,29 +243,20 @@ func (r *Resolver) ResolveByID(ctx context.Context, winnerID, loserID int64) (*R
 		return nil, fmt.Errorf("loser fact %d not found", loserID)
 	}
 
-	// Suppress the loser
-	if err := r.store.UpdateFactConfidence(ctx, loserID, 0.0); err != nil {
-		return nil, fmt.Errorf("suppressing fact %d: %w", loserID, err)
+	// Tombstone the loser fact (superseded, not deleted).
+	if err := r.store.SupersedeFact(ctx, loserID, winnerID, "strategy:manual"); err != nil {
+		return nil, fmt.Errorf("superseding fact %d: %w", loserID, err)
 	}
 
 	// Reinforce the winner
 	_ = r.store.ReinforceFact(ctx, winnerID)
-
-	// Log the resolution
-	_ = r.store.LogEvent(ctx, &store.MemoryEvent{
-		EventType: "conflict_resolved",
-		FactID:    winnerID,
-		OldValue:  fmt.Sprintf("fact:%d", loserID),
-		NewValue:  "strategy:manual",
-		Source:    "resolver",
-	})
 
 	return &Resolution{
 		Strategy: StrategyManual,
 		Winner:   "manual",
 		WinnerID: winnerID,
 		LoserID:  loserID,
-		Reason:   fmt.Sprintf("Manually resolved: kept fact %d (%s: %s), suppressed fact %d (%s: %s)",
+		Reason: fmt.Sprintf("Manually resolved: kept fact %d (%s: %s), superseded fact %d (%s: %s)",
 			winnerID, winnerFact.Predicate, winnerFact.Object,
 			loserID, loserFact.Predicate, loserFact.Object),
 		Applied: true,

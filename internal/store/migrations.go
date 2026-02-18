@@ -67,13 +67,15 @@ func (s *SQLiteStore) migrate() error {
 			decay_rate      REAL DEFAULT 0.01,
 			last_reinforced DATETIME DEFAULT CURRENT_TIMESTAMP,
 			source_quote    TEXT,
-			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+			superseded_by   INTEGER REFERENCES facts(id)
 		)`,
 
 		`CREATE INDEX IF NOT EXISTS idx_facts_memory_id ON facts(memory_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_type ON facts(fact_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate ON facts(subject, predicate)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_superseded_by ON facts(superseded_by)`,
 
 		// Embedding vectors for semantic search
 		`CREATE TABLE IF NOT EXISTS embeddings (
@@ -166,6 +168,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating memory_class column: %w", err)
 	}
 
+	// Schema evolution: add superseded_by column to facts (v0.3.0 — Issue #35)
+	if err := s.migrateFactSupersededColumn(); err != nil {
+		return fmt.Errorf("migrating superseded_by column: %w", err)
+	}
+
 	// Schema evolution: multi-column FTS5 with source context (v0.2.0 — Issue #26)
 	if err := s.migrateFTSMultiColumn(); err != nil {
 		return fmt.Errorf("migrating FTS multi-column: %w", err)
@@ -244,6 +251,45 @@ func (s *SQLiteStore) migrateMemoryClassColumn() error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing memory_class migration: %w", err)
+	}
+	return nil
+}
+
+// migrateFactSupersededColumn adds superseded_by to facts for tombstone semantics (Issue #35).
+func (s *SQLiteStore) migrateFactSupersededColumn() error {
+	var count int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='superseded_by'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checking for superseded_by column: %w", err)
+	}
+	if count > 0 {
+		// Ensure index exists for existing DBs.
+		if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_facts_superseded_by ON facts(superseded_by)`); err != nil {
+			return fmt.Errorf("creating superseded_by index: %w", err)
+		}
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning superseded_by migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	stms := []string{
+		`ALTER TABLE facts ADD COLUMN superseded_by INTEGER REFERENCES facts(id)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_superseded_by ON facts(superseded_by)`,
+	}
+	for _, stmt := range stms {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("executing %q: %w", truncate(stmt, 60), err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing superseded_by migration: %w", err)
 	}
 	return nil
 }

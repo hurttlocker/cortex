@@ -75,6 +75,7 @@ type Options struct {
 	Channel           string   // Filter by metadata channel (Issue #30)
 	After             string   // Filter memories imported after date YYYY-MM-DD (Issue #30)
 	Before            string   // Filter memories imported before date YYYY-MM-DD (Issue #30)
+	IncludeSuperseded bool     // Include memories backed only by superseded facts
 }
 
 // Default minimum score thresholds by mode.
@@ -265,8 +266,12 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		results = applyClassBoost(results)
 	}
 
+	if !opts.IncludeSuperseded {
+		results = e.filterSupersededMemories(ctx, results)
+	}
+
 	// Apply confidence decay weighting and reinforce-on-recall
-	results = e.applyConfidenceDecay(ctx, results)
+	results = e.applyConfidenceDecay(ctx, results, opts.IncludeSuperseded)
 
 	return results, nil
 }
@@ -338,6 +343,46 @@ func applyClassBoost(results []Result) []Result {
 	return results
 }
 
+// filterSupersededMemories excludes memories where all linked facts are superseded.
+// Memories with no facts remain visible.
+func (e *Engine) filterSupersededMemories(ctx context.Context, results []Result) []Result {
+	if len(results) == 0 {
+		return results
+	}
+
+	memoryIDs := make([]int64, 0, len(results))
+	for _, r := range results {
+		if r.MemoryID > 0 {
+			memoryIDs = append(memoryIDs, r.MemoryID)
+		}
+	}
+	if len(memoryIDs) == 0 {
+		return results
+	}
+
+	facts, err := e.store.GetFactsByMemoryIDsIncludingSuperseded(ctx, memoryIDs)
+	if err != nil {
+		return results // best effort: never fail retrieval due to supersede filter
+	}
+
+	hasAny := make(map[int64]bool)
+	hasActive := make(map[int64]bool)
+	for _, f := range facts {
+		hasAny[f.MemoryID] = true
+		if f.SupersededBy == nil {
+			hasActive[f.MemoryID] = true
+		}
+	}
+
+	filtered := make([]Result, 0, len(results))
+	for _, r := range results {
+		if !hasAny[r.MemoryID] || hasActive[r.MemoryID] {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
 func matchAgent(r Result, agent string) bool {
 	if r.Metadata == nil {
 		return false
@@ -354,7 +399,7 @@ func matchChannel(r Result, channel string) bool {
 
 // applyConfidenceDecay adjusts search result scores based on the effective confidence
 // of facts linked to each memory, and reinforces those facts (Ebbinghaus recall).
-func (e *Engine) applyConfidenceDecay(ctx context.Context, results []Result) []Result {
+func (e *Engine) applyConfidenceDecay(ctx context.Context, results []Result, includeSuperseded bool) []Result {
 	// Collect memory IDs from results
 	memoryIDs := make([]int64, 0, len(results))
 	for _, r := range results {
@@ -368,7 +413,7 @@ func (e *Engine) applyConfidenceDecay(ctx context.Context, results []Result) []R
 	}
 
 	// Get average effective confidence per memory from its linked facts
-	confidenceMap := e.getMemoryConfidenceMap(ctx, memoryIDs)
+	confidenceMap := e.getMemoryConfidenceMap(ctx, memoryIDs, includeSuperseded)
 
 	// Apply confidence weighting to scores
 	for i := range results {
@@ -395,10 +440,18 @@ func (e *Engine) applyConfidenceDecay(ctx context.Context, results []Result) []R
 
 // getMemoryConfidenceMap returns the average effective confidence for facts linked to each memory ID.
 // Uses a single batch query for efficiency, then groups by memory ID.
-func (e *Engine) getMemoryConfidenceMap(ctx context.Context, memoryIDs []int64) map[int64]float64 {
+func (e *Engine) getMemoryConfidenceMap(ctx context.Context, memoryIDs []int64, includeSuperseded bool) map[int64]float64 {
 	confidenceMap := make(map[int64]float64)
 
-	facts, err := e.store.GetFactsByMemoryIDs(ctx, memoryIDs)
+	var (
+		facts []*store.Fact
+		err   error
+	)
+	if includeSuperseded {
+		facts, err = e.store.GetFactsByMemoryIDsIncludingSuperseded(ctx, memoryIDs)
+	} else {
+		facts, err = e.store.GetFactsByMemoryIDs(ctx, memoryIDs)
+	}
 	if err != nil || len(facts) == 0 {
 		// No facts found — assume full confidence for all memories
 		for _, id := range memoryIDs {

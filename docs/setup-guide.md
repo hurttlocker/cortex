@@ -106,6 +106,14 @@ Reset decay timer on a fact you just used — keeps it fresh:
 cortex reinforce <fact_id>
 ```
 
+### Supersede (Tombstone)
+Mark an outdated fact as superseded by a newer one (keeps audit history, hides stale truth by default):
+
+```bash
+cortex supersede <old_fact_id> --by <new_fact_id> --reason "policy updated"
+cortex list --facts --include-superseded
+```
+
 ### Cleanup
 Purge garbage/duplicate memories:
 

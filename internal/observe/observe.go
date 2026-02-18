@@ -47,9 +47,10 @@ type StaleFact struct {
 
 // StaleOpts configures stale fact detection parameters.
 type StaleOpts struct {
-	MaxConfidence float64 // effective confidence threshold (default: 0.5)
-	MaxDays       int     // days without reinforcement (default: 30)
-	Limit         int     // max results (default: 50)
+	MaxConfidence     float64 // effective confidence threshold (default: 0.5)
+	MaxDays           int     // days without reinforcement (default: 30)
+	Limit             int     // max results (default: 50)
+	IncludeSuperseded bool    // include superseded facts in stale scan
 }
 
 // Conflict represents two facts that may contradict each other.
@@ -150,7 +151,7 @@ func (e *Engine) GetStaleFacts(ctx context.Context, opts StaleOpts) ([]StaleFact
 	}
 
 	// Get all facts to calculate effective confidence
-	facts, err := e.store.ListFacts(ctx, store.ListOpts{Limit: 10000}) // Large limit to get all facts
+	facts, err := e.store.ListFacts(ctx, store.ListOpts{Limit: 10000, IncludeSuperseded: opts.IncludeSuperseded}) // Large limit to get all facts
 	if err != nil {
 		return nil, fmt.Errorf("listing facts: %w", err)
 	}
@@ -200,14 +201,19 @@ func (e *Engine) GetStaleFacts(ctx context.Context, opts StaleOpts) ([]StaleFact
 	return staleFacts, nil
 }
 
-// GetConflicts detects attribute conflicts between facts.
+// GetConflicts detects attribute conflicts between active (non-superseded) facts.
 func (e *Engine) GetConflicts(ctx context.Context) ([]Conflict, error) {
-	return e.GetConflictsLimit(ctx, 100)
+	return e.GetConflictsLimitWithSuperseded(ctx, 100, false)
 }
 
 // GetConflictsLimit detects attribute conflicts with a configurable limit.
 func (e *Engine) GetConflictsLimit(ctx context.Context, limit int) ([]Conflict, error) {
-	storeConflicts, err := e.store.GetAttributeConflictsLimit(ctx, limit)
+	return e.GetConflictsLimitWithSuperseded(ctx, limit, false)
+}
+
+// GetConflictsLimitWithSuperseded allows historical conflicts to be included when requested.
+func (e *Engine) GetConflictsLimitWithSuperseded(ctx context.Context, limit int, includeSuperseded bool) ([]Conflict, error) {
+	storeConflicts, err := e.store.GetAttributeConflictsLimitWithSuperseded(ctx, limit, includeSuperseded)
 	if err != nil {
 		return nil, fmt.Errorf("getting attribute conflicts: %w", err)
 	}

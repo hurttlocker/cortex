@@ -833,7 +833,7 @@ func TestGetMemoryConfidenceMap(t *testing.T) {
 	engine := NewEngine(s)
 
 	// Just-created facts should have effective confidence ≈ 1.0
-	confMap := engine.getMemoryConfidenceMap(ctx, []int64{memID})
+	confMap := engine.getMemoryConfidenceMap(ctx, []int64{memID}, false)
 	if conf, ok := confMap[memID]; !ok {
 		t.Error("expected memory in confidence map")
 	} else if conf < 0.99 {
@@ -841,7 +841,7 @@ func TestGetMemoryConfidenceMap(t *testing.T) {
 	}
 
 	// Memory with no facts should get default 1.0
-	confMap = engine.getMemoryConfidenceMap(ctx, []int64{99999})
+	confMap = engine.getMemoryConfidenceMap(ctx, []int64{99999}, false)
 	if conf, ok := confMap[int64(99999)]; !ok || conf != 1.0 {
 		t.Errorf("expected default confidence 1.0 for memory with no facts, got %f", conf)
 	}
@@ -885,6 +885,47 @@ func TestReinforceOnRecall(t *testing.T) {
 	factAfter, _ := s.GetFact(ctx, factID)
 	if !factAfter.LastReinforced.After(originalTime) {
 		t.Error("expected last_reinforced to be updated after search recall")
+	}
+}
+
+func TestSearch_ExcludeSupersededByDefault(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	oldMemID, _ := s.AddMemory(ctx, &store.Memory{Content: "Q timezone is PST", SourceFile: "old.md"})
+	newMemID, _ := s.AddMemory(ctx, &store.Memory{Content: "Q timezone is EST", SourceFile: "new.md"})
+
+	oldFactID, _ := s.AddFact(ctx, &store.Fact{MemoryID: oldMemID, Subject: "Q", Predicate: "timezone", Object: "PST", FactType: "identity", Confidence: 0.9})
+	newFactID, _ := s.AddFact(ctx, &store.Fact{MemoryID: newMemID, Subject: "Q", Predicate: "timezone", Object: "EST", FactType: "identity", Confidence: 0.95})
+
+	if err := s.SupersedeFact(ctx, oldFactID, newFactID, "timezone updated"); err != nil {
+		t.Fatalf("SupersedeFact: %v", err)
+	}
+
+	engine := NewEngine(s)
+	results, err := engine.Search(ctx, "Q timezone", DefaultOptions())
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	for _, r := range results {
+		if r.SourceFile == "old.md" {
+			t.Fatalf("old superseded memory should be excluded by default")
+		}
+	}
+
+	results, err = engine.Search(ctx, "Q timezone", Options{Mode: ModeKeyword, Limit: 10, IncludeSuperseded: true})
+	if err != nil {
+		t.Fatalf("Search include superseded failed: %v", err)
+	}
+	foundOld := false
+	for _, r := range results {
+		if r.SourceFile == "old.md" {
+			foundOld = true
+			break
+		}
+	}
+	if !foundOld {
+		t.Fatalf("expected superseded memory when IncludeSuperseded=true")
 	}
 }
 

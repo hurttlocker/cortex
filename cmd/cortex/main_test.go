@@ -275,6 +275,26 @@ func TestRunSearch_NoArgs(t *testing.T) {
 	}
 }
 
+func TestRunSupersede_MissingBy(t *testing.T) {
+	err := runSupersede([]string{"1"})
+	if err == nil {
+		t.Fatal("expected --by required error")
+	}
+	if !strings.Contains(err.Error(), "--by") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunSupersede_InvalidOldID(t *testing.T) {
+	err := runSupersede([]string{"abc", "--by", "2"})
+	if err == nil {
+		t.Fatal("expected invalid old id error")
+	}
+	if !strings.Contains(err.Error(), "invalid old fact id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // ==================== conflicts arg parsing ====================
 
 func TestRunConflicts_UnknownFlag(t *testing.T) {

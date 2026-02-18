@@ -65,6 +65,20 @@ func TestMemoryClassColumnExists(t *testing.T) {
 	}
 }
 
+func TestSupersededByColumnExists(t *testing.T) {
+	s := newTestStore(t)
+	ss := s.(*SQLiteStore)
+
+	var count int
+	err := ss.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='superseded_by'").Scan(&count)
+	if err != nil {
+		t.Fatalf("checking superseded_by column: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected superseded_by column to exist, count=%d", count)
+	}
+}
+
 func TestWALMode(t *testing.T) {
 	s := newTestStore(t)
 	ss := s.(*SQLiteStore)
@@ -1322,6 +1336,51 @@ func TestGetFactsByMemoryIDs(t *testing.T) {
 	}
 	if len(facts) != 0 {
 		t.Errorf("expected 0 facts for empty input, got %d", len(facts))
+	}
+}
+
+func TestSupersedeFact(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{Content: "conflicting facts"})
+	oldID, _ := s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "Q", Predicate: "location", Object: "NYC", FactType: "location", Confidence: 0.9})
+	newID, _ := s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "Q", Predicate: "location", Object: "Philly", FactType: "location", Confidence: 0.95})
+
+	if err := s.SupersedeFact(ctx, oldID, newID, "updated profile"); err != nil {
+		t.Fatalf("SupersedeFact failed: %v", err)
+	}
+
+	// By default superseded facts are excluded.
+	activeFacts, err := s.ListFacts(ctx, ListOpts{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListFacts failed: %v", err)
+	}
+	if len(activeFacts) != 1 {
+		t.Fatalf("expected 1 active fact, got %d", len(activeFacts))
+	}
+	if activeFacts[0].ID != newID {
+		t.Fatalf("expected active fact %d, got %d", newID, activeFacts[0].ID)
+	}
+
+	// Historical view includes superseded row with pointer.
+	allFacts, err := s.ListFacts(ctx, ListOpts{Limit: 10, IncludeSuperseded: true})
+	if err != nil {
+		t.Fatalf("ListFacts include superseded failed: %v", err)
+	}
+	if len(allFacts) != 2 {
+		t.Fatalf("expected 2 total facts with include_superseded, got %d", len(allFacts))
+	}
+
+	var oldFact *Fact
+	for _, f := range allFacts {
+		if f.ID == oldID {
+			oldFact = f
+			break
+		}
+	}
+	if oldFact == nil || oldFact.SupersededBy == nil || *oldFact.SupersededBy != newID {
+		t.Fatalf("expected old fact %d superseded_by=%d", oldID, newID)
 	}
 }
 
