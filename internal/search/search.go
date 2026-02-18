@@ -28,6 +28,18 @@ import (
 // completely suppressing low-confidence ones that are otherwise relevant.
 const ConfidenceWeight = 0.2
 
+// Class-aware weighting (Issue #34).
+// Conservative multipliers to prioritize operator-critical context while
+// preserving baseline behavior for unclassified memories.
+var classBoostMultipliers = map[string]float64{
+	store.MemoryClassRule:       1.30,
+	store.MemoryClassDecision:   1.20,
+	store.MemoryClassPreference: 1.10,
+	store.MemoryClassIdentity:   1.08,
+	store.MemoryClassStatus:     1.00,
+	store.MemoryClassScratch:    0.90,
+}
+
 // Mode specifies the search strategy.
 type Mode string
 
@@ -53,14 +65,16 @@ func ParseMode(s string) (Mode, error) {
 
 // Options configures a search query.
 type Options struct {
-	Mode     Mode    // Search mode (default: keyword)
-	Limit    int     // Max results (default: 10)
-	MinScore float64 // Minimum search score threshold (default: mode-dependent, -1 = use default)
-	Project  string  // Scope search to a specific project (empty = all)
-	Agent    string  // Filter by metadata agent_id (Issue #30)
-	Channel  string  // Filter by metadata channel (Issue #30)
-	After    string  // Filter memories imported after date YYYY-MM-DD (Issue #30)
-	Before   string  // Filter memories imported before date YYYY-MM-DD (Issue #30)
+	Mode              Mode     // Search mode (default: keyword)
+	Limit             int      // Max results (default: 10)
+	MinScore          float64  // Minimum search score threshold (default: mode-dependent, -1 = use default)
+	Project           string   // Scope search to a specific project (empty = all)
+	Classes           []string // Filter by memory class (rule, decision, preference, identity, status, scratch)
+	DisableClassBoost bool     // Disable class-aware weighting (default: false)
+	Agent             string   // Filter by metadata agent_id (Issue #30)
+	Channel           string   // Filter by metadata channel (Issue #30)
+	After             string   // Filter memories imported after date YYYY-MM-DD (Issue #30)
+	Before            string   // Filter memories imported before date YYYY-MM-DD (Issue #30)
 }
 
 // Default minimum score thresholds by mode.
@@ -74,8 +88,8 @@ const (
 // DefaultOptions returns sensible defaults.
 func DefaultOptions() Options {
 	return Options{
-		Mode:          ModeKeyword,
-		Limit:         10,
+		Mode:     ModeKeyword,
+		Limit:    10,
 		MinScore: -1, // -1 = use mode-dependent default
 	}
 }
@@ -103,6 +117,7 @@ type Result struct {
 	SourceLine    int             `json:"source_line"`
 	SourceSection string          `json:"source_section,omitempty"`
 	Project       string          `json:"project,omitempty"`
+	MemoryClass   string          `json:"class,omitempty"`
 	Metadata      *store.Metadata `json:"metadata,omitempty"` // Structured metadata (Issue #30)
 	Score         float64         `json:"score"`
 	Snippet       string          `json:"snippet,omitempty"`
@@ -242,6 +257,14 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		results = filterByMetadata(results, opts)
 	}
 
+	// Apply class filters / weighting (Issue #34)
+	if len(opts.Classes) > 0 {
+		results = filterByClass(results, opts.Classes)
+	}
+	if !opts.DisableClassBoost {
+		results = applyClassBoost(results)
+	}
+
 	// Apply confidence decay weighting and reinforce-on-recall
 	results = e.applyConfidenceDecay(ctx, results)
 
@@ -267,6 +290,52 @@ func filterByMetadata(results []Result, opts Options) []Result {
 		filtered = append(filtered, r)
 	}
 	return filtered
+}
+
+func filterByClass(results []Result, allowed []string) []Result {
+	if len(allowed) == 0 {
+		return results
+	}
+
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, c := range allowed {
+		normalized := store.NormalizeMemoryClass(c)
+		if normalized == "" {
+			continue
+		}
+		allowedSet[normalized] = struct{}{}
+	}
+	if len(allowedSet) == 0 {
+		return results
+	}
+
+	filtered := make([]Result, 0, len(results))
+	for _, r := range results {
+		if _, ok := allowedSet[store.NormalizeMemoryClass(r.MemoryClass)]; ok {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+func applyClassBoost(results []Result) []Result {
+	if len(results) == 0 {
+		return results
+	}
+
+	for i := range results {
+		class := store.NormalizeMemoryClass(results[i].MemoryClass)
+		multiplier, ok := classBoostMultipliers[class]
+		if !ok {
+			multiplier = 1.0
+		}
+		results[i].Score *= multiplier
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+	return results
 }
 
 func matchAgent(r Result, agent string) bool {
@@ -424,6 +493,7 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 			SourceLine:    sr.Memory.SourceLine,
 			SourceSection: sr.Memory.SourceSection,
 			Project:       sr.Memory.Project,
+			MemoryClass:   sr.Memory.MemoryClass,
 			Metadata:      sr.Memory.Metadata,
 			Score:         score,
 			Snippet:       sr.Snippet,
@@ -607,6 +677,7 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 			SourceLine:    sr.Memory.SourceLine,
 			SourceSection: sr.Memory.SourceSection,
 			Project:       sr.Memory.Project,
+			MemoryClass:   sr.Memory.MemoryClass,
 			Metadata:      sr.Memory.Metadata,
 			Score:         sr.Score,
 			Snippet:       sr.Snippet,
@@ -658,6 +729,7 @@ func (e *Engine) searchSemanticHNSW(ctx context.Context, queryVec []float32, opt
 			SourceLine:    mem.SourceLine,
 			SourceSection: mem.SourceSection,
 			Project:       mem.Project,
+			MemoryClass:   mem.MemoryClass,
 			Metadata:      mem.Metadata,
 			Score:         similarity,
 			MatchType:     "semantic",

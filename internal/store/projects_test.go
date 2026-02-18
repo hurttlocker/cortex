@@ -174,3 +174,47 @@ func TestListMemories_ProjectFilter(t *testing.T) {
 		t.Errorf("expected 2 trading memories, got %d", len(results))
 	}
 }
+
+func TestListMemories_MemoryClassFilter(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	mems := []*Memory{
+		{Content: "must never push to main", SourceFile: "rules.md", MemoryClass: MemoryClassRule, ContentHash: HashContentOnly("must never push to main")},
+		{Content: "we decided to use Go", SourceFile: "decisions.md", MemoryClass: MemoryClassDecision, ContentHash: HashContentOnly("we decided to use Go")},
+		{Content: "brainstorm feature ideas", SourceFile: "scratch.md", MemoryClass: MemoryClassScratch, ContentHash: HashContentOnly("brainstorm feature ideas")},
+	}
+	for _, m := range mems {
+		if _, err := s.AddMemory(ctx, m); err != nil {
+			t.Fatalf("AddMemory error: %v", err)
+		}
+	}
+
+	results, err := s.ListMemories(ctx, ListOpts{MemoryClasses: []string{MemoryClassRule, MemoryClassDecision}})
+	if err != nil {
+		t.Fatalf("ListMemories with class filter error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 filtered memories, got %d", len(results))
+	}
+	for _, m := range results {
+		if m.MemoryClass != MemoryClassRule && m.MemoryClass != MemoryClassDecision {
+			t.Fatalf("unexpected class %q", m.MemoryClass)
+		}
+	}
+}
+
+func TestAddMemory_InvalidMemoryClass(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.AddMemory(ctx, &Memory{
+		Content:     "invalid class sample",
+		SourceFile:  "invalid.md",
+		MemoryClass: "not-a-class",
+		ContentHash: HashContentOnly("invalid class sample"),
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid memory class")
+	}
+}

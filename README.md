@@ -135,10 +135,12 @@ Without this, Cortex uses BM25 keyword search (fast, no extra dependencies).
 cortex import ~/agents/MEMORY.md
 cortex import ~/exports/chat-history.json
 cortex import ~/notes/ --recursive
+cortex import ./operating-rules.md --class rule
 
 # 2. Search with hybrid BM25 + semantic search
 cortex search "deployment process"
 cortex search "what timezone" --mode semantic
+cortex search "deploy checklist" --class rule,decision
 
 # 3. Generate embeddings for semantic search (optional, needs Ollama)
 cortex embed ollama/nomic-embed-text --batch-size 10
@@ -211,9 +213,30 @@ cortex embed ollama/nomic-embed-text --batch-size 10
 cortex search "deployment process"                           # BM25 keyword (instant)
 cortex search "what timezone" --mode semantic --embed ollama/nomic-embed-text  # Semantic
 cortex search "deployment" --mode hybrid --embed ollama/nomic-embed-text       # Both
+cortex search "merge policy" --class rule,decision            # Class-filtered retrieval
 ```
 
 Embedding is provider-agnostic: Ollama (local, free), OpenAI, DeepSeek, OpenRouter, or any custom endpoint. BM25 search works with zero setup — no embeddings needed.
+
+### 🧭 Class-Aware Retrieval — Prioritize Rules and Decisions
+
+Cortex now supports optional memory classes to reduce retrieval noise in long-lived stores:
+
+- `rule`, `decision`, `preference`, `identity`, `status`, `scratch`
+
+Use class labels at import time or let Cortex auto-classify heuristically when no class is provided:
+
+```bash
+cortex import rules.md --class rule
+cortex import decision-log.md --class decision
+cortex import notes/ --recursive                      # auto-classify fallback
+
+cortex search "deploy requirements" --class rule,decision
+cortex search "deploy requirements" --no-class-boost   # disable weighting when needed
+cortex list --class rule,decision
+```
+
+Unclassified data remains fully searchable (backward compatible). Class boosts are conservative defaults and can be disabled per-query.
 
 ### 📋 Metadata-Enriched Capture — Know Who Said What, Where
 

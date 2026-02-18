@@ -17,6 +17,10 @@ cortex import ~/YOUR_WORKSPACE/memory/ --recursive --extract
 
 # Any other knowledge files (configs, notes, lessons):
 cortex import ~/YOUR_WORKSPACE/tasks/ --recursive --extract
+
+# Optional: class-tag critical docs for better retrieval priority
+cortex import ~/YOUR_WORKSPACE/rules.md --class rule
+cortex import ~/YOUR_WORKSPACE/decisions.md --class decision
 ```
 
 Run `cortex stats` after — you should see memories, extracted facts, and sources.
@@ -56,6 +60,9 @@ cortex search "what do I know about X" --limit 5
 
 # Semantic only (conceptual matching)
 cortex search "what do I know about X" --mode semantic --embed ollama/nomic-embed-text --limit 5
+
+# Class-filtered retrieval (rules/decisions first)
+cortex search "what's the deploy policy" --class rule,decision --limit 5
 ```
 
 ### Store

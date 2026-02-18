@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -25,10 +26,15 @@ func (s *SQLiteStore) AddMemory(ctx context.Context, m *Memory) (int64, error) {
 		metadataArg = metadataJSON
 	}
 
+	m.MemoryClass = NormalizeMemoryClass(m.MemoryClass)
+	if m.MemoryClass != "" && !IsValidMemoryClass(m.MemoryClass) {
+		return 0, fmt.Errorf("invalid memory class %q", m.MemoryClass)
+	}
+
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO memories (content, source_file, source_line, source_section, content_hash, project, metadata, imported_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, m.Project, metadataArg, now, now,
+		`INSERT INTO memories (content, source_file, source_line, source_section, content_hash, project, memory_class, metadata, imported_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, m.Project, m.MemoryClass, metadataArg, now, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting memory: %w", err)
@@ -52,10 +58,10 @@ func (s *SQLiteStore) GetMemory(ctx context.Context, id int64) (*Memory, error) 
 	var metadataStr sql.NullString
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, content, source_file, source_line, source_section, content_hash, project, metadata, imported_at, updated_at, deleted_at
+		`SELECT id, content, source_file, source_line, source_section, content_hash, project, memory_class, metadata, imported_at, updated_at, deleted_at
 		 FROM memories WHERE id = ?`, id,
 	).Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine, &m.SourceSection,
-		&m.ContentHash, &m.Project, &metadataStr, &m.ImportedAt, &m.UpdatedAt, &deletedAt)
+		&m.ContentHash, &m.Project, &m.MemoryClass, &metadataStr, &m.ImportedAt, &m.UpdatedAt, &deletedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -79,7 +85,7 @@ func (s *SQLiteStore) ListMemories(ctx context.Context, opts ListOpts) ([]*Memor
 		opts.Limit = 100
 	}
 
-	query := `SELECT id, content, source_file, source_line, source_section, content_hash, project, metadata, imported_at, updated_at
+	query := `SELECT id, content, source_file, source_line, source_section, content_hash, project, memory_class, metadata, imported_at, updated_at
 			  FROM memories WHERE deleted_at IS NULL`
 	args := []interface{}{}
 
@@ -91,6 +97,24 @@ func (s *SQLiteStore) ListMemories(ctx context.Context, opts ListOpts) ([]*Memor
 	if opts.Project != "" {
 		query += " AND project = ?"
 		args = append(args, opts.Project)
+	}
+
+	if len(opts.MemoryClasses) > 0 {
+		placeholders := make([]string, 0, len(opts.MemoryClasses))
+		for _, c := range opts.MemoryClasses {
+			normalized := NormalizeMemoryClass(c)
+			if normalized == "" {
+				continue
+			}
+			if !IsValidMemoryClass(normalized) {
+				return nil, fmt.Errorf("invalid memory class %q", c)
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, normalized)
+		}
+		if len(placeholders) > 0 {
+			query += " AND memory_class IN (" + strings.Join(placeholders, ",") + ")"
+		}
 	}
 
 	// Metadata filters (Issue #30)
@@ -129,7 +153,7 @@ func (s *SQLiteStore) ListMemories(ctx context.Context, opts ListOpts) ([]*Memor
 		m := &Memory{}
 		var metadataStr sql.NullString
 		if err := rows.Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine,
-			&m.SourceSection, &m.ContentHash, &m.Project, &metadataStr, &m.ImportedAt, &m.UpdatedAt); err != nil {
+			&m.SourceSection, &m.ContentHash, &m.Project, &m.MemoryClass, &metadataStr, &m.ImportedAt, &m.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning memory row: %w", err)
 		}
 		m.Metadata = unmarshalMetadata(metadataStr)
@@ -214,8 +238,8 @@ func (s *SQLiteStore) insertBatch(ctx context.Context, memories []*Memory) ([]in
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO memories (content, source_file, source_line, source_section, content_hash, project, imported_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO memories (content, source_file, source_line, source_section, content_hash, project, memory_class, metadata, imported_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("preparing statement: %w", err)
@@ -229,8 +253,17 @@ func (s *SQLiteStore) insertBatch(ctx context.Context, memories []*Memory) ([]in
 		if m.ContentHash == "" {
 			m.ContentHash = HashMemoryContent(m.Content, m.SourceFile)
 		}
+		m.MemoryClass = NormalizeMemoryClass(m.MemoryClass)
+		if m.MemoryClass != "" && !IsValidMemoryClass(m.MemoryClass) {
+			return nil, fmt.Errorf("invalid memory class %q", m.MemoryClass)
+		}
+		metadataJSON := marshalMetadata(m.Metadata)
+		var metadataArg interface{}
+		if metadataJSON != "" {
+			metadataArg = metadataJSON
+		}
 		result, err := stmt.ExecContext(ctx,
-			m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, m.Project, now, now,
+			m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, m.Project, m.MemoryClass, metadataArg, now, now,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("inserting memory in batch: %w", err)
@@ -255,10 +288,10 @@ func (s *SQLiteStore) insertBatch(ctx context.Context, memories []*Memory) ([]in
 func (s *SQLiteStore) FindByHash(ctx context.Context, hash string) (*Memory, error) {
 	m := &Memory{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, content, source_file, source_line, source_section, content_hash, project, imported_at, updated_at
+		`SELECT id, content, source_file, source_line, source_section, content_hash, project, memory_class, imported_at, updated_at
 		 FROM memories WHERE content_hash = ? AND deleted_at IS NULL`, hash,
 	).Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine, &m.SourceSection,
-		&m.ContentHash, &m.Project, &m.ImportedAt, &m.UpdatedAt)
+		&m.ContentHash, &m.Project, &m.MemoryClass, &m.ImportedAt, &m.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil

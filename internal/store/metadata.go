@@ -164,7 +164,7 @@ func (s *SQLiteStore) SearchFTSWithMetadata(ctx context.Context, query string, l
 	if project != "" {
 		sqlQuery = fmt.Sprintf(`
 			SELECT m.id, m.content, m.source_file, m.source_line, m.source_section,
-			       m.content_hash, m.project, m.metadata, m.imported_at, m.updated_at,
+			       m.content_hash, m.project, m.memory_class, m.metadata, m.imported_at, m.updated_at,
 			       bm25(memories_fts) AS score
 			FROM memories_fts f
 			JOIN memories m ON m.id = f.rowid
@@ -179,7 +179,7 @@ func (s *SQLiteStore) SearchFTSWithMetadata(ctx context.Context, query string, l
 	} else {
 		sqlQuery = fmt.Sprintf(`
 			SELECT m.id, m.content, m.source_file, m.source_line, m.source_section,
-			       m.content_hash, m.project, m.metadata, m.imported_at, m.updated_at,
+			       m.content_hash, m.project, m.memory_class, m.metadata, m.imported_at, m.updated_at,
 			       bm25(memories_fts) AS score
 			FROM memories_fts f
 			JOIN memories m ON m.id = f.rowid
@@ -280,7 +280,7 @@ func scanSearchResultsWithMetadata(rows *sql.Rows) ([]*SearchResult, error) {
 		var score float64
 
 		err := rows.Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine, &m.SourceSection,
-			&m.ContentHash, &m.Project, &metadata, &m.ImportedAt, &m.UpdatedAt, &score)
+			&m.ContentHash, &m.Project, &m.MemoryClass, &metadata, &m.ImportedAt, &m.UpdatedAt, &score)
 		if err != nil {
 			return nil, fmt.Errorf("scanning row: %w", err)
 		}
