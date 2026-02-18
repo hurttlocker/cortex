@@ -233,7 +233,9 @@ func (s *SQLiteStore) GetAttributeConflicts(ctx context.Context) ([]Conflict, er
 		  AND f1.object != f2.object
 		  AND f1.id < f2.id
 		 JOIN memories m1 ON f1.memory_id = m1.id AND m1.deleted_at IS NULL
-		 JOIN memories m2 ON f2.memory_id = m2.id AND m2.deleted_at IS NULL`,
+		 JOIN memories m2 ON f2.memory_id = m2.id AND m2.deleted_at IS NULL
+		 WHERE f1.subject != '' AND f1.subject IS NOT NULL
+		   AND f2.subject != '' AND f2.subject IS NOT NULL`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying attribute conflicts: %w", err)
