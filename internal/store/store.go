@@ -204,15 +204,20 @@ func NewStore(cfg StoreConfig) (Store, error) {
 		cfg.EmbeddingDimensions = DefaultEmbeddingDimensions
 	}
 
-	// Create parent directory for non-memory databases
-	if cfg.DBPath != ":memory:" {
+	// Create parent directory for non-memory, non-read-only databases
+	if cfg.DBPath != ":memory:" && !cfg.ReadOnly {
 		dir := filepath.Dir(cfg.DBPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("creating db directory: %w", err)
 		}
 	}
 
-	db, err := sql.Open("sqlite", cfg.DBPath)
+	dsn := cfg.DBPath
+	if cfg.ReadOnly && cfg.DBPath != ":memory:" {
+		dsn = cfg.DBPath + "?mode=ro"
+	}
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -227,12 +232,20 @@ func NewStore(cfg StoreConfig) (Store, error) {
 	db.SetMaxOpenConns(1) // SQLite handles one writer at a time
 	db.SetMaxIdleConns(1)
 
-	// Enable WAL mode, foreign keys, and generous busy timeout
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=10000",
-		"PRAGMA synchronous=NORMAL",
+	// Enable pragmas — read-only mode skips WAL and synchronous (they require write access)
+	var pragmas []string
+	if cfg.ReadOnly {
+		pragmas = []string{
+			"PRAGMA foreign_keys=ON",
+			"PRAGMA busy_timeout=10000",
+		}
+	} else {
+		pragmas = []string{
+			"PRAGMA journal_mode=WAL",
+			"PRAGMA foreign_keys=ON",
+			"PRAGMA busy_timeout=10000",
+			"PRAGMA synchronous=NORMAL",
+		}
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {

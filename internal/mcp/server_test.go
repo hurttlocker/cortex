@@ -221,11 +221,15 @@ func TestImportTool(t *testing.T) {
 		t.Fatalf("parsing import result: %v", err)
 	}
 
-	if importResult["id"] == nil {
-		t.Fatal("expected import result to have an id")
+	if importResult["ids"] == nil {
+		t.Fatal("expected import result to have ids")
 	}
-	if importResult["message"] != "Memory imported successfully" {
-		t.Errorf("unexpected message: %v", importResult["message"])
+	ids := importResult["ids"].([]interface{})
+	if len(ids) == 0 {
+		t.Fatal("expected at least one imported memory ID")
+	}
+	if importResult["message"] == nil || importResult["message"] == "" {
+		t.Error("expected non-empty message")
 	}
 
 	// Verify we can search for it

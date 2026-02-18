@@ -379,8 +379,8 @@ func TestDefaultOptions(t *testing.T) {
 	if opts.Limit != 10 {
 		t.Errorf("expected default limit 10, got %d", opts.Limit)
 	}
-	if opts.MinConfidence != -1.0 {
-		t.Errorf("expected default min_confidence -1.0 (use mode defaults), got %f", opts.MinConfidence)
+	if opts.MinScore != -1.0 {
+		t.Errorf("expected default min_score -1.0 (use mode defaults), got %f", opts.MinScore)
 	}
 }
 
@@ -523,21 +523,21 @@ func TestResultsJSON_Array(t *testing.T) {
 	}
 }
 
-// --- MinConfidence Filter ---
+// --- MinScore Filter ---
 
-func TestSearchBM25_MinConfidence(t *testing.T) {
+func TestSearchBM25_MinScore(t *testing.T) {
 	s := newTestStore(t)
 	seedTestData(t, s)
 	engine := NewEngine(s)
 	ctx := context.Background()
 
 	// With min confidence of 0.99, should get no results (BM25 normalized scores are < 1)
-	results, err := engine.Search(ctx, "Go", Options{Mode: ModeKeyword, Limit: 10, MinConfidence: 0.99})
+	results, err := engine.Search(ctx, "Go", Options{Mode: ModeKeyword, Limit: 10, MinScore: 0.99})
 	if err != nil {
 		t.Fatalf("search failed: %v", err)
 	}
 	if len(results) != 0 {
-		t.Errorf("expected 0 results with high min_confidence, got %d (first score: %f)",
+		t.Errorf("expected 0 results with high min_score, got %d (first score: %f)",
 			len(results), results[0].Score)
 	}
 }

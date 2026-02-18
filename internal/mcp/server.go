@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/embed"
+	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/observe"
 	"github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
@@ -90,7 +91,7 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 		),
 		mcp.WithString("mode",
 			mcp.Description("Search mode: bm25, semantic, or hybrid (default: hybrid)"),
-			mcp.Enum("bm25", "semantic", "hybrid"),
+			mcp.Enum("keyword", "bm25", "semantic", "hybrid"),
 		),
 		mcp.WithNumber("limit",
 			mcp.Description("Maximum number of results (default: 10, max: 50)"),
@@ -138,7 +139,7 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 
 func registerImportTool(s *server.MCPServer, st store.Store) {
 	tool := mcp.NewTool("cortex_import",
-		mcp.WithDescription("Import a new memory into Cortex. The memory is stored with content-hash deduplication."),
+		mcp.WithDescription("Import a new memory into Cortex. Large content is automatically chunked (max 1500 chars per chunk). Optionally extracts facts using rule-based extraction."),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("content",
@@ -147,6 +148,9 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 		),
 		mcp.WithString("source",
 			mcp.Description("Source identifier (e.g. filename, URL). Defaults to 'mcp-import'."),
+		),
+		mcp.WithBoolean("extract",
+			mcp.Description("Extract facts from imported content using rule-based extraction (default: false)"),
 		),
 	)
 
@@ -176,22 +180,50 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 			}
 		}
 
-		mem := &store.Memory{
-			Content:    content,
-			SourceFile: source,
-			ImportedAt: time.Now().UTC(),
-			UpdatedAt:  time.Now().UTC(),
+		enableExtract := false
+		if ext, err := req.RequireString("extract"); err == nil {
+			enableExtract = ext == "true"
 		}
 
-		id, err := st.AddMemory(ctx, mem)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("import error: %v", err)), nil
+		// Chunk large content (same 1500-char max as CLI import)
+		chunks := chunkContent(content, 1500)
+
+		var ids []int64
+		for i, chunk := range chunks {
+			mem := &store.Memory{
+				Content:    chunk,
+				SourceFile: source,
+				SourceLine: i + 1,
+				ImportedAt: time.Now().UTC(),
+				UpdatedAt:  time.Now().UTC(),
+			}
+
+			id, err := st.AddMemory(ctx, mem)
+			if err != nil {
+				// Skip duplicates, report others
+				if strings.Contains(err.Error(), "UNIQUE constraint") {
+					continue
+				}
+				return mcp.NewToolResultError(fmt.Sprintf("import error: %v", err)), nil
+			}
+			ids = append(ids, id)
+		}
+
+		// Extract facts if requested
+		factsExtracted := 0
+		if enableExtract && len(ids) > 0 {
+			factsExtracted = extractFactsFromMemories(ctx, st, ids)
 		}
 
 		result := map[string]interface{}{
-			"id":      id,
+			"ids":     ids,
+			"chunks":  len(chunks),
+			"stored":  len(ids),
 			"source":  source,
-			"message": "Memory imported successfully",
+			"message": fmt.Sprintf("Imported %d memory chunk(s)", len(ids)),
+		}
+		if enableExtract {
+			result["facts_extracted"] = factsExtracted
 		}
 		data, _ := json.MarshalIndent(result, "", "  ")
 		return mcp.NewToolResultText(string(data)), nil
@@ -473,6 +505,124 @@ func registerRecentResource(s *server.MCPServer, st store.Store) {
 }
 
 // --- Helpers ---
+
+// chunkContent splits large text into chunks at paragraph boundaries.
+// Chunks are at most maxChars long, split on \n\n > \n > word boundary.
+func chunkContent(content string, maxChars int) []string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil
+	}
+	if len(content) <= maxChars {
+		return []string{content}
+	}
+
+	var chunks []string
+	// Split on double newlines first (paragraph boundaries)
+	paragraphs := strings.Split(content, "\n\n")
+
+	var current strings.Builder
+	for _, para := range paragraphs {
+		para = strings.TrimSpace(para)
+		if para == "" {
+			continue
+		}
+
+		// If adding this paragraph would exceed max, flush current
+		if current.Len() > 0 && current.Len()+len(para)+2 > maxChars {
+			chunks = append(chunks, strings.TrimSpace(current.String()))
+			current.Reset()
+		}
+
+		// If a single paragraph exceeds max, split on line boundaries
+		if len(para) > maxChars {
+			if current.Len() > 0 {
+				chunks = append(chunks, strings.TrimSpace(current.String()))
+				current.Reset()
+			}
+			lines := strings.Split(para, "\n")
+			for _, line := range lines {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				if current.Len()+len(line)+1 > maxChars && current.Len() > 0 {
+					chunks = append(chunks, strings.TrimSpace(current.String()))
+					current.Reset()
+				}
+				if current.Len() > 0 {
+					current.WriteString("\n")
+				}
+				current.WriteString(line)
+			}
+		} else {
+			if current.Len() > 0 {
+				current.WriteString("\n\n")
+			}
+			current.WriteString(para)
+		}
+	}
+
+	if current.Len() > 0 {
+		chunks = append(chunks, strings.TrimSpace(current.String()))
+	}
+
+	// Filter out tiny chunks (< 20 chars)
+	var filtered []string
+	for _, c := range chunks {
+		if len(c) >= 20 {
+			filtered = append(filtered, c)
+		} else if len(filtered) > 0 {
+			// Merge tiny chunk with previous
+			filtered[len(filtered)-1] += "\n" + c
+		}
+	}
+
+	if len(filtered) == 0 && len(chunks) > 0 {
+		return chunks // Don't lose content if all chunks are tiny
+	}
+	return filtered
+}
+
+// extractFactsFromMemories runs rule-based fact extraction on imported memories.
+func extractFactsFromMemories(ctx context.Context, st store.Store, memoryIDs []int64) int {
+	memories, err := st.GetMemoriesByIDs(ctx, memoryIDs)
+	if err != nil || len(memories) == 0 {
+		return 0
+	}
+
+	pipeline := extract.NewPipeline(nil)
+	totalFacts := 0
+
+	for _, mem := range memories {
+		metadata := map[string]string{
+			"source_file":    mem.SourceFile,
+			"source_section": mem.SourceSection,
+		}
+		facts, err := pipeline.Extract(ctx, mem.Content, metadata)
+		if err != nil || len(facts) == 0 {
+			continue
+		}
+
+		for _, ef := range facts {
+			f := &store.Fact{
+				MemoryID:    mem.ID,
+				Subject:     ef.Subject,
+				Predicate:   ef.Predicate,
+				Object:      ef.Object,
+				FactType:    ef.FactType,
+				Confidence:  ef.Confidence,
+				DecayRate:   ef.DecayRate,
+				SourceQuote: ef.SourceQuote,
+			}
+			if _, err := st.AddFact(ctx, f); err == nil {
+				totalFacts++
+			}
+		}
+	}
+
+	return totalFacts
+}
 
 func containsInsensitive(s, substr string) bool {
 	return len(s) >= len(substr) &&

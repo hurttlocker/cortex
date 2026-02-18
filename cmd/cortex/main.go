@@ -20,11 +20,12 @@ import (
 )
 
 // version is set by goreleaser via ldflags at build time.
-var version = "0.1.7"
+var version = "0.1.8"
 
 var (
-	globalDBPath  string
-	globalVerbose bool
+	globalDBPath   string
+	globalVerbose  bool
+	globalReadOnly bool
 )
 
 func main() {
@@ -73,12 +74,12 @@ func main() {
 			os.Exit(1)
 		}
 	case "stale":
-		if err := runStale(os.Args[2:]); err != nil {
+		if err := runStale(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 	case "conflicts":
-		if err := runConflicts(os.Args[2:]); err != nil {
+		if err := runConflicts(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -129,6 +130,8 @@ func parseGlobalFlags(args []string) []string {
 			globalDBPath = strings.TrimPrefix(args[i], "--db=")
 		case args[i] == "--verbose" || args[i] == "-v":
 			globalVerbose = true
+		case args[i] == "--read-only" || args[i] == "--readonly":
+			globalReadOnly = true
 		case strings.HasPrefix(args[i], "-"):
 			// Skip unknown flags but keep them for subcommand processing
 			filtered = append(filtered, args[i])
@@ -150,6 +153,11 @@ func getDBPath() string {
 		return envPath
 	}
 	return "" // Let store.NewStore use its default
+}
+
+// getStoreConfig returns a StoreConfig with the global DB path and read-only flag.
+func getStoreConfig() store.StoreConfig {
+	return store.StoreConfig{DBPath: getDBPath(), ReadOnly: globalReadOnly}
 }
 
 func runImport(args []string) error {
@@ -194,7 +202,7 @@ func runImport(args []string) error {
 	}
 
 	// Open store
-	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	s, err := store.NewStore(getStoreConfig())
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -265,7 +273,7 @@ func runSearch(args []string) error {
 	var queryParts []string
 	mode := "keyword"
 	limit := 10
-	minConfidence := -1.0 // -1 = use mode-dependent defaults (BM25: 0.05, semantic: 0.25, hybrid: 0.05)
+	minScore := -1.0 // -1 = use mode-dependent defaults (BM25: 0.05, semantic: 0.25, hybrid: 0.05)
 	jsonOutput := false
 	embedFlag := ""
 
@@ -289,19 +297,25 @@ func runSearch(args []string) error {
 				return fmt.Errorf("invalid --limit value: %s", args[i])
 			}
 			limit = n
-		case args[i] == "--min-confidence" && i+1 < len(args):
+		case (args[i] == "--min-score" || args[i] == "--min-confidence") && i+1 < len(args):
 			i++
 			f, err := strconv.ParseFloat(args[i], 64)
 			if err != nil {
-				return fmt.Errorf("invalid --min-confidence value: %s", args[i])
+				return fmt.Errorf("invalid --min-score value: %s", args[i])
 			}
-			minConfidence = f
-		case strings.HasPrefix(args[i], "--min-confidence="):
-			f, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--min-confidence="), 64)
+			minScore = f
+		case strings.HasPrefix(args[i], "--min-score=") || strings.HasPrefix(args[i], "--min-confidence="):
+			val := args[i]
+			if strings.HasPrefix(val, "--min-score=") {
+				val = strings.TrimPrefix(val, "--min-score=")
+			} else {
+				val = strings.TrimPrefix(val, "--min-confidence=")
+			}
+			f, err := strconv.ParseFloat(val, 64)
 			if err != nil {
-				return fmt.Errorf("invalid --min-confidence value: %s", args[i])
+				return fmt.Errorf("invalid --min-score value: %s", val)
 			}
-			minConfidence = f
+			minScore = f
 		case args[i] == "--json":
 			jsonOutput = true
 		case args[i] == "--embed" && i+1 < len(args):
@@ -327,7 +341,7 @@ func runSearch(args []string) error {
 	}
 
 	// Open store
-	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	s, err := store.NewStore(getStoreConfig())
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -363,7 +377,7 @@ func runSearch(args []string) error {
 	opts := search.Options{
 		Mode:          searchMode,
 		Limit:         limit,
-		MinConfidence: minConfidence,
+		MinScore: minScore,
 	}
 
 	results, err := engine.Search(ctx, query, opts)
@@ -390,7 +404,7 @@ func runStats(args []string) error {
 	}
 
 	// Open store
-	cfg := store.StoreConfig{DBPath: getDBPath()}
+	cfg := getStoreConfig()
 	s, err := store.NewStore(cfg)
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
@@ -476,7 +490,7 @@ func runStale(args []string) error {
 	}
 
 	// Open store
-	cfg := store.StoreConfig{DBPath: getDBPath()}
+	cfg := getStoreConfig()
 	s, err := store.NewStore(cfg)
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
@@ -526,7 +540,7 @@ func runConflicts(args []string) error {
 	}
 
 	// Open store
-	cfg := store.StoreConfig{DBPath: getDBPath()}
+	cfg := getStoreConfig()
 	s, err := store.NewStore(cfg)
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
@@ -672,7 +686,7 @@ func runList(args []string) error {
 	}
 
 	// Open store
-	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	s, err := store.NewStore(getStoreConfig())
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -742,7 +756,7 @@ func runExport(args []string) error {
 	}
 
 	// Open store
-	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	s, err := store.NewStore(getStoreConfig())
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -904,7 +918,7 @@ func runReinforce(args []string) error {
 		return fmt.Errorf("usage: cortex reinforce <fact_id> [fact_id...]")
 	}
 
-	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	s, err := store.NewStore(getStoreConfig())
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -1011,7 +1025,7 @@ func runReimport(args []string) error {
 
 	// Step 2: Import
 	fmt.Println("Step 2/3: Importing...")
-	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	s, err := store.NewStore(getStoreConfig())
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -1079,7 +1093,7 @@ func runCleanup(args []string) error {
 		return fmt.Errorf("unexpected argument: %s", arg)
 	}
 
-	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	s, err := store.NewStore(getStoreConfig())
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -1174,7 +1188,7 @@ Resources:
 		}
 	}
 
-	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	s, err := store.NewStore(getStoreConfig())
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -1231,7 +1245,7 @@ func runEmbed(args []string) error {
 	}
 
 	// Open store
-	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	s, err := store.NewStore(getStoreConfig())
 	if err != nil {
 		return fmt.Errorf("opening store: %w", err)
 	}
@@ -1992,13 +2006,14 @@ Commands:
 
 Global Flags:
   --db <path>         Database path (overrides CORTEX_DB env var)
+  --read-only         Open database in read-only mode (no schema changes)
   --verbose, -v       Show detailed output
   -h, --help          Show this help message
 
 Search Flags:
   --mode <mode>       Search mode: keyword, semantic, hybrid (default: keyword)
   --limit <N>         Maximum results (default: 10)
-  --min-confidence <F> Minimum confidence threshold (default: 0.0)
+  --min-score <F>     Minimum search score threshold (default: mode-dependent; --min-confidence still works)
   --embed <provider/model> Embedding provider for semantic/hybrid search (e.g., --embed ollama/all-minilm)
   --json              Force JSON output even in TTY
 

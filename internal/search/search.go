@@ -53,7 +53,7 @@ func ParseMode(s string) (Mode, error) {
 type Options struct {
 	Mode          Mode    // Search mode (default: keyword)
 	Limit         int     // Max results (default: 10)
-	MinConfidence float64 // Minimum score threshold (default: mode-dependent, -1 = use default)
+	MinScore float64 // Minimum search score threshold (default: mode-dependent, -1 = use default)
 }
 
 // Default minimum score thresholds by mode.
@@ -69,7 +69,7 @@ func DefaultOptions() Options {
 	return Options{
 		Mode:          ModeKeyword,
 		Limit:         10,
-		MinConfidence: -1, // -1 = use mode-dependent default
+		MinScore: -1, // -1 = use mode-dependent default
 	}
 }
 
@@ -284,7 +284,7 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 		}
 	}
 
-	minScore := effectiveMinScore(ModeKeyword, opts.MinConfidence)
+	minScore := effectiveMinScore(ModeKeyword, opts.MinScore)
 	results := make([]Result, 0, len(storeResults))
 	allFiltered := make([]Result, 0, len(storeResults))
 
@@ -313,8 +313,8 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 	// Small-DB rescue: if FTS5 returned matches but all scores fell below
 	// the DEFAULT threshold (common with <50 docs where IDF is very low),
 	// return the matches anyway. A low-confidence result beats no result.
-	// Only applies when user hasn't set an explicit MinConfidence.
-	if len(results) == 0 && len(allFiltered) > 0 && opts.MinConfidence < 0 {
+	// Only applies when user hasn't set an explicit MinScore.
+	if len(results) == 0 && len(allFiltered) > 0 && opts.MinScore < 0 {
 		results = allFiltered
 	}
 
@@ -458,7 +458,7 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 	}
 
 	// Search embeddings in store
-	minScore := effectiveMinScore(ModeSemantic, opts.MinConfidence)
+	minScore := effectiveMinScore(ModeSemantic, opts.MinScore)
 	storeResults, err := e.store.SearchEmbedding(ctx, queryEmbedding, opts.Limit, minScore)
 	if err != nil {
 		return nil, fmt.Errorf("semantic search failed: %w", err)
