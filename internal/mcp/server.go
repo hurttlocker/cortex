@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/embed"
@@ -28,6 +29,13 @@ type ServerConfig struct {
 	Version  string         // version string for MCP server info
 	Embedder embed.Embedder // optional, for semantic/hybrid search
 }
+
+// dbMu serializes all MCP tool calls that touch the database.
+// The mcp-go library dispatches handlers concurrently via goroutines.
+// SQLite (even with WAL) supports only one writer at a time, and concurrent
+// reads during writes can return stale results. A global mutex ensures
+// correct ordering: imports complete before searches see their data.
+var dbMu sync.Mutex
 
 // NewServer creates a configured MCP server with all Cortex tools and resources.
 func NewServer(cfg ServerConfig) *server.MCPServer {
@@ -89,6 +97,9 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
 		query, err := req.RequireString("query")
 		if err != nil {
 			return mcp.NewToolResultError("query is required"), nil
@@ -139,6 +150,9 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
 		content, err := req.RequireString("content")
 		if err != nil {
 			return mcp.NewToolResultError("content is required"), nil
@@ -147,9 +161,18 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 			return mcp.NewToolResultError("memory content cannot be empty"), nil
 		}
 
+		// Strip null bytes from content
+		content = strings.ReplaceAll(content, "\x00", "")
+
 		source := "mcp-import"
 		if s, err := req.RequireString("source"); err == nil && s != "" {
-			source = s
+			// Sanitize source: strip path traversal
+			s = strings.ReplaceAll(s, "..", "")
+			s = strings.ReplaceAll(s, "/", "-")
+			s = strings.ReplaceAll(s, "\\", "-")
+			if s != "" {
+				source = s
+			}
 		}
 
 		mem := &store.Memory{
@@ -182,6 +205,9 @@ func registerStatsTool(s *server.MCPServer, engine *observe.Engine) {
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
 		stats, err := engine.GetStats(ctx)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("stats error: %v", err)), nil
@@ -209,6 +235,9 @@ func registerFactsTool(s *server.MCPServer, st store.Store) {
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
 		opts := store.ListOpts{Limit: 20}
 
 		if limitVal, err := req.RequireFloat("limit"); err == nil {
@@ -269,6 +298,9 @@ func registerStaleTool(s *server.MCPServer, engine *observe.Engine) {
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
 		opts := observe.StaleOpts{
 			MaxConfidence: 0.5,
 			MaxDays:       30,
@@ -310,6 +342,9 @@ func registerStatsResource(s *server.MCPServer, engine *observe.Engine) {
 	)
 
 	s.AddResource(resource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
 		stats, err := engine.GetStats(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("getting stats: %w", err)
@@ -335,6 +370,9 @@ func registerRecentResource(s *server.MCPServer, st store.Store) {
 	)
 
 	s.AddResource(resource, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
 		memories, err := st.ListMemories(ctx, store.ListOpts{
 			Limit:  20,
 			SortBy: "date",

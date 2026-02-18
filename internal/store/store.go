@@ -112,6 +112,7 @@ type StoreConfig struct {
 	DBPath              string
 	BatchSize           int
 	EmbeddingDimensions int
+	ReadOnly            bool // skip migrations, open for read-only access
 }
 
 // Store defines the core storage interface.
@@ -236,10 +237,12 @@ func NewStore(cfg StoreConfig) (Store, error) {
 		embDims:   cfg.EmbeddingDimensions,
 	}
 
-	// Run migrations
-	if err := s.migrate(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("running migrations: %w", err)
+	// Run migrations (skip for read-only access)
+	if !cfg.ReadOnly {
+		if err := s.migrate(); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("running migrations: %w", err)
+		}
 	}
 
 	return s, nil

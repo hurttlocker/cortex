@@ -176,14 +176,12 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 
 	minScore := effectiveMinScore(ModeKeyword, opts.MinConfidence)
 	results := make([]Result, 0, len(storeResults))
+	allFiltered := make([]Result, 0, len(storeResults))
+
 	for _, sr := range storeResults {
 		// FTS5 rank is negative (more negative = better match).
 		// Convert to positive score where higher = better.
 		score := normalizeBM25Score(sr.Score)
-
-		if score < minScore {
-			continue
-		}
 
 		r := Result{
 			Content:       sr.Memory.Content,
@@ -195,7 +193,19 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 			MatchType:     "bm25",
 			MemoryID:      sr.Memory.ID,
 		}
-		results = append(results, r)
+		allFiltered = append(allFiltered, r)
+
+		if score >= minScore {
+			results = append(results, r)
+		}
+	}
+
+	// Small-DB rescue: if FTS5 returned matches but all scores fell below
+	// the DEFAULT threshold (common with <50 docs where IDF is very low),
+	// return the matches anyway. A low-confidence result beats no result.
+	// Only applies when user hasn't set an explicit MinConfidence.
+	if len(results) == 0 && len(allFiltered) > 0 && opts.MinConfidence < 0 {
+		results = allFiltered
 	}
 
 	// Sort by score descending (should already be sorted from FTS5, but ensure it)
