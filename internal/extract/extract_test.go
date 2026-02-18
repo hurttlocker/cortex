@@ -23,7 +23,7 @@ func TestExtractKeyValues_BoldColon(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "**Name:** Alex\n**Location:** Philadelphia"
 
-	facts := pipeline.extractKeyValues(text)
+	facts := pipeline.extractKeyValues(text, nil)
 
 	if len(facts) != 2 {
 		t.Fatalf("Expected 2 facts, got %d", len(facts))
@@ -61,7 +61,7 @@ func TestExtractKeyValues_BulletColon(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "- Broker: TradeStation\n* Strategy: QQQ options\n• Risk: Aggressive"
 
-	facts := pipeline.extractKeyValues(text)
+	facts := pipeline.extractKeyValues(text, nil)
 
 	if len(facts) != 3 {
 		t.Fatalf("Expected 3 facts, got %d", len(facts))
@@ -89,7 +89,7 @@ func TestExtractKeyValues_Arrow(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "Source → MEMORY.md\nEditor → vim"
 
-	facts := pipeline.extractKeyValues(text)
+	facts := pipeline.extractKeyValues(text, nil)
 
 	if len(facts) != 2 {
 		t.Fatalf("Expected 2 facts, got %d", len(facts))
@@ -105,7 +105,7 @@ func TestExtractKeyValues_Equals(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "theme = dark\nlanguage = go"
 
-	facts := pipeline.extractKeyValues(text)
+	facts := pipeline.extractKeyValues(text, nil)
 
 	if len(facts) != 2 {
 		t.Fatalf("Expected 2 facts, got %d", len(facts))
@@ -121,7 +121,7 @@ func TestExtractKeyValues_EmDash(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "Status — Active\nPriority — High"
 
-	facts := pipeline.extractKeyValues(text)
+	facts := pipeline.extractKeyValues(text, nil)
 
 	if len(facts) != 2 {
 		t.Fatalf("Expected 2 facts, got %d", len(facts))
@@ -138,7 +138,7 @@ func TestExtractKeyValues_Priority(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "**Name:** Alex"
 
-	facts := pipeline.extractKeyValues(text)
+	facts := pipeline.extractKeyValues(text, nil)
 
 	if len(facts) != 1 {
 		t.Fatalf("Expected 1 fact, got %d", len(facts))
@@ -153,7 +153,7 @@ func TestExtractKeyValues_Priority(t *testing.T) {
 
 func TestExtractKeyValues_EmptyInput(t *testing.T) {
 	pipeline := NewPipeline()
-	facts := pipeline.extractKeyValues("")
+	facts := pipeline.extractKeyValues("", nil)
 	if len(facts) != 0 {
 		t.Errorf("Expected 0 facts for empty input, got %d", len(facts))
 	}
@@ -162,7 +162,7 @@ func TestExtractKeyValues_EmptyInput(t *testing.T) {
 func TestExtractKeyValues_NoMatches(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "This is just regular text with no patterns."
-	facts := pipeline.extractKeyValues(text)
+	facts := pipeline.extractKeyValues(text, nil)
 	if len(facts) != 0 {
 		t.Errorf("Expected 0 facts for text with no patterns, got %d", len(facts))
 	}
@@ -173,7 +173,7 @@ func TestExtractRegexPatterns_ISO8601Date(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "Meeting on 2026-01-15 and another on 2026-12-31T15:30:00Z"
 
-	facts := pipeline.extractRegexPatterns(text)
+	facts := pipeline.extractRegexPatterns(text, nil)
 
 	// Should find 2 dates
 	dateCount := 0
@@ -210,7 +210,7 @@ func TestExtractRegexPatterns_NaturalDate(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "Born on March 15, 1992 and graduated in May 2015"
 
-	facts := pipeline.extractRegexPatterns(text)
+	facts := pipeline.extractRegexPatterns(text, nil)
 
 	dateCount := 0
 	for _, fact := range facts {
@@ -240,7 +240,7 @@ func TestExtractRegexPatterns_Email(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "Contact me at john@example.com or support@company.co.uk"
 
-	facts := pipeline.extractRegexPatterns(text)
+	facts := pipeline.extractRegexPatterns(text, nil)
 
 	emailCount := 0
 	emails := make(map[string]bool)
@@ -267,7 +267,7 @@ func TestExtractRegexPatterns_PhoneUS(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "Call me at (555) 123-4567 or 555.123.4567 or 555-123-4567"
 
-	facts := pipeline.extractRegexPatterns(text)
+	facts := pipeline.extractRegexPatterns(text, nil)
 
 	phoneCount := 0
 	for _, fact := range facts {
@@ -285,7 +285,7 @@ func TestExtractRegexPatterns_URL(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "Visit https://example.com and http://github.com/user/repo"
 
-	facts := pipeline.extractRegexPatterns(text)
+	facts := pipeline.extractRegexPatterns(text, nil)
 
 	urlCount := 0
 	urls := make(map[string]bool)
@@ -312,7 +312,7 @@ func TestExtractRegexPatterns_Money(t *testing.T) {
 	pipeline := NewPipeline()
 	text := "Budget is $1,500 or maybe $18K, but not more than $1.5M"
 
-	facts := pipeline.extractRegexPatterns(text)
+	facts := pipeline.extractRegexPatterns(text, nil)
 
 	moneyCount := 0
 	amounts := make(map[string]bool)
@@ -528,13 +528,13 @@ func TestConfidenceScores(t *testing.T) {
 	pipeline := NewPipeline()
 
 	// KV patterns should have 0.9 confidence
-	kvFacts := pipeline.extractKeyValues("**Name:** Alex")
+	kvFacts := pipeline.extractKeyValues("**Name:** Alex", nil)
 	if len(kvFacts) > 0 && kvFacts[0].Confidence != 0.9 {
 		t.Errorf("Expected KV fact confidence 0.9, got %f", kvFacts[0].Confidence)
 	}
 
 	// Regex patterns should have 0.7 confidence
-	regexFacts := pipeline.extractRegexPatterns("Contact me at john@example.com")
+	regexFacts := pipeline.extractRegexPatterns("Contact me at john@example.com", nil)
 	for _, fact := range regexFacts {
 		if fact.Confidence != 0.7 {
 			t.Errorf("Expected regex fact confidence 0.7, got %f", fact.Confidence)

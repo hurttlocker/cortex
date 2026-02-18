@@ -793,6 +793,9 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 		if strings.HasSuffix(strings.ToLower(memory.SourceFile), ".md") {
 			metadata["format"] = "markdown"
 		}
+		if memory.SourceSection != "" {
+			metadata["source_section"] = memory.SourceSection
+		}
 
 		// Extract facts
 		facts, err := pipeline.Extract(ctx, memory.Content, metadata)

@@ -85,6 +85,28 @@ func NewPipeline(llmConfig ...*LLMConfig) *Pipeline {
 	return p
 }
 
+// inferSubject derives a subject string from extraction metadata.
+// First choice: source_section (e.g. "Wedding Planning > Vendor Contacts").
+// Second choice: filename stem from source_file (e.g. "2026-02-17").
+// Returns "" when neither is available.
+func inferSubject(metadata map[string]string) string {
+	if section, ok := metadata["source_section"]; ok && section != "" {
+		return section
+	}
+	if file, ok := metadata["source_file"]; ok && file != "" {
+		// Strip directory and extension to get filename stem.
+		base := file
+		if idx := strings.LastIndexAny(base, "/\\"); idx >= 0 {
+			base = base[idx+1:]
+		}
+		if idx := strings.LastIndex(base, "."); idx > 0 {
+			base = base[:idx]
+		}
+		return base
+	}
+	return ""
+}
+
 // Extract runs extraction on the input text and returns structured facts.
 // Uses both rule-based extraction (Tier 1) and optional LLM extraction (Tier 2).
 func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string]string) ([]ExtractedFact, error) {
@@ -92,11 +114,11 @@ func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string
 
 	// Tier 1: Rule-based extraction
 	// 1. Extract key-value patterns
-	kvFacts := p.extractKeyValues(text)
+	kvFacts := p.extractKeyValues(text, metadata)
 	facts = append(facts, kvFacts...)
 
 	// 2. Extract regex patterns (dates, emails, phones, URLs, money)
-	regexFacts := p.extractRegexPatterns(text)
+	regexFacts := p.extractRegexPatterns(text, metadata)
 	facts = append(facts, regexFacts...)
 
 	// 3. Assign decay rates and set extraction method for Tier 1 facts
@@ -227,9 +249,10 @@ func initRegexPatterns() []*regexPattern {
 }
 
 // extractKeyValues finds key-value patterns in text.
-func (p *Pipeline) extractKeyValues(text string) []ExtractedFact {
+func (p *Pipeline) extractKeyValues(text string, metadata map[string]string) []ExtractedFact {
 	var facts []ExtractedFact
 	lines := strings.Split(text, "\n")
+	subject := inferSubject(metadata)
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -253,7 +276,7 @@ func (p *Pipeline) extractKeyValues(text string) []ExtractedFact {
 				key = cleanKey(key)
 
 				fact := ExtractedFact{
-					Subject:     "", // Empty for key-value facts
+					Subject:     subject,
 					Predicate:   key,
 					Object:      value,
 					FactType:    "kv",
@@ -271,8 +294,9 @@ func (p *Pipeline) extractKeyValues(text string) []ExtractedFact {
 }
 
 // extractRegexPatterns finds common data type patterns in text.
-func (p *Pipeline) extractRegexPatterns(text string) []ExtractedFact {
+func (p *Pipeline) extractRegexPatterns(text string, metadata map[string]string) []ExtractedFact {
 	var facts []ExtractedFact
+	subject := inferSubject(metadata)
 
 	for _, pattern := range p.regexPatterns {
 		matches := pattern.regex.FindAllStringSubmatch(text, -1)
@@ -287,7 +311,7 @@ func (p *Pipeline) extractRegexPatterns(text string) []ExtractedFact {
 				predicate := inferPredicate(pattern.name, value)
 
 				fact := ExtractedFact{
-					Subject:     "",
+					Subject:     subject,
 					Predicate:   predicate,
 					Object:      value,
 					FactType:    pattern.factType,
