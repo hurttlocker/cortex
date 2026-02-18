@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hurttlocker/cortex/internal/observe"
 )
@@ -291,5 +294,64 @@ func TestRunConflicts_UnexpectedArg(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unexpected argument") {
 		t.Errorf("expected 'unexpected argument' error, got: %v", err)
+	}
+}
+
+// ==================== embed watch parsing + locking ====================
+
+func TestParseEmbedArgs_WatchMode(t *testing.T) {
+	opts, err := parseEmbedArgs([]string{"ollama/nomic-embed-text", "--watch", "--interval", "45m", "--batch-size", "12"})
+	if err != nil {
+		t.Fatalf("parseEmbedArgs: %v", err)
+	}
+	if !opts.watch {
+		t.Error("expected watch=true")
+	}
+	if opts.interval != 45*time.Minute {
+		t.Errorf("interval = %s, want 45m", opts.interval)
+	}
+	if opts.batchSize != 12 {
+		t.Errorf("batchSize = %d, want 12", opts.batchSize)
+	}
+}
+
+func TestParseEmbedArgs_RejectWatchForce(t *testing.T) {
+	_, err := parseEmbedArgs([]string{"ollama/nomic-embed-text", "--watch", "--force"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "cannot be used with --force") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseEmbedArgs_EnvFallback(t *testing.T) {
+	t.Setenv("CORTEX_EMBED", "ollama/nomic-embed-text")
+	_, err := parseEmbedArgs([]string{"--watch"})
+	if err != nil {
+		t.Fatalf("expected env fallback to allow missing positional provider: %v", err)
+	}
+}
+
+func TestComputeEmbedWatchBackoff_CapsAtInterval(t *testing.T) {
+	interval := 30 * time.Second
+	delay := computeEmbedWatchBackoff(interval, 10)
+	if delay != interval {
+		t.Fatalf("delay = %s, want %s", delay, interval)
+	}
+}
+
+func TestAcquireEmbedRunLock_PreventsOverlap(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "embed.lock")
+
+	lock, err := acquireEmbedRunLock(lockPath)
+	if err != nil {
+		t.Fatalf("acquire lock: %v", err)
+	}
+	defer lock.Release()
+
+	_, err = acquireEmbedRunLock(lockPath)
+	if !errors.Is(err, errEmbedLockHeld) {
+		t.Fatalf("expected errEmbedLockHeld, got: %v", err)
 	}
 }
