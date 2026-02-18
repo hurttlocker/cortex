@@ -219,6 +219,18 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 		return nil
 	}
 
+	if opts.CaptureDedupeEnabled {
+		isNearDup, _, _, err := findNearDuplicate(ctx, e.store, raw.Content, opts)
+		if err != nil {
+			return err
+		}
+		if isNearDup {
+			result.MemoriesNearDuped++
+			result.MemoriesUnchanged++
+			return nil
+		}
+	}
+
 	if opts.DryRun {
 		result.MemoriesNew++
 		return nil
@@ -341,6 +353,9 @@ func FormatImportResult(r *ImportResult) string {
 		r.FilesScanned, r.FilesImported, r.FilesSkipped))
 	sb.WriteString(fmt.Sprintf("  Memories: %d new, %d updated, %d unchanged\n",
 		r.MemoriesNew, r.MemoriesUpdated, r.MemoriesUnchanged))
+	if r.MemoriesNearDuped > 0 {
+		sb.WriteString(fmt.Sprintf("  Hygiene:  %d near-duplicates suppressed\n", r.MemoriesNearDuped))
+	}
 
 	if len(r.Errors) > 0 {
 		sb.WriteString(fmt.Sprintf("  Errors:   %d\n", len(r.Errors)))

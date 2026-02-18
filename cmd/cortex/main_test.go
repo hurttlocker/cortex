@@ -263,6 +263,26 @@ func TestRunImport_UnknownFlag(t *testing.T) {
 	}
 }
 
+func TestRunImport_InvalidSimilarityThreshold(t *testing.T) {
+	err := runImport([]string{"--capture-dedupe", "--similarity-threshold", "2.0", "/tmp/x.md"})
+	if err == nil {
+		t.Fatal("expected error for invalid similarity threshold")
+	}
+	if !strings.Contains(err.Error(), "--similarity-threshold") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunImport_InvalidDedupeWindow(t *testing.T) {
+	err := runImport([]string{"--capture-dedupe", "--dedupe-window-sec", "0", "/tmp/x.md"})
+	if err == nil {
+		t.Fatal("expected error for invalid dedupe window")
+	}
+	if !strings.Contains(err.Error(), "--dedupe-window-sec") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // ==================== search arg parsing ====================
 
 func TestRunSearch_NoArgs(t *testing.T) {

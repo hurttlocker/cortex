@@ -49,7 +49,13 @@ Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
           "autoCapture": true,
           "extractFacts": true,
           "searchMode": "hybrid",
-          "embedProvider": "ollama/nomic-embed-text"
+          "embedProvider": "ollama/nomic-embed-text",
+          "capture": {
+            "dedupe": { "enabled": true },
+            "similarityThreshold": 0.95,
+            "dedupeWindowSec": 300,
+            "coalesceWindowSec": 20
+          }
         }
       }
     }
@@ -73,6 +79,10 @@ Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
 | `recallLimit` | `3` | Max memories injected per turn |
 | `minScore` | `0.3` | Minimum score for auto-recall results |
 | `captureMaxChars` | `2000` | Max message length for auto-capture |
+| `capture.dedupe.enabled` | `true` | Enable near-duplicate suppression for auto-capture |
+| `capture.similarityThreshold` | `0.95` | Cosine similarity cutoff for duplicate suppression |
+| `capture.dedupeWindowSec` | `300` | Recent lookback window for dedupe checks |
+| `capture.coalesceWindowSec` | `20` | Coalesce short rapid-fire captures into one memory |
 
 ## Features
 
@@ -81,6 +91,16 @@ Before each AI response, Cortex searches for relevant memories using your query 
 
 ### Auto-Capture
 After each AI turn, the conversation exchange is captured into Cortex with automatic fact extraction. Preferences, decisions, identities, and temporal facts are extracted and indexed.
+
+### Auto-Capture Hygiene (Issue #36)
+Capture hygiene reduces memory bloat and retrieval noise:
+
+- **Near-duplicate suppression** with cosine similarity against recent captures
+- **Burst coalescing** for rapid-fire short exchanges
+- **Low-signal filter** for trivial acknowledgements (`ok`, `yes`, `got it`, etc.)
+- **Server-side dedupe** flags passed into `cortex import` for defense-in-depth
+
+These controls are configurable under `capture.*`.
 
 ### AI Tools
 The plugin registers 4 tools the AI can use:

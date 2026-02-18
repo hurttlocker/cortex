@@ -52,6 +52,29 @@
     "extractFacts": {
       "label": "Extract Facts",
       "help": "Run fact extraction on captured memories (recommended)."
+    },
+    "capture.dedupe.enabled": {
+      "label": "Capture Dedupe Enabled",
+      "help": "Suppress near-duplicate auto-captures using cosine similarity on recent captures.",
+      "advanced": true
+    },
+    "capture.similarityThreshold": {
+      "label": "Capture Similarity Threshold",
+      "placeholder": "0.95",
+      "help": "Cosine similarity cutoff for near-duplicate suppression (0-1).",
+      "advanced": true
+    },
+    "capture.dedupeWindowSec": {
+      "label": "Capture Dedupe Window (sec)",
+      "placeholder": "300",
+      "help": "Lookback window for dedupe comparison.",
+      "advanced": true
+    },
+    "capture.coalesceWindowSec": {
+      "label": "Capture Coalesce Window (sec)",
+      "placeholder": "20",
+      "help": "Merge rapid-fire short captures inside this time window.",
+      "advanced": true
     }
   },
   "configSchema": {
@@ -70,7 +93,28 @@
       "recallLimit": { "type": "number", "minimum": 1, "maximum": 10 },
       "minScore": { "type": "number", "minimum": 0, "maximum": 1 },
       "captureMaxChars": { "type": "number", "minimum": 100, "maximum": 10000 },
-      "extractFacts": { "type": "boolean" }
+      "extractFacts": { "type": "boolean" },
+      "capture": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "dedupe": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "enabled": { "type": "boolean" }
+            }
+          },
+          "similarityThreshold": { "type": "number", "minimum": 0, "maximum": 1 },
+          "dedupeWindowSec": { "type": "number", "minimum": 1, "maximum": 86400 },
+          "coalesceWindowSec": { "type": "number", "minimum": 0, "maximum": 3600 },
+          "shortCaptureMaxChars": { "type": "number", "minimum": 50, "maximum": 5000 },
+          "lowSignalPatterns": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
     }
   }
 }
