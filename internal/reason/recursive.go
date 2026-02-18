@@ -363,6 +363,8 @@ func (e *Engine) reasonRecursiveAtDepth(ctx context.Context, opts RecursiveOptio
 				mem, err := e.store.GetMemory(ctx, memID)
 				if err != nil {
 					peekResult = fmt.Sprintf("(memory %d not found: %v)", memID, err)
+				} else if mem == nil {
+					peekResult = fmt.Sprintf("(memory %d not found)", memID)
 				} else {
 					peekResult = truncateContent(mem.Content, maxContext/2)
 				}
