@@ -1543,12 +1543,19 @@ func runEmbed(args []string) error {
 	// Embed all memories without embeddings
 	opts := ingest.DefaultEmbedOptions()
 	opts.BatchSize = batchSize
+	opts.AdaptiveBatching = true
+	opts.HealthCheckEvery = 5
 	opts.ProgressFn = func(current, total int) {
 		pct := 0
 		if total > 0 {
 			pct = current * 100 / total
 		}
 		fmt.Printf("\r  Embedding... [%d/%d] %d%%", current, total, pct)
+	}
+	opts.VerboseProgressFn = func(current, total, batchSize int, msg string) {
+		if msg != "" {
+			fmt.Printf("\n  [%d/%d] (batch=%d) %s\n", current, total, batchSize, msg)
+		}
 	}
 
 	result, err := embedEngine.EmbedMemories(ctx, opts)

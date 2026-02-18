@@ -78,6 +78,73 @@ type Client struct {
 	mu     sync.Mutex
 }
 
+// HealthCheck pings the embedding provider to verify connectivity.
+// For Ollama, hits /api/tags (lightweight). For others, sends a minimal embed request.
+func (c *Client) HealthCheck(ctx context.Context) error {
+	if c.config.Provider == "ollama" {
+		// Ollama: ping /api/tags (always available, no model load needed)
+		endpoint := strings.TrimSuffix(c.config.Endpoint, "/v1/embeddings") + "/api/tags"
+		req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+		if err != nil {
+			return fmt.Errorf("health check: %w", err)
+		}
+		healthClient := &http.Client{Timeout: 5 * time.Second}
+		resp, err := healthClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("health check failed (ollama unreachable): %w", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			return fmt.Errorf("health check failed: HTTP %d", resp.StatusCode)
+		}
+		return nil
+	}
+	// For cloud providers, just check endpoint is reachable with HEAD
+	req, err := http.NewRequestWithContext(ctx, "HEAD", c.config.Endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("health check: %w", err)
+	}
+	if c.config.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.config.APIKey)
+	}
+	healthClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := healthClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("health check failed: %w", err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// IsRetryableError returns true if the error suggests a transient failure worth retrying.
+func IsRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// HTTP errors: retry on server errors and rate limits
+	if httpErr, ok := err.(*HTTPError); ok {
+		switch {
+		case httpErr.StatusCode == 429:
+			return true
+		case httpErr.StatusCode >= 500:
+			return true
+		}
+		return false
+	}
+	// Context cancellation is not retryable
+	if err == context.Canceled || err == context.DeadlineExceeded {
+		return false
+	}
+	// Network errors (connection refused, timeout, EOF) are retryable
+	errStr := err.Error()
+	return strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "EOF") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "no such host")
+}
+
 // ParseEmbedFlag parses "--embed provider/model" format.
 // Handles complex model names with slashes and colons like "openrouter/sentence-transformers/all-MiniLM-L6-v2"
 func ParseEmbedFlag(flag string) (*EmbedConfig, error) {
@@ -208,10 +275,17 @@ func NewClient(config *EmbedConfig) (*Client, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
+	transport := &http.Transport{
+		MaxIdleConns:        5,
+		IdleConnTimeout:     30 * time.Second,
+		DisableKeepAlives:   false,
+		MaxIdleConnsPerHost: 2,
+	}
 	return &Client{
 		config: *config,
 		http: &http.Client{
-			Timeout: time.Duration(config.TimeoutSecs) * time.Second,
+			Timeout:   time.Duration(config.TimeoutSecs) * time.Second,
+			Transport: transport,
 		},
 	}, nil
 }

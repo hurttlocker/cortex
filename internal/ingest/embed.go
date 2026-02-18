@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/store"
@@ -10,15 +11,20 @@ import (
 
 // EmbedOptions configures an embedding operation.
 type EmbedOptions struct {
-	BatchSize  int                             // Number of texts to embed per API call (default: 50)
-	ProgressFn func(current, total int)        // Progress callback
-	FilterFn   func(memory *store.Memory) bool // Optional filter for which memories to embed
+	BatchSize        int                             // Number of texts to embed per API call (default: 50)
+	AdaptiveBatching bool                            // Halve batch size on failure (default: true)
+	HealthCheckEvery int                             // Run health check every N batches (default: 5, 0 = disabled)
+	ProgressFn       func(current, total int)        // Progress callback
+	VerboseProgressFn func(current, total, batchSize int, msg string) // Detailed progress
+	FilterFn         func(memory *store.Memory) bool // Optional filter for which memories to embed
 }
 
 // DefaultEmbedOptions returns sensible defaults for embedding.
 func DefaultEmbedOptions() EmbedOptions {
 	return EmbedOptions{
-		BatchSize: 50,
+		BatchSize:        50,
+		AdaptiveBatching: true,
+		HealthCheckEvery: 5,
 	}
 }
 
@@ -51,7 +57,7 @@ func NewEmbedEngine(s store.Store, e embed.Embedder) *EmbedEngine {
 }
 
 // EmbedMemories generates and stores embeddings for memories that don't have them yet.
-// This is designed to be called after import to add embeddings to newly imported memories.
+// Features adaptive batch sizing (halves on failure), health checks, and resilient retry.
 func (e *EmbedEngine) EmbedMemories(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	result := &EmbedResult{}
 
@@ -67,13 +73,49 @@ func (e *EmbedEngine) EmbedMemories(ctx context.Context, opts EmbedOptions) (*Em
 
 	result.MemoriesProcessed = len(memories)
 
-	// Process in batches
+	// Process in batches with adaptive sizing
 	batchSize := opts.BatchSize
 	if batchSize <= 0 {
 		batchSize = 50
 	}
+	originalBatchSize := batchSize
+	consecutiveFailures := 0
+	batchCount := 0
 
-	for i := 0; i < len(memories); i += batchSize {
+	// Log resume context
+	if opts.VerboseProgressFn != nil {
+		opts.VerboseProgressFn(0, len(memories), batchSize, fmt.Sprintf("Starting: %d memories to embed", len(memories)))
+	}
+
+	i := 0
+	for i < len(memories) {
+		// Health check every N batches (if embedder supports it)
+		if opts.HealthCheckEvery > 0 && batchCount > 0 && batchCount%opts.HealthCheckEvery == 0 {
+			if checker, ok := e.embedder.(interface{ HealthCheck(context.Context) error }); ok {
+				if hcErr := checker.HealthCheck(ctx); hcErr != nil {
+					if opts.VerboseProgressFn != nil {
+						opts.VerboseProgressFn(i, len(memories), batchSize, fmt.Sprintf("Health check failed: %v — waiting 10s", hcErr))
+					}
+					// Wait and retry health check up to 3 times
+					healthy := false
+					for attempt := 0; attempt < 3; attempt++ {
+						select {
+						case <-ctx.Done():
+							return result, ctx.Err()
+						case <-time.After(10 * time.Second):
+						}
+						if checker.HealthCheck(ctx) == nil {
+							healthy = true
+							break
+						}
+					}
+					if !healthy {
+						return result, fmt.Errorf("embedding provider unhealthy after 3 health check retries at %d/%d memories", i, len(memories))
+					}
+				}
+			}
+		}
+
 		end := i + batchSize
 		if end > len(memories) {
 			end = len(memories)
@@ -82,36 +124,110 @@ func (e *EmbedEngine) EmbedMemories(ctx context.Context, opts EmbedOptions) (*Em
 		batch := memories[i:end]
 		batchResult, err := e.processBatch(ctx, batch)
 		if err != nil {
-			// Batch failed — fall back to embedding one at a time.
-			// One bad text in a batch shouldn't kill its neighbors.
+			consecutiveFailures++
+
+			// Adaptive batch sizing: halve on failure
+			if opts.AdaptiveBatching && batchSize > 1 {
+				newSize := batchSize / 2
+				if newSize < 1 {
+					newSize = 1
+				}
+				if opts.VerboseProgressFn != nil {
+					opts.VerboseProgressFn(i, len(memories), newSize,
+						fmt.Sprintf("Batch failed (%v) — reducing batch size %d→%d", err, batchSize, newSize))
+				}
+				batchSize = newSize
+
+				// Wait before retry with smaller batch (exponential: 2s, 4s, 8s, max 30s)
+				backoff := time.Duration(1<<consecutiveFailures) * time.Second
+				if backoff > 30*time.Second {
+					backoff = 30 * time.Second
+				}
+				select {
+				case <-ctx.Done():
+					return result, ctx.Err()
+				case <-time.After(backoff):
+				}
+
+				// Don't advance i — retry the same position with smaller batch
+				continue
+			}
+
+			// At batch size 1 or adaptive disabled: fall back to individual embedding
 			for _, memory := range batch {
 				singleResult, singleErr := e.processBatch(ctx, []*store.Memory{memory})
 				if singleErr != nil {
-					result.Errors = append(result.Errors, EmbedError{
-						MemoryID: memory.ID,
-						Message:  singleErr.Error(),
-					})
+					// Check if retryable
+					if embed.IsRetryableError(singleErr) && consecutiveFailures < 10 {
+						// Wait and retry this single memory
+						select {
+						case <-ctx.Done():
+							return result, ctx.Err()
+						case <-time.After(5 * time.Second):
+						}
+						retryResult, retryErr := e.processBatch(ctx, []*store.Memory{memory})
+						if retryErr != nil {
+							result.Errors = append(result.Errors, EmbedError{
+								MemoryID: memory.ID,
+								Message:  retryErr.Error(),
+							})
+						} else {
+							result.EmbeddingsAdded += retryResult.Added
+							result.EmbeddingsSkipped += retryResult.Skipped
+						}
+					} else {
+						result.Errors = append(result.Errors, EmbedError{
+							MemoryID: memory.ID,
+							Message:  singleErr.Error(),
+						})
+					}
 				} else {
 					result.EmbeddingsAdded += singleResult.Added
 					result.EmbeddingsSkipped += singleResult.Skipped
 					result.Errors = append(result.Errors, singleResult.Errors...)
 				}
 			}
-			// Still fire progress callback
+
 			if opts.ProgressFn != nil {
 				opts.ProgressFn(end, len(memories))
 			}
+			i = end
+			batchCount++
 			continue
+		}
+
+		// Success — reset failure tracking
+		consecutiveFailures = 0
+
+		// Gradually restore batch size after success streak
+		if opts.AdaptiveBatching && batchSize < originalBatchSize && batchCount%3 == 0 {
+			newSize := batchSize * 2
+			if newSize > originalBatchSize {
+				newSize = originalBatchSize
+			}
+			if newSize != batchSize {
+				if opts.VerboseProgressFn != nil {
+					opts.VerboseProgressFn(end, len(memories), newSize,
+						fmt.Sprintf("Success streak — restoring batch size %d→%d", batchSize, newSize))
+				}
+				batchSize = newSize
+			}
 		}
 
 		result.EmbeddingsAdded += batchResult.Added
 		result.EmbeddingsSkipped += batchResult.Skipped
 		result.Errors = append(result.Errors, batchResult.Errors...)
 
-		// Progress callback
+		// Progress callbacks
+		if opts.VerboseProgressFn != nil {
+			opts.VerboseProgressFn(end, len(memories), batchSize, "")
+		}
 		if opts.ProgressFn != nil {
 			opts.ProgressFn(end, len(memories))
 		}
+
+		i = end
+		batchCount++
 
 		// Check for cancellation
 		select {
