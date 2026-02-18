@@ -79,6 +79,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "cleanup":
+		if err := runCleanup(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Printf("cortex %s\n", version)
 	case "--version", "-v":
@@ -874,6 +879,58 @@ func runEmbeddingOnImportedMemories(ctx context.Context, s store.Store, embedFla
 	return &EmbeddingStats{
 		EmbeddingsAdded: result.EmbeddingsAdded,
 	}, nil
+}
+
+func runCleanup(args []string) error {
+	// Parse flags (none currently, reserved for future use)
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			return fmt.Errorf("unknown flag: %s", arg)
+		}
+		return fmt.Errorf("unexpected argument: %s", arg)
+	}
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// SQLiteStore.ExecContext provides direct SQL access.
+	ss, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("cleanup requires SQLiteStore backend")
+	}
+
+	// 1. Delete short memories (likely garbage chunks).
+	res, err := ss.ExecContext(ctx, `DELETE FROM memories WHERE LENGTH(content) < 20`)
+	if err != nil {
+		return fmt.Errorf("deleting short memories: %w", err)
+	}
+	shortDeleted, _ := res.RowsAffected()
+
+	// 2. Delete purely numeric memories.
+	res, err = ss.ExecContext(ctx, `DELETE FROM memories WHERE content GLOB '[0-9]*' AND content NOT GLOB '*[^0-9]*'`)
+	if err != nil {
+		return fmt.Errorf("deleting numeric memories: %w", err)
+	}
+	numericDeleted, _ := res.RowsAffected()
+
+	// 3. Delete headless facts (subject is null or empty).
+	res, err = ss.ExecContext(ctx, `DELETE FROM facts WHERE subject IS NULL OR subject = ''`)
+	if err != nil {
+		return fmt.Errorf("deleting headless facts: %w", err)
+	}
+	factsDeleted, _ := res.RowsAffected()
+
+	fmt.Printf("Cleanup complete:\n")
+	fmt.Printf("  Short memories deleted:   %d\n", shortDeleted)
+	fmt.Printf("  Numeric memories deleted: %d\n", numericDeleted)
+	fmt.Printf("  Headless facts deleted:   %d\n", factsDeleted)
+
+	return nil
 }
 
 func runEmbed(args []string) error {
