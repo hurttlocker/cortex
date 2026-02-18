@@ -224,6 +224,12 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 		return nil
 	}
 
+	// Determine project tag
+	project := opts.Project
+	if project == "" && opts.AutoTag {
+		project = store.InferProject(raw.SourceFile, store.DefaultProjectRules)
+	}
+
 	// Build store Memory
 	mem := &store.Memory{
 		Content:       raw.Content,
@@ -231,6 +237,7 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 		SourceLine:    raw.SourceLine,
 		SourceSection: raw.SourceSection,
 		ContentHash:   hash,
+		Project:       project,
 	}
 
 	_, err = e.store.AddMemory(ctx, mem)

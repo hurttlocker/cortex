@@ -40,17 +40,34 @@ func (s *SQLiteStore) GetEmbedding(ctx context.Context, memoryID int64) ([]float
 // SearchEmbedding performs brute-force cosine similarity search across all embeddings.
 // Returns top-K results above minSimilarity threshold.
 func (s *SQLiteStore) SearchEmbedding(ctx context.Context, query []float32, limit int, minSimilarity float64) ([]*SearchResult, error) {
+	return s.SearchEmbeddingWithProject(ctx, query, limit, minSimilarity, "")
+}
+
+// SearchEmbeddingWithProject performs cosine similarity search, optionally scoped to a project.
+// If project is empty, searches all memories (backward-compatible).
+func (s *SQLiteStore) SearchEmbeddingWithProject(ctx context.Context, query []float32, limit int, minSimilarity float64, project string) ([]*SearchResult, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT e.memory_id, e.vector, m.id, m.content, m.source_file, m.source_line,
-		        m.source_section, m.content_hash, m.imported_at, m.updated_at
+	var querySQL string
+	var args []interface{}
+	if project != "" {
+		querySQL = `SELECT e.memory_id, e.vector, m.id, m.content, m.source_file, m.source_line,
+		        m.source_section, m.content_hash, m.project, m.imported_at, m.updated_at
 		 FROM embeddings e
 		 JOIN memories m ON e.memory_id = m.id
-		 WHERE m.deleted_at IS NULL`,
-	)
+		 WHERE m.deleted_at IS NULL AND m.project = ?`
+		args = []interface{}{project}
+	} else {
+		querySQL = `SELECT e.memory_id, e.vector, m.id, m.content, m.source_file, m.source_line,
+		        m.source_section, m.content_hash, m.project, m.imported_at, m.updated_at
+		 FROM embeddings e
+		 JOIN memories m ON e.memory_id = m.id
+		 WHERE m.deleted_at IS NULL`
+	}
+
+	rows, err := s.db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying embeddings: %w", err)
 	}
@@ -69,7 +86,7 @@ func (s *SQLiteStore) SearchEmbedding(ctx context.Context, query []float32, limi
 		m := &Memory{}
 
 		if err := rows.Scan(&memID, &blob, &m.ID, &m.Content, &m.SourceFile,
-			&m.SourceLine, &m.SourceSection, &m.ContentHash,
+			&m.SourceLine, &m.SourceSection, &m.ContentHash, &m.Project,
 			&m.ImportedAt, &m.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning embedding row: %w", err)
 		}
@@ -188,13 +205,13 @@ func (s *SQLiteStore) GetMemoriesByIDs(ctx context.Context, ids []int64) ([]*Mem
 		args[i] = id
 	}
 
-	query := fmt.Sprintf(
-		`SELECT id, content, source_file, source_line, source_section, content_hash, imported_at, updated_at
+	queryStr := fmt.Sprintf(
+		`SELECT id, content, source_file, source_line, source_section, content_hash, project, imported_at, updated_at
 		 FROM memories WHERE id IN (%s) AND deleted_at IS NULL`,
 		strings.Join(placeholders, ","),
 	)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, queryStr, args...)
 	if err != nil {
 		return nil, fmt.Errorf("getting memories by IDs: %w", err)
 	}
@@ -204,7 +221,7 @@ func (s *SQLiteStore) GetMemoriesByIDs(ctx context.Context, ids []int64) ([]*Mem
 	for rows.Next() {
 		m := &Memory{}
 		if err := rows.Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine,
-			&m.SourceSection, &m.ContentHash, &m.ImportedAt, &m.UpdatedAt); err != nil {
+			&m.SourceSection, &m.ContentHash, &m.Project, &m.ImportedAt, &m.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning memory row: %w", err)
 		}
 		memories = append(memories, m)

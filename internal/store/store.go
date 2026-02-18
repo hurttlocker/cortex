@@ -35,6 +35,7 @@ type Memory struct {
 	SourceLine    int
 	SourceSection string
 	ContentHash   string
+	Project       string // Project/thread tag for scoped search (e.g., "trading", "eyes-web")
 	ImportedAt    time.Time
 	UpdatedAt     time.Time
 	DeletedAt     *time.Time
@@ -73,6 +74,7 @@ type ListOpts struct {
 	SortBy     string // "date", "confidence", "recalls"
 	FactType   string // filter by fact type
 	SourceFile string // filter by source file
+	Project    string // filter by project tag
 }
 
 // SearchResult holds a search result with score and optional snippet.
@@ -115,6 +117,13 @@ type Conflict struct {
 	Similarity   float64 `json:"similarity"`
 }
 
+// ProjectInfo holds metadata about a project tag.
+type ProjectInfo struct {
+	Name        string `json:"name"`
+	MemoryCount int    `json:"memory_count"`
+	FactCount   int    `json:"fact_count"`
+}
+
 // StoreConfig holds configuration for NewStore.
 type StoreConfig struct {
 	DBPath              string
@@ -147,7 +156,9 @@ type Store interface {
 
 	// Search
 	SearchFTS(ctx context.Context, query string, limit int) ([]*SearchResult, error)
+	SearchFTSWithProject(ctx context.Context, query string, limit int, project string) ([]*SearchResult, error)
 	SearchEmbedding(ctx context.Context, vector []float32, limit int, minSimilarity float64) ([]*SearchResult, error)
+	SearchEmbeddingWithProject(ctx context.Context, vector []float32, limit int, minSimilarity float64, project string) ([]*SearchResult, error)
 
 	// Embeddings
 	AddEmbedding(ctx context.Context, memoryID int64, vector []float32) error
@@ -158,6 +169,11 @@ type Store interface {
 
 	// Deduplication
 	FindByHash(ctx context.Context, hash string) (*Memory, error)
+
+	// Projects
+	ListProjects(ctx context.Context) ([]ProjectInfo, error)
+	TagMemories(ctx context.Context, project string, memoryIDs []int64) (int64, error)
+	TagMemoriesBySource(ctx context.Context, project string, sourcePattern string) (int64, error)
 
 	// Events
 	LogEvent(ctx context.Context, e *MemoryEvent) error

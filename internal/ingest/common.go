@@ -58,6 +58,8 @@ type ImportOptions struct {
 	Recursive   bool
 	DryRun      bool
 	MaxFileSize int64 // bytes, default 10MB
+	Project     string // Project tag to assign to imported memories
+	AutoTag     bool   // Infer project from file paths using default rules
 	ProgressFn  func(current, total int, file string)
 }
 

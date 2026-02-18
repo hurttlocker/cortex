@@ -82,7 +82,7 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 
 func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 	tool := mcp.NewTool("cortex_search",
-		mcp.WithDescription("Search Cortex memory using BM25 keyword, semantic, or hybrid search. Returns scored results with source provenance."),
+		mcp.WithDescription("Search Cortex memory using BM25 keyword, semantic, or hybrid search. Returns scored results with source provenance. Optionally scope by project."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("query",
@@ -95,6 +95,9 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 		),
 		mcp.WithNumber("limit",
 			mcp.Description("Maximum number of results (default: 10, max: 50)"),
+		),
+		mcp.WithString("project",
+			mcp.Description("Scope search to a specific project (e.g., 'trading', 'eyes-web'). Empty = search all."),
 		),
 	)
 
@@ -127,6 +130,10 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 			}
 		}
 
+		if project, err := req.RequireString("project"); err == nil && project != "" {
+			opts.Project = project
+		}
+
 		results, err := engine.Search(ctx, query, opts)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search error: %v", err)), nil
@@ -151,6 +158,9 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 		),
 		mcp.WithBoolean("extract",
 			mcp.Description("Extract facts from imported content using rule-based extraction (default: false)"),
+		),
+		mcp.WithString("project",
+			mcp.Description("Project tag for imported memories (e.g., 'trading', 'eyes-web'). Empty = untagged."),
 		),
 	)
 
@@ -185,6 +195,11 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 			enableExtract = ext == "true"
 		}
 
+		project := ""
+		if p, err := req.RequireString("project"); err == nil && p != "" {
+			project = p
+		}
+
 		// Chunk large content (same 1500-char max as CLI import)
 		chunks := chunkContent(content, 1500)
 
@@ -194,6 +209,7 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 				Content:    chunk,
 				SourceFile: source,
 				SourceLine: i + 1,
+				Project:    project,
 				ImportedAt: time.Now().UTC(),
 				UpdatedAt:  time.Now().UTC(),
 			}

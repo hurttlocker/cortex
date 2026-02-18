@@ -20,9 +20,9 @@ func (s *SQLiteStore) AddMemory(ctx context.Context, m *Memory) (int64, error) {
 
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO memories (content, source_file, source_line, source_section, content_hash, imported_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, now, now,
+		`INSERT INTO memories (content, source_file, source_line, source_section, content_hash, project, imported_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, m.Project, now, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting memory: %w", err)
@@ -45,10 +45,10 @@ func (s *SQLiteStore) GetMemory(ctx context.Context, id int64) (*Memory, error) 
 	var deletedAt sql.NullTime
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, content, source_file, source_line, source_section, content_hash, imported_at, updated_at, deleted_at
+		`SELECT id, content, source_file, source_line, source_section, content_hash, project, imported_at, updated_at, deleted_at
 		 FROM memories WHERE id = ?`, id,
 	).Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine, &m.SourceSection,
-		&m.ContentHash, &m.ImportedAt, &m.UpdatedAt, &deletedAt)
+		&m.ContentHash, &m.Project, &m.ImportedAt, &m.UpdatedAt, &deletedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -70,13 +70,18 @@ func (s *SQLiteStore) ListMemories(ctx context.Context, opts ListOpts) ([]*Memor
 		opts.Limit = 100
 	}
 
-	query := `SELECT id, content, source_file, source_line, source_section, content_hash, imported_at, updated_at
+	query := `SELECT id, content, source_file, source_line, source_section, content_hash, project, imported_at, updated_at
 			  FROM memories WHERE deleted_at IS NULL`
 	args := []interface{}{}
 
 	if opts.SourceFile != "" {
 		query += " AND source_file = ?"
 		args = append(args, opts.SourceFile)
+	}
+
+	if opts.Project != "" {
+		query += " AND project = ?"
+		args = append(args, opts.Project)
 	}
 
 	orderBy := "imported_at DESC"
@@ -96,7 +101,7 @@ func (s *SQLiteStore) ListMemories(ctx context.Context, opts ListOpts) ([]*Memor
 	for rows.Next() {
 		m := &Memory{}
 		if err := rows.Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine,
-			&m.SourceSection, &m.ContentHash, &m.ImportedAt, &m.UpdatedAt); err != nil {
+			&m.SourceSection, &m.ContentHash, &m.Project, &m.ImportedAt, &m.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning memory row: %w", err)
 		}
 		memories = append(memories, m)
@@ -180,8 +185,8 @@ func (s *SQLiteStore) insertBatch(ctx context.Context, memories []*Memory) ([]in
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO memories (content, source_file, source_line, source_section, content_hash, imported_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO memories (content, source_file, source_line, source_section, content_hash, project, imported_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("preparing statement: %w", err)
@@ -196,7 +201,7 @@ func (s *SQLiteStore) insertBatch(ctx context.Context, memories []*Memory) ([]in
 			m.ContentHash = HashMemoryContent(m.Content, m.SourceFile)
 		}
 		result, err := stmt.ExecContext(ctx,
-			m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, now, now,
+			m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, m.Project, now, now,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("inserting memory in batch: %w", err)
@@ -221,10 +226,10 @@ func (s *SQLiteStore) insertBatch(ctx context.Context, memories []*Memory) ([]in
 func (s *SQLiteStore) FindByHash(ctx context.Context, hash string) (*Memory, error) {
 	m := &Memory{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, content, source_file, source_line, source_section, content_hash, imported_at, updated_at
+		`SELECT id, content, source_file, source_line, source_section, content_hash, project, imported_at, updated_at
 		 FROM memories WHERE content_hash = ? AND deleted_at IS NULL`, hash,
 	).Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine, &m.SourceSection,
-		&m.ContentHash, &m.ImportedAt, &m.UpdatedAt)
+		&m.ContentHash, &m.Project, &m.ImportedAt, &m.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil

@@ -98,6 +98,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "projects":
+		if err := runProjects(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "tag":
+		if err := runTag(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "mcp":
 		if err := runMCP(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -162,7 +172,7 @@ func getStoreConfig() store.StoreConfig {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--llm <provider/model>] [--embed <provider/model>]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--project <name>] [--auto-tag] [--llm <provider/model>] [--embed <provider/model>]")
 	}
 
 	// Parse flags
@@ -171,6 +181,8 @@ func runImport(args []string) error {
 	enableExtraction := false
 	llmFlag := ""
 	embedFlag := ""
+	projectFlag := ""
+	autoTag := false
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -180,6 +192,13 @@ func runImport(args []string) error {
 			opts.DryRun = true
 		case args[i] == "--extract":
 			enableExtraction = true
+		case args[i] == "--project" && i+1 < len(args):
+			i++
+			projectFlag = args[i]
+		case strings.HasPrefix(args[i], "--project="):
+			projectFlag = strings.TrimPrefix(args[i], "--project=")
+		case args[i] == "--auto-tag":
+			autoTag = true
 		case args[i] == "--llm" && i+1 < len(args):
 			i++
 			llmFlag = args[i]
@@ -196,6 +215,10 @@ func runImport(args []string) error {
 			paths = append(paths, args[i])
 		}
 	}
+
+	// Set project on import options
+	opts.Project = projectFlag
+	opts.AutoTag = autoTag
 
 	if len(paths) == 0 {
 		return fmt.Errorf("no path specified")
@@ -276,9 +299,15 @@ func runSearch(args []string) error {
 	minScore := -1.0 // -1 = use mode-dependent defaults (BM25: 0.05, semantic: 0.25, hybrid: 0.05)
 	jsonOutput := false
 	embedFlag := ""
+	projectFlag := ""
 
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--project" && i+1 < len(args):
+			i++
+			projectFlag = args[i]
+		case strings.HasPrefix(args[i], "--project="):
+			projectFlag = strings.TrimPrefix(args[i], "--project=")
 		case args[i] == "--mode" && i+1 < len(args):
 			i++
 			mode = args[i]
@@ -375,9 +404,10 @@ func runSearch(args []string) error {
 	ctx := context.Background()
 
 	opts := search.Options{
-		Mode:          searchMode,
-		Limit:         limit,
+		Mode:     searchMode,
+		Limit:    limit,
 		MinScore: minScore,
+		Project:  projectFlag,
 	}
 
 	results, err := engine.Search(ctx, query, opts)
@@ -1736,6 +1766,9 @@ func outputTTY(query string, results []search.Result) error {
 			if r.SourceLine > 0 {
 				fmt.Printf(":%d", r.SourceLine)
 			}
+			if r.Project != "" {
+				fmt.Printf("  🏷️ %s", r.Project)
+			}
 			fmt.Println()
 		}
 		fmt.Println()
@@ -1982,6 +2015,190 @@ func formatBytes(b int64) string {
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
+func runProjects(args []string) error {
+	jsonOutput := false
+	for _, arg := range args {
+		if arg == "--json" {
+			jsonOutput = true
+		}
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	projects, err := s.ListProjects(context.Background())
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(projects)
+	}
+
+	if len(projects) == 0 {
+		fmt.Println("No projects found. Use --project or --auto-tag when importing.")
+		return nil
+	}
+
+	fmt.Printf("%-20s  %8s  %8s\n", "PROJECT", "MEMORIES", "FACTS")
+	fmt.Println(strings.Repeat("─", 42))
+	for _, p := range projects {
+		name := p.Name
+		if name == "" {
+			name = "(untagged)"
+		}
+		fmt.Printf("%-20s  %8d  %8d\n", name, p.MemoryCount, p.FactCount)
+	}
+	return nil
+}
+
+func runTag(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex tag --project <name> [--source <pattern>] [--id <id>...] [--auto]")
+	}
+
+	project := ""
+	sourcePattern := ""
+	autoTag := false
+	var memoryIDs []int64
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--project" && i+1 < len(args):
+			i++
+			project = args[i]
+		case strings.HasPrefix(args[i], "--project="):
+			project = strings.TrimPrefix(args[i], "--project=")
+		case args[i] == "--source" && i+1 < len(args):
+			i++
+			sourcePattern = args[i]
+		case strings.HasPrefix(args[i], "--source="):
+			sourcePattern = strings.TrimPrefix(args[i], "--source=")
+		case args[i] == "--id" && i+1 < len(args):
+			i++
+			id, err := strconv.ParseInt(args[i], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid --id value: %s", args[i])
+			}
+			memoryIDs = append(memoryIDs, id)
+		case args[i] == "--auto":
+			autoTag = true
+		default:
+			// Try parsing as memory ID
+			id, err := strconv.ParseInt(args[i], 10, 64)
+			if err == nil {
+				memoryIDs = append(memoryIDs, id)
+			} else {
+				return fmt.Errorf("unknown argument: %s", args[i])
+			}
+		}
+	}
+
+	if !autoTag && project == "" {
+		return fmt.Errorf("--project is required (or use --auto for auto-tagging)")
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	if autoTag {
+		return runAutoTag(ctx, s)
+	}
+
+	var totalTagged int64
+
+	if sourcePattern != "" {
+		// Convert glob-style pattern to SQL LIKE
+		likePattern := strings.ReplaceAll(sourcePattern, "*", "%")
+		n, err := s.TagMemoriesBySource(ctx, project, likePattern)
+		if err != nil {
+			return err
+		}
+		totalTagged += n
+		fmt.Printf("Tagged %d memories matching %q → project %q\n", n, sourcePattern, project)
+	}
+
+	if len(memoryIDs) > 0 {
+		n, err := s.TagMemories(ctx, project, memoryIDs)
+		if err != nil {
+			return err
+		}
+		totalTagged += n
+		fmt.Printf("Tagged %d memories by ID → project %q\n", n, project)
+	}
+
+	if totalTagged == 0 && sourcePattern == "" && len(memoryIDs) == 0 {
+		return fmt.Errorf("specify --source <pattern> or --id <id> to tag memories")
+	}
+
+	return nil
+}
+
+// runAutoTag applies default project rules to all untagged memories.
+// Uses path-based rules first, then content-keyword matching as fallback.
+func runAutoTag(ctx context.Context, s store.Store) error {
+	// Get all untagged memories
+	memories, err := s.ListMemories(ctx, store.ListOpts{
+		Limit: 100000, // Get all
+	})
+	if err != nil {
+		return fmt.Errorf("listing memories: %w", err)
+	}
+
+	tagged := 0
+	byProject := make(map[string]int)
+	byMethod := map[string]int{"path": 0, "content": 0}
+
+	for _, m := range memories {
+		if m.Project != "" {
+			continue // Already tagged
+		}
+
+		// Try path rules first, then content keywords
+		inferred := store.InferProjectFull(m.SourceFile, m.Content, store.DefaultProjectRules, store.DefaultContentRules)
+		if inferred == "" {
+			continue // No matching rule
+		}
+
+		// Track which method matched
+		if store.InferProject(m.SourceFile, store.DefaultProjectRules) != "" {
+			byMethod["path"]++
+		} else {
+			byMethod["content"]++
+		}
+
+		_, err := s.TagMemories(ctx, inferred, []int64{m.ID})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: failed to tag memory %d: %v\n", m.ID, err)
+			continue
+		}
+		tagged++
+		byProject[inferred]++
+	}
+
+	if tagged == 0 {
+		fmt.Println("No memories matched auto-tag rules. All may already be tagged.")
+		return nil
+	}
+
+	fmt.Printf("Auto-tagged %d memories:\n", tagged)
+	for project, count := range byProject {
+		fmt.Printf("  %s: %d\n", project, count)
+	}
+	fmt.Printf("\nBy method: %d path-based, %d content-based\n", byMethod["path"], byMethod["content"])
+	return nil
+}
+
 func printUsage() {
 	fmt.Printf(`cortex %s — Import-first memory layer for AI agents
 
@@ -2001,6 +2218,8 @@ Commands:
   stale               Find outdated memory entries
   conflicts           Detect contradictory facts
   cleanup             Remove garbage memories and headless facts
+  projects            List all project tags with memory/fact counts
+  tag                 Tag memories by project (--project, --source, --id, --auto)
   mcp                 Start MCP (Model Context Protocol) server
   version             Print version
 
@@ -2015,14 +2234,23 @@ Search Flags:
   --limit <N>         Maximum results (default: 10)
   --min-score <F>     Minimum search score threshold (default: mode-dependent; --min-confidence still works)
   --embed <provider/model> Embedding provider for semantic/hybrid search (e.g., --embed ollama/all-minilm)
+  --project <name>    Scope search to a specific project (e.g., --project trading)
   --json              Force JSON output even in TTY
 
 Import Flags:
   -r, --recursive     Recursively import from directories
   -n, --dry-run       Show what would be imported without writing
   --extract           Extract facts from imported memories and store them
+  --project <name>    Tag imported memories with a project (e.g., --project trading)
+  --auto-tag          Infer project from file paths using built-in rules
   --embed <provider/model> Generate embeddings during import (e.g., --embed ollama/all-minilm)
   --llm <provider/model>  Enable LLM-assisted extraction (e.g., --llm openai/gpt-4o-mini)
+
+Projects/Tag Flags:
+  cortex projects [--json]                    List all projects
+  cortex tag --project <name> --source <pat>  Tag memories by source file pattern
+  cortex tag --project <name> --id <id>       Tag specific memories by ID
+  cortex tag --auto                           Auto-tag untagged memories using path rules
 
 Extract Flags:
   --json              Force JSON output even in TTY

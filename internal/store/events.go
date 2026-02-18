@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -90,23 +91,49 @@ func (s *SQLiteStore) ExtendedStats(ctx context.Context) (int, string, string, e
 
 // SearchFTS performs full-text search using FTS5 with BM25 ranking.
 func (s *SQLiteStore) SearchFTS(ctx context.Context, query string, limit int) ([]*SearchResult, error) {
+	return s.SearchFTSWithProject(ctx, query, limit, "")
+}
+
+// SearchFTSWithProject performs full-text search, optionally scoped to a project.
+// If project is empty, searches all memories (backward-compatible).
+func (s *SQLiteStore) SearchFTSWithProject(ctx context.Context, query string, limit int, project string) ([]*SearchResult, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT m.id, m.content, m.source_file, m.source_line, m.source_section,
-		        m.content_hash, m.imported_at, m.updated_at,
-		        rank,
-		        snippet(memories_fts, 0, '<b>', '</b>', '...', 32)
-		 FROM memories_fts
-		 JOIN memories m ON memories_fts.rowid = m.id
-		 WHERE memories_fts MATCH ?
-		   AND m.deleted_at IS NULL
-		 ORDER BY rank
-		 LIMIT ?`,
-		query, limit,
-	)
+	var rows *sql.Rows
+	var err error
+
+	if project != "" {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT m.id, m.content, m.source_file, m.source_line, m.source_section,
+			        m.content_hash, m.project, m.imported_at, m.updated_at,
+			        rank,
+			        snippet(memories_fts, 0, '<b>', '</b>', '...', 32)
+			 FROM memories_fts
+			 JOIN memories m ON memories_fts.rowid = m.id
+			 WHERE memories_fts MATCH ?
+			   AND m.deleted_at IS NULL
+			   AND m.project = ?
+			 ORDER BY rank
+			 LIMIT ?`,
+			query, project, limit,
+		)
+	} else {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT m.id, m.content, m.source_file, m.source_line, m.source_section,
+			        m.content_hash, m.project, m.imported_at, m.updated_at,
+			        rank,
+			        snippet(memories_fts, 0, '<b>', '</b>', '...', 32)
+			 FROM memories_fts
+			 JOIN memories m ON memories_fts.rowid = m.id
+			 WHERE memories_fts MATCH ?
+			   AND m.deleted_at IS NULL
+			 ORDER BY rank
+			 LIMIT ?`,
+			query, limit,
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("FTS search: %w", err)
 	}
@@ -117,7 +144,7 @@ func (s *SQLiteStore) SearchFTS(ctx context.Context, query string, limit int) ([
 		r := &SearchResult{}
 		if err := rows.Scan(&r.Memory.ID, &r.Memory.Content, &r.Memory.SourceFile,
 			&r.Memory.SourceLine, &r.Memory.SourceSection, &r.Memory.ContentHash,
-			&r.Memory.ImportedAt, &r.Memory.UpdatedAt,
+			&r.Memory.Project, &r.Memory.ImportedAt, &r.Memory.UpdatedAt,
 			&r.Score, &r.Snippet); err != nil {
 			return nil, fmt.Errorf("scanning FTS result: %w", err)
 		}

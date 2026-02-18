@@ -126,6 +126,7 @@ func (s *SQLiteStore) migrate() error {
 			key   TEXT PRIMARY KEY,
 			value TEXT
 		)`,
+
 	}
 
 	tx, err := s.db.Begin()
@@ -149,6 +150,51 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("seeding metadata: %w", err)
 	}
 
+	// Schema evolution: add project column (v0.2.0 — Issue #29)
+	// Uses ALTER TABLE which can't be inside CREATE TABLE IF NOT EXISTS.
+	// We check for column existence first to make it idempotent.
+	if err := s.migrateProjectColumn(); err != nil {
+		return fmt.Errorf("migrating project column: %w", err)
+	}
+
+	return nil
+}
+
+// migrateProjectColumn adds the project column to memories if it doesn't exist.
+// This is a safe, idempotent migration for Issue #29 (thread/project tagging).
+func (s *SQLiteStore) migrateProjectColumn() error {
+	// Check if column already exists
+	var count int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='project'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checking for project column: %w", err)
+	}
+	if count > 0 {
+		return nil // Already migrated
+	}
+
+	// Add column + index in a transaction
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning project migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmts := []string{
+		`ALTER TABLE memories ADD COLUMN project TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("executing %q: %w", truncate(stmt, 60), err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing project migration: %w", err)
+	}
 	return nil
 }
 

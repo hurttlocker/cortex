@@ -51,9 +51,10 @@ func ParseMode(s string) (Mode, error) {
 
 // Options configures a search query.
 type Options struct {
-	Mode          Mode    // Search mode (default: keyword)
-	Limit         int     // Max results (default: 10)
+	Mode     Mode    // Search mode (default: keyword)
+	Limit    int     // Max results (default: 10)
 	MinScore float64 // Minimum search score threshold (default: mode-dependent, -1 = use default)
+	Project  string  // Scope search to a specific project (empty = all)
 }
 
 // Default minimum score thresholds by mode.
@@ -95,6 +96,7 @@ type Result struct {
 	SourceFile    string  `json:"source_file"`
 	SourceLine    int     `json:"source_line"`
 	SourceSection string  `json:"source_section,omitempty"`
+	Project       string  `json:"project,omitempty"`
 	Score         float64 `json:"score"`
 	Snippet       string  `json:"snippet,omitempty"`
 	MatchType     string  `json:"match_type"` // "bm25", "semantic", "hybrid"
@@ -257,12 +259,12 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 		return nil, nil
 	}
 
-	storeResults, err := e.store.SearchFTS(ctx, sanitized, opts.Limit)
+	storeResults, err := e.store.SearchFTSWithProject(ctx, sanitized, opts.Limit, opts.Project)
 	if err != nil {
 		// If the query has bad FTS5 syntax, try a simpler fallback
 		if isFTSSyntaxError(err) {
 			escaped := escapeFTSQuery(query)
-			storeResults, err = e.store.SearchFTS(ctx, escaped, opts.Limit)
+			storeResults, err = e.store.SearchFTSWithProject(ctx, escaped, opts.Limit, opts.Project)
 			if err != nil {
 				return nil, fmt.Errorf("search failed: %w", err)
 			}
@@ -276,7 +278,7 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 	if len(storeResults) == 0 && hasMultipleSearchTerms(sanitized) {
 		orQuery := buildORQuery(sanitized)
 		if orQuery != "" {
-			storeResults, err = e.store.SearchFTS(ctx, orQuery, opts.Limit)
+			storeResults, err = e.store.SearchFTSWithProject(ctx, orQuery, opts.Limit, opts.Project)
 			if err != nil {
 				// OR fallback failed — not fatal, just return empty
 				storeResults = nil
@@ -298,6 +300,7 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 			SourceFile:    sr.Memory.SourceFile,
 			SourceLine:    sr.Memory.SourceLine,
 			SourceSection: sr.Memory.SourceSection,
+			Project:       sr.Memory.Project,
 			Score:         score,
 			Snippet:       sr.Snippet,
 			MatchType:     "bm25",
@@ -459,7 +462,7 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 
 	// Search embeddings in store
 	minScore := effectiveMinScore(ModeSemantic, opts.MinScore)
-	storeResults, err := e.store.SearchEmbedding(ctx, queryEmbedding, opts.Limit, minScore)
+	storeResults, err := e.store.SearchEmbeddingWithProject(ctx, queryEmbedding, opts.Limit, minScore, opts.Project)
 	if err != nil {
 		return nil, fmt.Errorf("semantic search failed: %w", err)
 	}
@@ -472,6 +475,7 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 			SourceFile:    sr.Memory.SourceFile,
 			SourceLine:    sr.Memory.SourceLine,
 			SourceSection: sr.Memory.SourceSection,
+			Project:       sr.Memory.Project,
 			Score:         sr.Score,
 			Snippet:       sr.Snippet,
 			MatchType:     "semantic",
