@@ -51,6 +51,20 @@ func TestNewStore(t *testing.T) {
 	}
 }
 
+func TestMemoryClassColumnExists(t *testing.T) {
+	s := newTestStore(t)
+	ss := s.(*SQLiteStore)
+
+	var count int
+	err := ss.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='memory_class'").Scan(&count)
+	if err != nil {
+		t.Fatalf("checking memory_class column: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected memory_class column to exist, count=%d", count)
+	}
+}
+
 func TestWALMode(t *testing.T) {
 	s := newTestStore(t)
 	ss := s.(*SQLiteStore)

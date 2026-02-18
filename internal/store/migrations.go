@@ -126,7 +126,6 @@ func (s *SQLiteStore) migrate() error {
 			key   TEXT PRIMARY KEY,
 			value TEXT
 		)`,
-
 	}
 
 	tx, err := s.db.Begin()
@@ -160,6 +159,11 @@ func (s *SQLiteStore) migrate() error {
 	// Schema evolution: add metadata column (v0.2.0 — Issue #30)
 	if err := s.migrateMetadataColumn(); err != nil {
 		return fmt.Errorf("migrating metadata column: %w", err)
+	}
+
+	// Schema evolution: add memory_class column (v0.3.0 — Issue #34)
+	if err := s.migrateMemoryClassColumn(); err != nil {
+		return fmt.Errorf("migrating memory_class column: %w", err)
 	}
 
 	// Schema evolution: multi-column FTS5 with source context (v0.2.0 — Issue #26)
@@ -204,6 +208,42 @@ func (s *SQLiteStore) migrateProjectColumn() error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing project migration: %w", err)
+	}
+	return nil
+}
+
+// migrateMemoryClassColumn adds memory_class to memories for class-aware retrieval (Issue #34).
+// NULL means "unclassified" for backward compatibility.
+func (s *SQLiteStore) migrateMemoryClassColumn() error {
+	var count int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='memory_class'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checking for memory_class column: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning memory_class migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	stms := []string{
+		`ALTER TABLE memories ADD COLUMN memory_class TEXT DEFAULT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_memory_class ON memories(memory_class)`,
+	}
+	for _, stmt := range stms {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("executing %q: %w", truncate(stmt, 60), err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing memory_class migration: %w", err)
 	}
 	return nil
 }

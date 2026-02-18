@@ -36,6 +36,7 @@ type Memory struct {
 	SourceSection string
 	ContentHash   string
 	Project       string    // Project/thread tag for scoped search (e.g., "trading", "eyes-web")
+	MemoryClass   string    // Optional class label (rule, decision, preference, identity, status, scratch)
 	Metadata      *Metadata // Structured metadata (session, channel, agent, model, etc.)
 	ImportedAt    time.Time
 	UpdatedAt     time.Time
@@ -45,18 +46,18 @@ type Memory struct {
 // Metadata holds structured context about how a memory was created.
 // Stored as JSON in the metadata column. All fields are optional.
 type Metadata struct {
-	SessionKey   string `json:"session_key,omitempty"`    // e.g., "agent:main:main"
-	Channel      string `json:"channel,omitempty"`        // e.g., "discord", "telegram"
-	ChannelID    string `json:"channel_id,omitempty"`     // e.g., "1473406695219658964"
-	ChannelName  string `json:"channel_name,omitempty"`   // e.g., "#x"
-	AgentID      string `json:"agent_id,omitempty"`       // e.g., "main", "sage", "hawk"
-	AgentName    string `json:"agent_name,omitempty"`     // e.g., "mister", "sage"
-	Model        string `json:"model,omitempty"`          // e.g., "anthropic/claude-opus-4-6"
-	InputTokens  int    `json:"input_tokens,omitempty"`   // Token usage
-	OutputTokens int    `json:"output_tokens,omitempty"`
-	MessageCount int    `json:"message_count,omitempty"`  // Messages in the conversation
-	Surface      string `json:"surface,omitempty"`        // e.g., "discord", "telegram", "webchat"
-	ChatType     string `json:"chat_type,omitempty"`      // e.g., "channel", "group", "dm"
+	SessionKey     string `json:"session_key,omitempty"`  // e.g., "agent:main:main"
+	Channel        string `json:"channel,omitempty"`      // e.g., "discord", "telegram"
+	ChannelID      string `json:"channel_id,omitempty"`   // e.g., "1473406695219658964"
+	ChannelName    string `json:"channel_name,omitempty"` // e.g., "#x"
+	AgentID        string `json:"agent_id,omitempty"`     // e.g., "main", "sage", "hawk"
+	AgentName      string `json:"agent_name,omitempty"`   // e.g., "mister", "sage"
+	Model          string `json:"model,omitempty"`        // e.g., "anthropic/claude-opus-4-6"
+	InputTokens    int    `json:"input_tokens,omitempty"` // Token usage
+	OutputTokens   int    `json:"output_tokens,omitempty"`
+	MessageCount   int    `json:"message_count,omitempty"`   // Messages in the conversation
+	Surface        string `json:"surface,omitempty"`         // e.g., "discord", "telegram", "webchat"
+	ChatType       string `json:"chat_type,omitempty"`       // e.g., "channel", "group", "dm"
 	TimestampStart string `json:"timestamp_start,omitempty"` // ISO 8601
 	TimestampEnd   string `json:"timestamp_end,omitempty"`
 }
@@ -89,16 +90,17 @@ type MemoryEvent struct {
 
 // ListOpts controls pagination and filtering for List operations.
 type ListOpts struct {
-	Limit      int
-	Offset     int
-	SortBy     string // "date", "confidence", "recalls"
-	FactType   string // filter by fact type
-	SourceFile string // filter by source file
-	Project    string // filter by project tag
-	Agent      string // filter by metadata agent_id
-	Channel    string // filter by metadata channel
-	After      string // filter memories imported after this date (YYYY-MM-DD)
-	Before     string // filter memories imported before this date (YYYY-MM-DD)
+	Limit         int
+	Offset        int
+	SortBy        string   // "date", "confidence", "recalls"
+	FactType      string   // filter by fact type
+	SourceFile    string   // filter by source file
+	Project       string   // filter by project tag
+	MemoryClasses []string // filter by memory class
+	Agent         string   // filter by metadata agent_id
+	Channel       string   // filter by metadata channel
+	After         string   // filter memories imported after this date (YYYY-MM-DD)
+	Before        string   // filter memories imported before this date (YYYY-MM-DD)
 }
 
 // SearchResult holds a search result with score and optional snippet.

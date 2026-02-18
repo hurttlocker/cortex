@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -54,14 +55,14 @@ func (s *SQLiteStore) SearchEmbeddingWithProject(ctx context.Context, query []fl
 	var args []interface{}
 	if project != "" {
 		querySQL = `SELECT e.memory_id, e.vector, m.id, m.content, m.source_file, m.source_line,
-		        m.source_section, m.content_hash, m.project, m.imported_at, m.updated_at
+		        m.source_section, m.content_hash, m.project, m.memory_class, m.metadata, m.imported_at, m.updated_at
 		 FROM embeddings e
 		 JOIN memories m ON e.memory_id = m.id
 		 WHERE m.deleted_at IS NULL AND m.project = ?`
 		args = []interface{}{project}
 	} else {
 		querySQL = `SELECT e.memory_id, e.vector, m.id, m.content, m.source_file, m.source_line,
-		        m.source_section, m.content_hash, m.project, m.imported_at, m.updated_at
+		        m.source_section, m.content_hash, m.project, m.memory_class, m.metadata, m.imported_at, m.updated_at
 		 FROM embeddings e
 		 JOIN memories m ON e.memory_id = m.id
 		 WHERE m.deleted_at IS NULL`
@@ -83,13 +84,15 @@ func (s *SQLiteStore) SearchEmbeddingWithProject(ctx context.Context, query []fl
 	for rows.Next() {
 		var blob []byte
 		var memID int64
+		var metadataStr sql.NullString
 		m := &Memory{}
 
 		if err := rows.Scan(&memID, &blob, &m.ID, &m.Content, &m.SourceFile,
-			&m.SourceLine, &m.SourceSection, &m.ContentHash, &m.Project,
-			&m.ImportedAt, &m.UpdatedAt); err != nil {
+			&m.SourceLine, &m.SourceSection, &m.ContentHash, &m.Project, &m.MemoryClass,
+			&metadataStr, &m.ImportedAt, &m.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning embedding row: %w", err)
 		}
+		m.Metadata = unmarshalMetadata(metadataStr)
 
 		vec := bytesToFloat32(blob)
 		sim := cosineSimilarity(query, vec)
@@ -237,7 +240,7 @@ func (s *SQLiteStore) GetMemoriesByIDs(ctx context.Context, ids []int64) ([]*Mem
 	}
 
 	queryStr := fmt.Sprintf(
-		`SELECT id, content, source_file, source_line, source_section, content_hash, project, imported_at, updated_at
+		`SELECT id, content, source_file, source_line, source_section, content_hash, project, memory_class, metadata, imported_at, updated_at
 		 FROM memories WHERE id IN (%s) AND deleted_at IS NULL`,
 		strings.Join(placeholders, ","),
 	)
@@ -251,10 +254,12 @@ func (s *SQLiteStore) GetMemoriesByIDs(ctx context.Context, ids []int64) ([]*Mem
 	memories := make([]*Memory, 0, len(ids))
 	for rows.Next() {
 		m := &Memory{}
+		var metadataStr sql.NullString
 		if err := rows.Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine,
-			&m.SourceSection, &m.ContentHash, &m.Project, &m.ImportedAt, &m.UpdatedAt); err != nil {
+			&m.SourceSection, &m.ContentHash, &m.Project, &m.MemoryClass, &metadataStr, &m.ImportedAt, &m.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning memory row: %w", err)
 		}
+		m.Metadata = unmarshalMetadata(metadataStr)
 		memories = append(memories, m)
 	}
 	return memories, rows.Err()

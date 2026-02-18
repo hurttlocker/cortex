@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
@@ -230,6 +231,16 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 		project = store.InferProject(raw.SourceFile, store.DefaultProjectRules)
 	}
 
+	// Determine memory class
+	memoryClass := store.NormalizeMemoryClass(opts.MemoryClass)
+	if memoryClass != "" {
+		if !store.IsValidMemoryClass(memoryClass) {
+			return fmt.Errorf("invalid memory class %q", opts.MemoryClass)
+		}
+	} else {
+		memoryClass = extract.AutoClassifyMemoryClass(raw.Content, raw.SourceSection)
+	}
+
 	// Build store Memory
 	mem := &store.Memory{
 		Content:       raw.Content,
@@ -238,6 +249,7 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 		SourceSection: raw.SourceSection,
 		ContentHash:   hash,
 		Project:       project,
+		MemoryClass:   memoryClass,
 	}
 
 	// Attach metadata if provided (Issue #30)

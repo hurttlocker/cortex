@@ -887,3 +887,70 @@ func TestReinforceOnRecall(t *testing.T) {
 		t.Error("expected last_reinforced to be updated after search recall")
 	}
 }
+
+func TestSearch_ClassFilter(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, _ = s.AddMemory(ctx, &store.Memory{Content: "always run tests before merge", SourceFile: "rules.md", MemoryClass: store.MemoryClassRule})
+	_, _ = s.AddMemory(ctx, &store.Memory{Content: "brainstorm merge ideas", SourceFile: "scratch.md", MemoryClass: store.MemoryClassScratch})
+
+	engine := NewEngine(s)
+	results, err := engine.Search(ctx, "merge", Options{Mode: ModeKeyword, Limit: 10, Classes: []string{store.MemoryClassRule}})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected class-filtered result")
+	}
+	for _, r := range results {
+		if r.MemoryClass != store.MemoryClassRule {
+			t.Fatalf("expected class rule, got %q", r.MemoryClass)
+		}
+	}
+}
+
+func TestSearch_ClassBoostRanksRuleAboveScratch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, _ = s.AddMemory(ctx, &store.Memory{Content: "deployment checklist for release", SourceFile: "rule.md", MemoryClass: store.MemoryClassRule})
+	_, _ = s.AddMemory(ctx, &store.Memory{Content: "deployment checklist for release", SourceFile: "scratch.md", MemoryClass: store.MemoryClassScratch})
+
+	engine := NewEngine(s)
+	results, err := engine.Search(ctx, "deployment checklist", Options{Mode: ModeKeyword, Limit: 10})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d", len(results))
+	}
+
+	if results[0].MemoryClass != store.MemoryClassRule {
+		t.Fatalf("expected top result class=rule, got %q", results[0].MemoryClass)
+	}
+}
+
+func TestSearch_DisableClassBoost(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, _ = s.AddMemory(ctx, &store.Memory{Content: "deployment guide", SourceFile: "rule.md", MemoryClass: store.MemoryClassRule})
+	_, _ = s.AddMemory(ctx, &store.Memory{Content: "deployment guide", SourceFile: "scratch.md", MemoryClass: store.MemoryClassScratch})
+
+	engine := NewEngine(s)
+	boosted, err := engine.Search(ctx, "deployment guide", Options{Mode: ModeKeyword, Limit: 10})
+	if err != nil {
+		t.Fatalf("boosted search failed: %v", err)
+	}
+	unboosted, err := engine.Search(ctx, "deployment guide", Options{Mode: ModeKeyword, Limit: 10, DisableClassBoost: true})
+	if err != nil {
+		t.Fatalf("unboosted search failed: %v", err)
+	}
+	if len(boosted) == 0 || len(unboosted) == 0 {
+		t.Fatal("expected non-empty results")
+	}
+	if boosted[0].MemoryClass != store.MemoryClassRule {
+		t.Fatalf("expected boosted top class=rule, got %q", boosted[0].MemoryClass)
+	}
+}

@@ -197,7 +197,7 @@ func getHNSWPath() string {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--project <name>] [--auto-tag] [--metadata <json>] [--llm <provider/model>] [--embed <provider/model>]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--llm <provider/model>] [--embed <provider/model>]")
 	}
 
 	// Parse flags
@@ -207,6 +207,7 @@ func runImport(args []string) error {
 	llmFlag := ""
 	embedFlag := ""
 	projectFlag := ""
+	classFlag := ""
 	metadataFlag := ""
 	autoTag := false
 
@@ -223,6 +224,11 @@ func runImport(args []string) error {
 			projectFlag = args[i]
 		case strings.HasPrefix(args[i], "--project="):
 			projectFlag = strings.TrimPrefix(args[i], "--project=")
+		case args[i] == "--class" && i+1 < len(args):
+			i++
+			classFlag = args[i]
+		case strings.HasPrefix(args[i], "--class="):
+			classFlag = strings.TrimPrefix(args[i], "--class=")
 		case args[i] == "--metadata" && i+1 < len(args):
 			i++
 			metadataFlag = args[i]
@@ -250,6 +256,15 @@ func runImport(args []string) error {
 	// Set project on import options
 	opts.Project = projectFlag
 	opts.AutoTag = autoTag
+
+	// Parse optional memory class
+	classFlag = store.NormalizeMemoryClass(classFlag)
+	if classFlag != "" {
+		if !store.IsValidMemoryClass(classFlag) {
+			return fmt.Errorf("invalid --class value %q (valid: %s)", classFlag, strings.Join(store.AvailableMemoryClasses(), ","))
+		}
+		opts.MemoryClass = classFlag
+	}
 
 	// Parse metadata JSON if provided
 	if metadataFlag != "" {
@@ -340,6 +355,8 @@ func runSearch(args []string) error {
 	jsonOutput := false
 	embedFlag := ""
 	projectFlag := ""
+	classFlag := ""
+	disableClassBoost := false
 	agentFlag := ""
 	channelFlag := ""
 	afterFlag := ""
@@ -353,6 +370,13 @@ func runSearch(args []string) error {
 			projectFlag = args[i]
 		case strings.HasPrefix(args[i], "--project="):
 			projectFlag = strings.TrimPrefix(args[i], "--project=")
+		case args[i] == "--class" && i+1 < len(args):
+			i++
+			classFlag = args[i]
+		case strings.HasPrefix(args[i], "--class="):
+			classFlag = strings.TrimPrefix(args[i], "--class=")
+		case args[i] == "--no-class-boost":
+			disableClassBoost = true
 		case args[i] == "--agent" && i+1 < len(args):
 			i++
 			agentFlag = args[i]
@@ -428,7 +452,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--json] [--agent <id>] [--channel <name>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--class rule,decision] [--no-class-boost] [--json] [--agent <id>] [--channel <name>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 
 	searchMode, err := search.ParseMode(mode)
@@ -478,15 +502,22 @@ func runSearch(args []string) error {
 
 	ctx := context.Background()
 
+	classes, err := store.ParseMemoryClassList(classFlag)
+	if err != nil {
+		return err
+	}
+
 	opts := search.Options{
-		Mode:     searchMode,
-		Limit:    limit,
-		MinScore: minScore,
-		Project:  projectFlag,
-		Agent:    agentFlag,
-		Channel:  channelFlag,
-		After:    afterFlag,
-		Before:   beforeFlag,
+		Mode:              searchMode,
+		Limit:             limit,
+		MinScore:          minScore,
+		Project:           projectFlag,
+		Classes:           classes,
+		DisableClassBoost: disableClassBoost,
+		Agent:             agentFlag,
+		Channel:           channelFlag,
+		After:             afterFlag,
+		Before:            beforeFlag,
 	}
 
 	results, err := engine.Search(ctx, query, opts)
@@ -853,7 +884,7 @@ func runExtract(args []string) error {
 func runList(args []string) error {
 	// Parse flags
 	var limit int = 20
-	var sourceFile, factType string
+	var sourceFile, factType, classFlag string
 	var listFacts, jsonOutput bool
 
 	for i := 0; i < len(args); i++ {
@@ -876,6 +907,11 @@ func runList(args []string) error {
 			sourceFile = args[i]
 		case strings.HasPrefix(args[i], "--source="):
 			sourceFile = strings.TrimPrefix(args[i], "--source=")
+		case args[i] == "--class" && i+1 < len(args):
+			i++
+			classFlag = args[i]
+		case strings.HasPrefix(args[i], "--class="):
+			classFlag = strings.TrimPrefix(args[i], "--class=")
 		case args[i] == "--type" && i+1 < len(args):
 			i++
 			factType = args[i]
@@ -898,11 +934,20 @@ func runList(args []string) error {
 	defer s.Close()
 
 	ctx := context.Background()
+	classes, err := store.ParseMemoryClassList(classFlag)
+	if err != nil {
+		return err
+	}
+	if listFacts && len(classes) > 0 {
+		return fmt.Errorf("--class filter is only supported for memories (remove --facts)")
+	}
+
 	opts := store.ListOpts{
-		Limit:      limit,
-		Offset:     0,
-		SourceFile: sourceFile,
-		FactType:   factType,
+		Limit:         limit,
+		Offset:        0,
+		SourceFile:    sourceFile,
+		FactType:      factType,
+		MemoryClasses: classes,
 	}
 
 	if listFacts {
@@ -1695,6 +1740,9 @@ func outputListMemoriesTTY(memories []*store.Memory, opts store.ListOpts) error 
 			if memory.SourceSection != "" {
 				fmt.Printf(" · %s", memory.SourceSection)
 			}
+			if memory.MemoryClass != "" {
+				fmt.Printf(" · class:%s", memory.MemoryClass)
+			}
 			fmt.Println()
 		}
 
@@ -2014,6 +2062,9 @@ func outputTTYSearch(query string, results []search.Result, showMetadata bool) e
 			}
 			if r.Project != "" {
 				fmt.Printf("  🏷️ %s", r.Project)
+			}
+			if r.MemoryClass != "" {
+				fmt.Printf("  class:%s", r.MemoryClass)
 			}
 			fmt.Println()
 		}
@@ -2434,7 +2485,7 @@ func runReason(args []string) error {
 	engine := reason.NewEngine(reason.EngineConfig{
 		SearchEngine: searchEngine,
 		Store:        s,
-		LLM:         llm,
+		LLM:          llm,
 		ConfigDir:    configDir,
 	})
 
@@ -2453,7 +2504,7 @@ func runReason(args []string) error {
 			MaxIterations: maxIterations,
 			MaxDepth:      maxDepth,
 			MaxTokens:     maxTokens,
-			MaxContext:     maxContext,
+			MaxContext:    maxContext,
 			JSONOutput:    jsonOutput,
 			Verbose:       verbose,
 		})
@@ -2493,7 +2544,7 @@ func runReason(args []string) error {
 		Preset:     presetName,
 		Project:    projectFlag,
 		MaxTokens:  maxTokens,
-		MaxContext:  maxContext,
+		MaxContext: maxContext,
 		JSONOutput: jsonOutput,
 	})
 	if err != nil {
@@ -2868,6 +2919,8 @@ Search Flags:
   --min-score <F>     Minimum search score threshold (default: mode-dependent; --min-confidence still works)
   --embed <provider/model> Embedding provider for semantic/hybrid search (e.g., --embed ollama/all-minilm)
   --project <name>    Scope search to a specific project (e.g., --project trading)
+  --class <list>      Filter by memory class (e.g., --class rule,decision)
+  --no-class-boost    Disable class-aware ranking boosts
   --json              Force JSON output even in TTY
 
 Import Flags:
@@ -2875,6 +2928,7 @@ Import Flags:
   -n, --dry-run       Show what would be imported without writing
   --extract           Extract facts from imported memories and store them
   --project <name>    Tag imported memories with a project (e.g., --project trading)
+  --class <name>      Assign a memory class (rule|decision|preference|identity|status|scratch)
   --auto-tag          Infer project from file paths using built-in rules
   --embed <provider/model> Generate embeddings during import (e.g., --embed ollama/all-minilm)
   --llm <provider/model>  Enable LLM-assisted extraction (e.g., --llm openai/gpt-4o-mini)
@@ -2893,6 +2947,7 @@ List Flags:
   --facts             List facts instead of memories
   --limit <N>         Maximum results (default: 20)
   --source <file>     Filter by source file
+  --class <list>      Filter memories by class (e.g., --class rule,decision)
   --type <fact_type>  Filter facts by type (kv, temporal, identity, etc.)
   --json              Force JSON output even in TTY
 

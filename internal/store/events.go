@@ -107,7 +107,7 @@ func (s *SQLiteStore) SearchFTSWithProject(ctx context.Context, query string, li
 	if project != "" {
 		rows, err = s.db.QueryContext(ctx,
 			`SELECT m.id, m.content, m.source_file, m.source_line, m.source_section,
-			        m.content_hash, m.project, m.metadata, m.imported_at, m.updated_at,
+			        m.content_hash, m.project, m.memory_class, m.metadata, m.imported_at, m.updated_at,
 			        rank,
 			        snippet(memories_fts, 0, '<b>', '</b>', '...', 32)
 			 FROM memories_fts
@@ -122,7 +122,7 @@ func (s *SQLiteStore) SearchFTSWithProject(ctx context.Context, query string, li
 	} else {
 		rows, err = s.db.QueryContext(ctx,
 			`SELECT m.id, m.content, m.source_file, m.source_line, m.source_section,
-			        m.content_hash, m.project, m.metadata, m.imported_at, m.updated_at,
+			        m.content_hash, m.project, m.memory_class, m.metadata, m.imported_at, m.updated_at,
 			        rank,
 			        snippet(memories_fts, 0, '<b>', '</b>', '...', 32)
 			 FROM memories_fts
@@ -145,7 +145,7 @@ func (s *SQLiteStore) SearchFTSWithProject(ctx context.Context, query string, li
 		var metadataStr sql.NullString
 		if err := rows.Scan(&r.Memory.ID, &r.Memory.Content, &r.Memory.SourceFile,
 			&r.Memory.SourceLine, &r.Memory.SourceSection, &r.Memory.ContentHash,
-			&r.Memory.Project, &metadataStr, &r.Memory.ImportedAt, &r.Memory.UpdatedAt,
+			&r.Memory.Project, &r.Memory.MemoryClass, &metadataStr, &r.Memory.ImportedAt, &r.Memory.UpdatedAt,
 			&r.Score, &r.Snippet); err != nil {
 			return nil, fmt.Errorf("scanning FTS result: %w", err)
 		}
