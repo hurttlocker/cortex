@@ -10,14 +10,14 @@ func TestMetadataRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	meta := &Metadata{
-		SessionKey:  "agent:main:main",
-		Channel:     "discord",
-		ChannelID:   "1473406695219658964",
-		ChannelName: "#x",
-		AgentID:     "main",
-		AgentName:   "mister",
-		Model:       "anthropic/claude-opus-4-6",
-		InputTokens: 8200,
+		SessionKey:   "agent:main:main",
+		Channel:      "discord",
+		ChannelID:    "1473406695219658964",
+		ChannelName:  "#x",
+		AgentID:      "main",
+		AgentName:    "mister",
+		Model:        "anthropic/claude-opus-4-6",
+		InputTokens:  8200,
 		OutputTokens: 4250,
 		MessageCount: 4,
 		Surface:      "discord",
@@ -97,8 +97,8 @@ func TestParseMetadataJSON(t *testing.T) {
 			wantNil: true,
 		},
 		{
-			name:    "valid JSON",
-			input:   `{"agent_id": "sage", "channel": "telegram"}`,
+			name:  "valid JSON",
+			input: `{"agent_id": "sage", "channel": "telegram"}`,
 			check: func(m *Metadata) bool {
 				return m.AgentID == "sage" && m.Channel == "telegram"
 			},
@@ -109,8 +109,8 @@ func TestParseMetadataJSON(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "partial fields",
-			input:   `{"model": "gpt-4o", "input_tokens": 5000}`,
+			name:  "partial fields",
+			input: `{"model": "gpt-4o", "input_tokens": 5000}`,
 			check: func(m *Metadata) bool {
 				return m.Model == "gpt-4o" && m.InputTokens == 5000
 			},
@@ -156,10 +156,10 @@ func TestBuildMetadataPrefix(t *testing.T) {
 		{
 			name: "full metadata",
 			meta: &Metadata{
-				AgentID:     "mister",
-				Channel:     "discord",
-				ChannelName: "#x",
-				Model:       "opus-4.6",
+				AgentID:        "mister",
+				Channel:        "discord",
+				ChannelName:    "#x",
+				Model:          "opus-4.6",
 				TimestampStart: "2026-02-18T11:43:00Z",
 			},
 			want: "agent:mister channel:discord channel:#x model:opus-4.6 date:2026-02-18\n",
@@ -187,10 +187,10 @@ func TestListMemoriesWithMetadataFilter(t *testing.T) {
 
 	// Add memories with different agents
 	for _, tc := range []struct {
-		content  string
-		hash     string
-		agentID  string
-		channel  string
+		content string
+		hash    string
+		agentID string
+		channel string
 	}{
 		{"Mister trading analysis", "meta-filter-1", "main", "discord"},
 		{"Sage research report", "meta-filter-2", "sage", "discord"},

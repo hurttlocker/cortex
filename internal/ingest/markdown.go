@@ -276,7 +276,7 @@ func isGarbageChunk(content string) bool {
 		return true
 	}
 	// Single word, optionally quoted (e.g. "ALERT" or ALERT)
-	stripped := strings.Trim(s, `"'` + "`")
+	stripped := strings.Trim(s, `"'`+"`")
 	if !strings.ContainsAny(stripped, " \t\n") {
 		return true
 	}
