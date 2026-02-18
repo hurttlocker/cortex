@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/embed"
@@ -72,6 +73,8 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 	tool := mcp.NewTool("cortex_search",
 		mcp.WithDescription("Search Cortex memory using BM25 keyword, semantic, or hybrid search. Returns scored results with source provenance."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("query",
 			mcp.Required(),
 			mcp.Description("Search query string"),
@@ -124,6 +127,8 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 func registerImportTool(s *server.MCPServer, st store.Store) {
 	tool := mcp.NewTool("cortex_import",
 		mcp.WithDescription("Import a new memory into Cortex. The memory is stored with content-hash deduplication."),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("content",
 			mcp.Required(),
 			mcp.Description("The text content to import as a memory"),
@@ -137,6 +142,9 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 		content, err := req.RequireString("content")
 		if err != nil {
 			return mcp.NewToolResultError("content is required"), nil
+		}
+		if strings.TrimSpace(content) == "" {
+			return mcp.NewToolResultError("memory content cannot be empty"), nil
 		}
 
 		source := "mcp-import"
@@ -169,6 +177,8 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 func registerStatsTool(s *server.MCPServer, engine *observe.Engine) {
 	tool := mcp.NewTool("cortex_stats",
 		mcp.WithDescription("Get comprehensive Cortex memory statistics: total memories, facts, sources, storage size, confidence distribution, and freshness."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -185,6 +195,8 @@ func registerStatsTool(s *server.MCPServer, engine *observe.Engine) {
 func registerFactsTool(s *server.MCPServer, st store.Store) {
 	tool := mcp.NewTool("cortex_facts",
 		mcp.WithDescription("Query extracted facts from Cortex memory. Facts are subject-predicate-object triples with confidence scores and provenance."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("subject",
 			mcp.Description("Filter facts by subject (case-insensitive partial match)"),
 		),
@@ -243,6 +255,8 @@ func registerFactsTool(s *server.MCPServer, st store.Store) {
 func registerStaleTool(s *server.MCPServer, engine *observe.Engine) {
 	tool := mcp.NewTool("cortex_stale",
 		mcp.WithDescription("Find stale facts — facts whose confidence has decayed below threshold due to not being reinforced. Uses Ebbinghaus exponential decay."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithNumber("max_confidence",
 			mcp.Description("Effective confidence threshold (default: 0.5). Facts below this are returned."),
 		),

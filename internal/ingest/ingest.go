@@ -66,6 +66,16 @@ func (e *Engine) ImportFile(ctx context.Context, path string, opts ImportOptions
 		return result, nil
 	}
 
+	// Reject binary files
+	if isBinaryFile(absPath) {
+		result.FilesSkipped++
+		result.Errors = append(result.Errors, ImportError{
+			File:    absPath,
+			Message: "binary file detected — skipping (only text files are supported)",
+		})
+		return result, nil
+	}
+
 	// Find appropriate importer
 	importer := e.detectImporter(absPath)
 	if importer == nil {

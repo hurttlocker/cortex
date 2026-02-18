@@ -211,11 +211,16 @@ func NewStore(cfg StoreConfig) (Store, error) {
 		return nil, fmt.Errorf("pinging database: %w", err)
 	}
 
-	// Enable WAL mode and foreign keys
+	// Connection pool settings for concurrent access
+	db.SetMaxOpenConns(1) // SQLite handles one writer at a time
+	db.SetMaxIdleConns(1)
+
+	// Enable WAL mode, foreign keys, and generous busy timeout
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
+		"PRAGMA busy_timeout=10000",
+		"PRAGMA synchronous=NORMAL",
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {

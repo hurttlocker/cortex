@@ -61,7 +61,9 @@ Pick your platform — one command, no dependencies:
 | **Windows** | Download `cortex-windows-amd64.tar.gz` from [Releases](https://github.com/hurttlocker/cortex/releases/latest) |
 | **Go install** | `go install github.com/hurttlocker/cortex/cmd/cortex@latest` |
 
-Verify: `cortex version` → should print `cortex 0.1.4`
+**No sudo?** Move to any directory on your PATH instead: `mv cortex ~/bin/` or `mv cortex ~/.local/bin/`
+
+Verify: `cortex version` → should print the installed version
 
 ### 2. Import your data
 
