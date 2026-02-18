@@ -120,7 +120,13 @@ Semantic search needs an embedding model. If you have [Ollama](https://ollama.co
 
 ```bash
 ollama pull nomic-embed-text
-cortex embed ollama/nomic-embed-text
+
+# one-time bootstrap
+cortex embed ollama/nomic-embed-text --batch-size 10
+
+# keep embeddings fresh every 30 minutes (recommended for 24/7 agents)
+cortex embed ollama/nomic-embed-text --watch --interval 30m --batch-size 10
+
 claude mcp add cortex -- cortex mcp --embed ollama/nomic-embed-text
 ```
 
@@ -142,6 +148,9 @@ cortex search "what timezone" --mode semantic
 
 # 3. Generate embeddings for semantic search (optional, needs Ollama)
 cortex embed ollama/nomic-embed-text --batch-size 10
+
+# 3b. Production mode: keep semantic index fresh automatically
+cortex embed ollama/nomic-embed-text --watch --interval 30m --batch-size 10
 
 # 4. See what your agent actually knows
 cortex stats
@@ -204,8 +213,11 @@ cortex import chat.txt --llm ollama/gemma2:2b   # Optional LLM-assist for unstru
 | **Hybrid** (default) | Weighted Score Fusion | Best of both — precision + recall |
 
 ```bash
-# Generate embeddings (one-time, runs locally via Ollama)
+# Generate embeddings (one-time bootstrap)
 cortex embed ollama/nomic-embed-text --batch-size 10
+
+# Optional daemon mode (recommended for always-on agents)
+cortex embed ollama/nomic-embed-text --watch --interval 30m --batch-size 10
 
 # Search modes
 cortex search "deployment process"                           # BM25 keyword (instant)
@@ -213,7 +225,7 @@ cortex search "what timezone" --mode semantic --embed ollama/nomic-embed-text  #
 cortex search "deployment" --mode hybrid --embed ollama/nomic-embed-text       # Both
 ```
 
-Embedding is provider-agnostic: Ollama (local, free), OpenAI, DeepSeek, OpenRouter, or any custom endpoint. BM25 search works with zero setup — no embeddings needed.
+Embedding is provider-agnostic: Ollama (local, free), OpenAI, DeepSeek, OpenRouter, or any custom endpoint. In watch mode, Cortex only processes memories missing embeddings, applies exponential backoff if the provider is down, and rebuilds the HNSW ANN index automatically when new vectors land. BM25 search works with zero setup — no embeddings needed.
 
 ### 📋 Metadata-Enriched Capture — Know Who Said What, Where
 
