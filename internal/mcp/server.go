@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/observe"
+	"github.com/hurttlocker/cortex/internal/reason"
 	"github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -70,6 +72,7 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	registerFactsTool(s, cfg.Store)
 	registerStaleTool(s, observeEngine)
 	registerReinforceTool(s, cfg.Store)
+	registerReasonTool(s, searchEngine, cfg.Store)
 
 	// Register resources
 	registerStatsResource(s, observeEngine)
@@ -439,6 +442,107 @@ func registerReinforceTool(s *server.MCPServer, st store.Store) {
 }
 
 // --- Resources ---
+
+func registerReasonTool(s *server.MCPServer, searchEngine *search.Engine, st store.Store) {
+	tool := mcp.NewTool("cortex_reason",
+		mcp.WithDescription("Run LLM-powered reasoning over Cortex memories. Searches for context, builds a confidence-aware prompt, and sends to an LLM for analysis. Requires OPENROUTER_API_KEY env var for cloud models."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithString("query",
+			mcp.Required(),
+			mcp.Description("The question or topic to reason about"),
+		),
+		mcp.WithString("preset",
+			mcp.Description("Reasoning preset: daily-digest, fact-audit, weekly-dive, conflict-check, agent-review (default: daily-digest)"),
+		),
+		mcp.WithString("model",
+			mcp.Description("LLM model to use (e.g., 'google/gemini-2.5-flash', 'deepseek/deepseek-v3.2', 'phi4-mini'). Default: auto-selects based on preset."),
+		),
+		mcp.WithString("project",
+			mcp.Description("Scope reasoning to a specific project (e.g., 'trading', 'wedding'). Empty = all."),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		query, err := req.RequireString("query")
+		if err != nil {
+			return mcp.NewToolResultError("query is required"), nil
+		}
+
+		presetName := "daily-digest"
+		if p, err := req.RequireString("preset"); err == nil && p != "" {
+			presetName = p
+		}
+
+		project := ""
+		if p, err := req.RequireString("project"); err == nil && p != "" {
+			project = p
+		}
+
+		// Determine model
+		modelStr := ""
+		if m, err := req.RequireString("model"); err == nil && m != "" {
+			modelStr = m
+		} else {
+			// Smart defaults: deepseek for deep analysis, gemini for interactive
+			switch presetName {
+			case "weekly-dive", "fact-audit":
+				modelStr = reason.DefaultCronModel
+			default:
+				modelStr = reason.DefaultInteractiveModel
+			}
+		}
+
+		provider, model := reason.ParseProviderModel(modelStr)
+		llm, err := reason.NewLLM(reason.LLMConfig{
+			Provider: provider,
+			Model:    model,
+		})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("LLM init error: %v", err)), nil
+		}
+
+		homeDir := ""
+		if h, err := os.UserHomeDir(); err == nil {
+			homeDir = h + "/.cortex"
+		}
+
+		engine := reason.NewEngine(reason.EngineConfig{
+			SearchEngine: searchEngine,
+			Store:        st,
+			LLM:          llm,
+			ConfigDir:    homeDir,
+		})
+
+		result, err := engine.Reason(ctx, reason.ReasonOptions{
+			Query:   query,
+			Preset:  presetName,
+			Project: project,
+		})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("reason error: %v", err)), nil
+		}
+
+		// Format response with metadata
+		output := map[string]interface{}{
+			"content":       result.Content,
+			"model":         result.Model,
+			"provider":      result.Provider,
+			"preset":        result.Preset,
+			"memories_used": result.MemoriesUsed,
+			"facts_used":    result.FactsUsed,
+			"duration_ms":   result.Duration.Milliseconds(),
+			"tokens_in":     result.TokensIn,
+			"tokens_out":    result.TokensOut,
+		}
+
+		data, _ := json.MarshalIndent(output, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
+	})
+}
 
 func registerStatsResource(s *server.MCPServer, engine *observe.Engine) {
 	resource := mcp.NewResource(

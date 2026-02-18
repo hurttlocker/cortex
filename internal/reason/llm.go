@@ -23,6 +23,13 @@ type LLM struct {
 	client   *http.Client
 }
 
+// Default models for different use cases.
+const (
+	DefaultInteractiveModel = "google/gemini-2.5-flash"       // Sub-3s, cheapest reliable
+	DefaultCronModel        = "deepseek/deepseek-v3.2"        // Deep analysis, cron/background
+	DefaultLocalModel       = "phi4-mini"                     // Zero data leaves machine
+)
+
 // LLMConfig configures an LLM provider.
 type LLMConfig struct {
 	Provider string // "ollama" or "openrouter"

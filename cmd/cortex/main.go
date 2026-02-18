@@ -2103,13 +2103,21 @@ func runReason(args []string) error {
 		return fmt.Errorf("usage: cortex reason <query> [--preset <name>] [--model <provider/model>] [--project <name>] [--list]")
 	}
 
-	// Default model: gemini-2.5-flash on OpenRouter (sub-second, cheapest quality option)
-	// Falls back to phi4-mini local if no OPENROUTER_API_KEY set
+	// Smart model defaults based on preset and available API keys:
+	//   Interactive (daily-digest, conflict-check, agent-review): gemini-2.5-flash
+	//   Deep analysis (weekly-dive, fact-audit): deepseek-v3.2
+	//   No API key: phi4-mini local
+	// Users can always override with --model.
 	if modelFlag == "" {
 		if os.Getenv("OPENROUTER_API_KEY") != "" {
-			modelFlag = "google/gemini-2.5-flash"
+			switch presetName {
+			case "weekly-dive", "fact-audit":
+				modelFlag = reason.DefaultCronModel
+			default:
+				modelFlag = reason.DefaultInteractiveModel
+			}
 		} else {
-			modelFlag = "phi4-mini"
+			modelFlag = reason.DefaultLocalModel
 		}
 	}
 
