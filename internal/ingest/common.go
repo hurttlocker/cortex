@@ -57,9 +57,10 @@ type ImportError struct {
 type ImportOptions struct {
 	Recursive   bool
 	DryRun      bool
-	MaxFileSize int64 // bytes, default 10MB
-	Project     string // Project tag to assign to imported memories
-	AutoTag     bool   // Infer project from file paths using default rules
+	MaxFileSize int64       // bytes, default 10MB
+	Project     string      // Project tag to assign to imported memories
+	AutoTag     bool        // Infer project from file paths using default rules
+	Metadata    interface{} // *store.Metadata — stored as interface{} to avoid circular import
 	ProgressFn  func(current, total int, file string)
 }
 

@@ -55,6 +55,10 @@ type Options struct {
 	Limit    int     // Max results (default: 10)
 	MinScore float64 // Minimum search score threshold (default: mode-dependent, -1 = use default)
 	Project  string  // Scope search to a specific project (empty = all)
+	Agent    string  // Filter by metadata agent_id (Issue #30)
+	Channel  string  // Filter by metadata channel (Issue #30)
+	After    string  // Filter memories imported after date YYYY-MM-DD (Issue #30)
+	Before   string  // Filter memories imported before date YYYY-MM-DD (Issue #30)
 }
 
 // Default minimum score thresholds by mode.
@@ -92,15 +96,17 @@ func effectiveMinScore(mode Mode, configured float64) float64 {
 
 // Result represents a single search result.
 type Result struct {
-	Content       string  `json:"content"`
-	SourceFile    string  `json:"source_file"`
-	SourceLine    int     `json:"source_line"`
-	SourceSection string  `json:"source_section,omitempty"`
-	Project       string  `json:"project,omitempty"`
-	Score         float64 `json:"score"`
-	Snippet       string  `json:"snippet,omitempty"`
-	MatchType     string  `json:"match_type"` // "bm25", "semantic", "hybrid"
-	MemoryID      int64   `json:"memory_id"`
+	Content       string          `json:"content"`
+	SourceFile    string          `json:"source_file"`
+	SourceLine    int             `json:"source_line"`
+	SourceSection string          `json:"source_section,omitempty"`
+	Project       string          `json:"project,omitempty"`
+	Metadata      *store.Metadata `json:"metadata,omitempty"` // Structured metadata (Issue #30)
+	Score         float64         `json:"score"`
+	Snippet       string          `json:"snippet,omitempty"`
+	MatchType     string          `json:"match_type"` // "bm25", "semantic", "hybrid"
+	MemoryID      int64           `json:"memory_id"`
+	ImportedAt    time.Time       `json:"imported_at,omitempty"` // For metadata date filtering
 }
 
 // Searcher performs searches across the memory store.
@@ -154,10 +160,50 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		return results, err
 	}
 
+	// Apply metadata filters (Issue #30)
+	if opts.Agent != "" || opts.Channel != "" || opts.After != "" || opts.Before != "" {
+		results = filterByMetadata(results, opts)
+	}
+
 	// Apply confidence decay weighting and reinforce-on-recall
 	results = e.applyConfidenceDecay(ctx, results)
 
 	return results, nil
+}
+
+// filterByMetadata applies metadata-based filters to search results.
+func filterByMetadata(results []Result, opts Options) []Result {
+	var filtered []Result
+	for _, r := range results {
+		if opts.Agent != "" && !matchAgent(r, opts.Agent) {
+			continue
+		}
+		if opts.Channel != "" && !matchChannel(r, opts.Channel) {
+			continue
+		}
+		if opts.After != "" && r.ImportedAt.Format("2006-01-02") < opts.After {
+			continue
+		}
+		if opts.Before != "" && r.ImportedAt.Format("2006-01-02") > opts.Before {
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	return filtered
+}
+
+func matchAgent(r Result, agent string) bool {
+	if r.Metadata == nil {
+		return false
+	}
+	return r.Metadata.AgentID == agent || r.Metadata.AgentName == agent
+}
+
+func matchChannel(r Result, channel string) bool {
+	if r.Metadata == nil {
+		return false
+	}
+	return r.Metadata.Channel == channel || r.Metadata.ChannelName == channel
 }
 
 // applyConfidenceDecay adjusts search result scores based on the effective confidence
@@ -301,10 +347,12 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 			SourceLine:    sr.Memory.SourceLine,
 			SourceSection: sr.Memory.SourceSection,
 			Project:       sr.Memory.Project,
+			Metadata:      sr.Memory.Metadata,
 			Score:         score,
 			Snippet:       sr.Snippet,
 			MatchType:     "bm25",
 			MemoryID:      sr.Memory.ID,
+			ImportedAt:    sr.Memory.ImportedAt,
 		}
 		allFiltered = append(allFiltered, r)
 
@@ -476,10 +524,12 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 			SourceLine:    sr.Memory.SourceLine,
 			SourceSection: sr.Memory.SourceSection,
 			Project:       sr.Memory.Project,
+			Metadata:      sr.Memory.Metadata,
 			Score:         sr.Score,
 			Snippet:       sr.Snippet,
 			MatchType:     "semantic",
 			MemoryID:      sr.Memory.ID,
+			ImportedAt:    sr.Memory.ImportedAt,
 		}
 		results = append(results, r)
 	}

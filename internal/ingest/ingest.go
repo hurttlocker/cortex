@@ -240,6 +240,13 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 		Project:       project,
 	}
 
+	// Attach metadata if provided (Issue #30)
+	if opts.Metadata != nil {
+		if meta, ok := opts.Metadata.(*store.Metadata); ok {
+			mem.Metadata = meta
+		}
+	}
+
 	_, err = e.store.AddMemory(ctx, mem)
 	if err != nil {
 		return err

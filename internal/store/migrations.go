@@ -157,6 +157,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating project column: %w", err)
 	}
 
+	// Schema evolution: add metadata column (v0.2.0 — Issue #30)
+	if err := s.migrateMetadataColumn(); err != nil {
+		return fmt.Errorf("migrating metadata column: %w", err)
+	}
+
 	return nil
 }
 

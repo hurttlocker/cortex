@@ -194,6 +194,7 @@ func runImport(args []string) error {
 	llmFlag := ""
 	embedFlag := ""
 	projectFlag := ""
+	metadataFlag := ""
 	autoTag := false
 
 	for i := 0; i < len(args); i++ {
@@ -209,6 +210,11 @@ func runImport(args []string) error {
 			projectFlag = args[i]
 		case strings.HasPrefix(args[i], "--project="):
 			projectFlag = strings.TrimPrefix(args[i], "--project=")
+		case args[i] == "--metadata" && i+1 < len(args):
+			i++
+			metadataFlag = args[i]
+		case strings.HasPrefix(args[i], "--metadata="):
+			metadataFlag = strings.TrimPrefix(args[i], "--metadata=")
 		case args[i] == "--auto-tag":
 			autoTag = true
 		case args[i] == "--llm" && i+1 < len(args):
@@ -231,6 +237,15 @@ func runImport(args []string) error {
 	// Set project on import options
 	opts.Project = projectFlag
 	opts.AutoTag = autoTag
+
+	// Parse metadata JSON if provided
+	if metadataFlag != "" {
+		meta, err := store.ParseMetadataJSON(metadataFlag)
+		if err != nil {
+			return fmt.Errorf("invalid --metadata: %w", err)
+		}
+		opts.Metadata = meta
+	}
 
 	if len(paths) == 0 {
 		return fmt.Errorf("no path specified")
@@ -312,6 +327,11 @@ func runSearch(args []string) error {
 	jsonOutput := false
 	embedFlag := ""
 	projectFlag := ""
+	agentFlag := ""
+	channelFlag := ""
+	afterFlag := ""
+	beforeFlag := ""
+	showMetadata := false
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -320,6 +340,28 @@ func runSearch(args []string) error {
 			projectFlag = args[i]
 		case strings.HasPrefix(args[i], "--project="):
 			projectFlag = strings.TrimPrefix(args[i], "--project=")
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentFlag = args[i]
+		case strings.HasPrefix(args[i], "--agent="):
+			agentFlag = strings.TrimPrefix(args[i], "--agent=")
+		case args[i] == "--channel" && i+1 < len(args):
+			i++
+			channelFlag = args[i]
+		case strings.HasPrefix(args[i], "--channel="):
+			channelFlag = strings.TrimPrefix(args[i], "--channel=")
+		case args[i] == "--after" && i+1 < len(args):
+			i++
+			afterFlag = args[i]
+		case strings.HasPrefix(args[i], "--after="):
+			afterFlag = strings.TrimPrefix(args[i], "--after=")
+		case args[i] == "--before" && i+1 < len(args):
+			i++
+			beforeFlag = args[i]
+		case strings.HasPrefix(args[i], "--before="):
+			beforeFlag = strings.TrimPrefix(args[i], "--before=")
+		case args[i] == "--show-metadata":
+			showMetadata = true
 		case args[i] == "--mode" && i+1 < len(args):
 			i++
 			mode = args[i]
@@ -420,6 +462,10 @@ func runSearch(args []string) error {
 		Limit:    limit,
 		MinScore: minScore,
 		Project:  projectFlag,
+		Agent:    agentFlag,
+		Channel:  channelFlag,
+		After:    afterFlag,
+		Before:   beforeFlag,
 	}
 
 	results, err := engine.Search(ctx, query, opts)
@@ -432,9 +478,7 @@ func runSearch(args []string) error {
 		return outputJSON(results)
 	}
 
-	// Hybrid mode note removed - hybrid mode now works fully
-
-	return outputTTY(query, results)
+	return outputTTYSearch(query, results, showMetadata)
 }
 
 func runStats(args []string) error {
@@ -1755,6 +1799,10 @@ func outputJSON(results []search.Result) error {
 }
 
 func outputTTY(query string, results []search.Result) error {
+	return outputTTYSearch(query, results, false)
+}
+
+func outputTTYSearch(query string, results []search.Result, showMetadata bool) error {
 	if len(results) == 0 {
 		fmt.Printf("No results for %q\n", query)
 		return nil
@@ -1780,6 +1828,27 @@ func outputTTY(query string, results []search.Result) error {
 			}
 			if r.Project != "" {
 				fmt.Printf("  🏷️ %s", r.Project)
+			}
+			fmt.Println()
+		}
+		// Show metadata if requested (--show-metadata flag, Issue #30)
+		if showMetadata && r.Metadata != nil {
+			meta := r.Metadata
+			fmt.Print("     📋")
+			if meta.AgentID != "" {
+				fmt.Printf(" agent:%s", meta.AgentID)
+			}
+			if meta.Channel != "" {
+				fmt.Printf(" channel:%s", meta.Channel)
+			}
+			if meta.ChannelName != "" {
+				fmt.Printf("(%s)", meta.ChannelName)
+			}
+			if meta.Model != "" {
+				fmt.Printf(" model:%s", meta.Model)
+			}
+			if meta.InputTokens > 0 || meta.OutputTokens > 0 {
+				fmt.Printf(" tokens:%d/%d", meta.InputTokens, meta.OutputTokens)
 			}
 			fmt.Println()
 		}

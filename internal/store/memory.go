@@ -19,10 +19,16 @@ func (s *SQLiteStore) AddMemory(ctx context.Context, m *Memory) (int64, error) {
 	}
 
 	now := time.Now().UTC()
+	metadataJSON := marshalMetadata(m.Metadata)
+	var metadataArg interface{}
+	if metadataJSON != "" {
+		metadataArg = metadataJSON
+	}
+
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO memories (content, source_file, source_line, source_section, content_hash, project, imported_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, m.Project, now, now,
+		`INSERT INTO memories (content, source_file, source_line, source_section, content_hash, project, metadata, imported_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, m.Project, metadataArg, now, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting memory: %w", err)
@@ -43,12 +49,13 @@ func (s *SQLiteStore) AddMemory(ctx context.Context, m *Memory) (int64, error) {
 func (s *SQLiteStore) GetMemory(ctx context.Context, id int64) (*Memory, error) {
 	m := &Memory{}
 	var deletedAt sql.NullTime
+	var metadataStr sql.NullString
 
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, content, source_file, source_line, source_section, content_hash, project, imported_at, updated_at, deleted_at
+		`SELECT id, content, source_file, source_line, source_section, content_hash, project, metadata, imported_at, updated_at, deleted_at
 		 FROM memories WHERE id = ?`, id,
 	).Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine, &m.SourceSection,
-		&m.ContentHash, &m.Project, &m.ImportedAt, &m.UpdatedAt, &deletedAt)
+		&m.ContentHash, &m.Project, &metadataStr, &m.ImportedAt, &m.UpdatedAt, &deletedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -56,6 +63,8 @@ func (s *SQLiteStore) GetMemory(ctx context.Context, id int64) (*Memory, error) 
 	if err != nil {
 		return nil, fmt.Errorf("getting memory %d: %w", id, err)
 	}
+
+	m.Metadata = unmarshalMetadata(metadataStr)
 
 	if deletedAt.Valid {
 		m.DeletedAt = &deletedAt.Time
@@ -70,7 +79,7 @@ func (s *SQLiteStore) ListMemories(ctx context.Context, opts ListOpts) ([]*Memor
 		opts.Limit = 100
 	}
 
-	query := `SELECT id, content, source_file, source_line, source_section, content_hash, project, imported_at, updated_at
+	query := `SELECT id, content, source_file, source_line, source_section, content_hash, project, metadata, imported_at, updated_at
 			  FROM memories WHERE deleted_at IS NULL`
 	args := []interface{}{}
 
@@ -82,6 +91,24 @@ func (s *SQLiteStore) ListMemories(ctx context.Context, opts ListOpts) ([]*Memor
 	if opts.Project != "" {
 		query += " AND project = ?"
 		args = append(args, opts.Project)
+	}
+
+	// Metadata filters (Issue #30)
+	if opts.Agent != "" {
+		query += ` AND json_extract(metadata, '$.agent_id') = ?`
+		args = append(args, opts.Agent)
+	}
+	if opts.Channel != "" {
+		query += ` AND json_extract(metadata, '$.channel') = ?`
+		args = append(args, opts.Channel)
+	}
+	if opts.After != "" {
+		query += " AND imported_at >= ?"
+		args = append(args, opts.After)
+	}
+	if opts.Before != "" {
+		query += " AND imported_at < ?"
+		args = append(args, opts.Before+" 23:59:59")
 	}
 
 	orderBy := "imported_at DESC"
@@ -100,10 +127,12 @@ func (s *SQLiteStore) ListMemories(ctx context.Context, opts ListOpts) ([]*Memor
 	var memories []*Memory
 	for rows.Next() {
 		m := &Memory{}
+		var metadataStr sql.NullString
 		if err := rows.Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine,
-			&m.SourceSection, &m.ContentHash, &m.Project, &m.ImportedAt, &m.UpdatedAt); err != nil {
+			&m.SourceSection, &m.ContentHash, &m.Project, &metadataStr, &m.ImportedAt, &m.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning memory row: %w", err)
 		}
+		m.Metadata = unmarshalMetadata(metadataStr)
 		memories = append(memories, m)
 	}
 	return memories, rows.Err()
