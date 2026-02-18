@@ -371,6 +371,9 @@ Generates a markdown report with timing, token usage, cost estimates, and output
 cortex stats        # Overview: counts, freshness, storage, top facts
 cortex stale        # What's fading — reinforce, delete, or skip
 cortex conflicts    # Contradictions — merge, keep both, or delete one
+cortex conflicts --resolve highest-confidence  # Auto-resolve by confidence
+cortex conflicts --resolve newest --dry-run    # Preview before applying
+cortex conflicts --keep 12345 --drop 12346     # Surgical manual resolution
 ```
 
 No more black-box memory. No more hoping the agent remembers correctly.
@@ -472,6 +475,7 @@ Cortex isn't just another memory store. It brings ideas from **cognitive science
 | **Confidence-aware prompting** | ✅ Decay scores in prompt | ❌ | ❌ | ❌ | ❌ |
 | **Model benchmarking** | ✅ `cortex bench` | ❌ | ❌ | ❌ | ❌ |
 | **Observability** | ✅ Stats/stale/conflicts | ❌ | ❌ | Basic | ❌ |
+| **Conflict resolution** | ✅ 4 strategies + dry-run | ❌ | ❌ | ❌ | ❌ |
 | **Confidence decay** | ✅ Ebbinghaus curve | ❌ | ❌ | ❌ | ❌ |
 | **Provenance tracking** | ✅ Full chains | ❌ | ❌ | ❌ | ❌ |
 | **Self-hosted** | ✅ Single binary | 🟡 Complex | 🟡 Postgres | 🟡 Framework | ✅ |
@@ -573,9 +577,9 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 - **Graph Memory Layer**: Relationship-aware memory architecture
 - **HN / Reddit Launch**: Community launch once Phase 2 MCP server is ready
 
-### Current Open Issues (v0.1.7)
+### Current Open Issues
 1. **O(N) brute-force semantic search**: Loads all embeddings into RAM — needs ANN index at scale ([#18](https://github.com/hurttlocker/cortex/issues/18))
-2. **No multi-agent conflict resolution**: Conflict detection works, but no merge/resolution workflow ([#14](https://github.com/hurttlocker/cortex/issues/14))
+2. ~~**No multi-agent conflict resolution**~~: ✅ Shipped in v0.1.8 — 4 resolution strategies, Ebbinghaus decay, O(N) detection ([#14](https://github.com/hurttlocker/cortex/issues/14))
 
 See [docs/RISKS.md](docs/RISKS.md) for detailed risk analysis and [docs/prd/](docs/prd/) for complete PRD specifications.
 
