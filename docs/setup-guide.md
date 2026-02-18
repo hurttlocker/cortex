@@ -31,10 +31,15 @@ If you have [Ollama](https://ollama.com) installed:
 
 ```bash
 ollama pull nomic-embed-text
+
+# one-time bootstrap
 cortex embed ollama/nomic-embed-text --batch-size 10
+
+# recommended for 24/7 agents: refresh every 30 minutes
+cortex embed ollama/nomic-embed-text --watch --interval 30m --batch-size 10
 ```
 
-This generates vector embeddings for hybrid search (keyword + semantic). Takes a minute on first run.
+This generates vector embeddings for hybrid search (keyword + semantic) and keeps them fresh as new memories arrive.
 
 Verify:
 ```bash

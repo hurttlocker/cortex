@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -189,10 +191,32 @@ func getStoreConfig() store.StoreConfig {
 }
 
 // getHNSWPath returns the path for the persisted HNSW index file.
-// Stored alongside the database in ~/.cortex/hnsw.idx
+// By default this is ~/.cortex/hnsw.idx. If --db / CORTEX_DB is set,
+// the index is stored alongside that database file.
 func getHNSWPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".cortex", "hnsw.idx")
+	dbPath := getDBPath()
+	if dbPath == "" {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".cortex", "hnsw.idx")
+	}
+
+	dbPath = expandUserPath(dbPath)
+	if dbPath == ":memory:" {
+		return filepath.Join(os.TempDir(), "cortex-hnsw.idx")
+	}
+
+	return filepath.Join(filepath.Dir(dbPath), "hnsw.idx")
+}
+
+func expandUserPath(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return path
+		}
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }
 
 func runImport(args []string) error {
@@ -338,6 +362,9 @@ func runImport(args []string) error {
 			fmt.Fprintf(os.Stderr, "  Embedding error: %v\n", err)
 		} else {
 			fmt.Printf("  Embeddings generated: %d\n", embedStats.EmbeddingsAdded)
+			if embedStats.HNSWRebuilt {
+				fmt.Printf("  HNSW rebuilt: %d vectors\n", embedStats.HNSWVectorCount)
+			}
 		}
 	}
 
@@ -1123,6 +1150,8 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 // EmbeddingStats holds statistics about embedding run.
 type EmbeddingStats struct {
 	EmbeddingsAdded int
+	HNSWRebuilt     bool
+	HNSWVectorCount int
 }
 
 // runEmbeddingOnImportedMemories runs embedding on recently imported memories.
@@ -1158,9 +1187,17 @@ func runEmbeddingOnImportedMemories(ctx context.Context, s store.Store, embedFla
 		return nil, fmt.Errorf("embedding memories: %w", err)
 	}
 
-	return &EmbeddingStats{
-		EmbeddingsAdded: result.EmbeddingsAdded,
-	}, nil
+	stats := &EmbeddingStats{EmbeddingsAdded: result.EmbeddingsAdded}
+	if result.EmbeddingsAdded > 0 {
+		vectorCount, err := rebuildHNSWIndex(ctx, s)
+		if err != nil {
+			return nil, fmt.Errorf("rebuilding HNSW index: %w", err)
+		}
+		stats.HNSWRebuilt = true
+		stats.HNSWVectorCount = vectorCount
+	}
+
+	return stats, nil
 }
 
 func runReinforce(args []string) error {
@@ -1322,6 +1359,9 @@ func runReimport(args []string) error {
 			return fmt.Errorf("embedding error: %w", err)
 		}
 		fmt.Printf("  ✓ Generated %d embeddings\n", embedStats.EmbeddingsAdded)
+		if embedStats.HNSWRebuilt {
+			fmt.Printf("  ✓ Rebuilt HNSW index (%d vectors)\n", embedStats.HNSWVectorCount)
+		}
 	} else if embedFlag == "" {
 		fmt.Println("Step 3/3: Skipped (no --embed flag)")
 	} else {
@@ -1519,25 +1559,48 @@ func runIndex(args []string) error {
 	return nil
 }
 
+var errEmbedLockHeld = errors.New("embed lock is already held")
+
+const (
+	defaultEmbedBatchSize = 10
+	defaultEmbedInterval  = 30 * time.Minute
+	embedLockStaleAfter   = 12 * time.Hour
+)
+
+type embedCmdOptions struct {
+	embedFlag    string
+	batchSize    int
+	forceReembed bool
+	watch        bool
+	interval     time.Duration
+}
+
+type embedRunLock struct {
+	path string
+	file *os.File
+}
+
+type embedPassSummary struct {
+	result          *ingest.EmbedResult
+	hnswRebuilt     bool
+	hnswVectorCount int
+}
+
 func runEmbed(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex embed <provider/model> [--batch-size N] [--force]")
+	opts, err := parseEmbedArgs(args)
+	if err != nil {
+		return err
 	}
 
-	embedFlag := args[0]
-	batchSize := 10 // Default: 10 for local models (Ollama), increase for API providers
-	forceReembed := false
-	for i := 1; i < len(args); i++ {
-		switch {
-		case args[i] == "--batch-size" && i+1 < len(args):
-			i++
-			fmt.Sscanf(args[i], "%d", &batchSize)
-		case strings.HasPrefix(args[i], "--batch-size="):
-			fmt.Sscanf(strings.TrimPrefix(args[i], "--batch-size="), "%d", &batchSize)
-		case args[i] == "--force" || args[i] == "-f":
-			forceReembed = true
+	lockPath := getEmbedLockPath()
+	lock, err := acquireEmbedRunLock(lockPath)
+	if err != nil {
+		if errors.Is(err, errEmbedLockHeld) {
+			return fmt.Errorf("another embedding process is already running (%s)", lockPath)
 		}
+		return err
 	}
+	defer lock.Release()
 
 	// Open store
 	s, err := store.NewStore(getStoreConfig())
@@ -1546,26 +1609,13 @@ func runEmbed(args []string) error {
 	}
 	defer s.Close()
 
-	ctx := context.Background()
-
-	// If --force, delete all existing embeddings first so they get regenerated
-	// with context-enriched content (Issue #26).
-	if forceReembed {
-		fmt.Println("Force mode: deleting all existing embeddings for re-generation with context enrichment...")
-		result, err := s.DeleteAllEmbeddings(ctx)
-		if err != nil {
-			return fmt.Errorf("deleting embeddings: %w", err)
-		}
-		fmt.Printf("  Deleted %d existing embeddings\n", result)
-	}
-
 	// Configure embedder
-	embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
+	embedConfig, err := embed.ResolveEmbedConfig(opts.embedFlag)
 	if err != nil {
 		return fmt.Errorf("configuring embedder: %w", err)
 	}
 	if embedConfig == nil {
-		return fmt.Errorf("no embedding configuration found")
+		return fmt.Errorf("no embedding configuration found (pass <provider/model> or set CORTEX_EMBED)")
 	}
 	if err := embedConfig.Validate(); err != nil {
 		return fmt.Errorf("invalid embedding configuration: %w", err)
@@ -1576,53 +1626,380 @@ func runEmbed(args []string) error {
 		return fmt.Errorf("creating embedder: %w", err)
 	}
 
-	// Create embedding engine
 	embedEngine := ingest.NewEmbedEngine(s, embedder)
 
-	if forceReembed {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	if opts.watch {
+		fmt.Printf("Starting embed watch mode (interval=%s, batch-size=%d)\n", opts.interval, opts.batchSize)
+		fmt.Printf("Lock: %s\n", lockPath)
+	}
+
+	return runEmbedLoop(ctx, s, embedEngine, opts)
+}
+
+func parseEmbedArgs(args []string) (embedCmdOptions, error) {
+	opts := embedCmdOptions{
+		batchSize: defaultEmbedBatchSize,
+		interval:  defaultEmbedInterval,
+	}
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--batch-size" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return opts, fmt.Errorf("invalid --batch-size value: %s", args[i])
+			}
+			opts.batchSize = n
+		case strings.HasPrefix(args[i], "--batch-size="):
+			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--batch-size="))
+			if err != nil {
+				return opts, fmt.Errorf("invalid --batch-size value: %s", args[i])
+			}
+			opts.batchSize = n
+		case args[i] == "--force" || args[i] == "-f":
+			opts.forceReembed = true
+		case args[i] == "--watch":
+			opts.watch = true
+		case args[i] == "--interval" && i+1 < len(args):
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil {
+				return opts, fmt.Errorf("invalid --interval value: %s", args[i])
+			}
+			opts.interval = d
+		case strings.HasPrefix(args[i], "--interval="):
+			d, err := time.ParseDuration(strings.TrimPrefix(args[i], "--interval="))
+			if err != nil {
+				return opts, fmt.Errorf("invalid --interval value: %s", args[i])
+			}
+			opts.interval = d
+		case strings.HasPrefix(args[i], "-"):
+			return opts, fmt.Errorf("unknown flag: %s", args[i])
+		default:
+			if opts.embedFlag != "" {
+				return opts, fmt.Errorf("unexpected argument: %s", args[i])
+			}
+			opts.embedFlag = args[i]
+		}
+	}
+
+	if opts.batchSize <= 0 {
+		return opts, fmt.Errorf("--batch-size must be > 0")
+	}
+	if opts.interval <= 0 {
+		return opts, fmt.Errorf("--interval must be > 0")
+	}
+	if opts.watch && opts.forceReembed {
+		return opts, fmt.Errorf("--watch cannot be used with --force")
+	}
+	if opts.embedFlag == "" && os.Getenv("CORTEX_EMBED") == "" {
+		return opts, fmt.Errorf("usage: cortex embed [provider/model] [--watch] [--interval 30m] [--batch-size N] [--force]\n       (or set CORTEX_EMBED)")
+	}
+
+	return opts, nil
+}
+
+func runEmbedLoop(ctx context.Context, s store.Store, embedEngine *ingest.EmbedEngine, opts embedCmdOptions) error {
+	consecutiveFailures := 0
+
+	for {
+		startedAt := time.Now()
+		summary, err := runEmbedPass(ctx, s, embedEngine, opts)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				fmt.Println("\nEmbed watch stopped.")
+				return nil
+			}
+			if !opts.watch {
+				return err
+			}
+			if !isRetryableEmbedError(err) {
+				return err
+			}
+
+			consecutiveFailures++
+			delay := computeEmbedWatchBackoff(opts.interval, consecutiveFailures)
+			fmt.Fprintf(os.Stderr, "[%s] embed pass failed (%v). Retrying in %s\n",
+				time.Now().Format(time.RFC3339), err, delay)
+			if waitForDurationOrCancel(ctx, delay) {
+				fmt.Println("\nEmbed watch stopped.")
+				return nil
+			}
+			continue
+		}
+
+		consecutiveFailures = 0
+		printEmbedPassSummary(summary, time.Since(startedAt))
+
+		if !opts.watch {
+			return nil
+		}
+
+		if waitForDurationOrCancel(ctx, opts.interval) {
+			fmt.Println("\nEmbed watch stopped.")
+			return nil
+		}
+	}
+}
+
+func runEmbedPass(ctx context.Context, s store.Store, embedEngine *ingest.EmbedEngine, opts embedCmdOptions) (*embedPassSummary, error) {
+	if opts.forceReembed {
+		fmt.Println("Force mode: deleting all existing embeddings for re-generation with context enrichment...")
+		deleted, err := s.DeleteAllEmbeddings(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("deleting embeddings: %w", err)
+		}
+		fmt.Printf("  Deleted %d existing embeddings\n", deleted)
+	}
+
+	if opts.forceReembed {
 		fmt.Println("Re-generating all embeddings with context-enriched content...")
 	} else {
 		fmt.Println("Generating embeddings for memories without embeddings...")
 	}
 
-	// Embed all memories without embeddings
-	opts := ingest.DefaultEmbedOptions()
-	opts.BatchSize = batchSize
-	opts.AdaptiveBatching = true
-	opts.HealthCheckEvery = 5
-	opts.ProgressFn = func(current, total int) {
+	embedOpts := ingest.DefaultEmbedOptions()
+	embedOpts.BatchSize = opts.batchSize
+	embedOpts.AdaptiveBatching = true
+	embedOpts.HealthCheckEvery = 5
+	embedOpts.ProgressFn = func(current, total int) {
 		pct := 0
 		if total > 0 {
 			pct = current * 100 / total
 		}
+		if opts.watch {
+			fmt.Printf("  [%s] Embedding... [%d/%d] %d%%\n", time.Now().Format("15:04:05"), current, total, pct)
+			return
+		}
 		fmt.Printf("\r  Embedding... [%d/%d] %d%%", current, total, pct)
 	}
-	opts.VerboseProgressFn = func(current, total, batchSize int, msg string) {
+	embedOpts.VerboseProgressFn = func(current, total, batchSize int, msg string) {
 		if msg != "" {
 			fmt.Printf("\n  [%d/%d] (batch=%d) %s\n", current, total, batchSize, msg)
 		}
 	}
 
-	result, err := embedEngine.EmbedMemories(ctx, opts)
+	result, err := embedEngine.EmbedMemories(ctx, embedOpts)
 	if err != nil {
-		return fmt.Errorf("embedding memories: %w", err)
+		return nil, fmt.Errorf("embedding memories: %w", err)
 	}
 
-	fmt.Printf("\nEmbedding complete:\n")
-	fmt.Printf("  Memories processed: %d\n", result.MemoriesProcessed)
-	fmt.Printf("  Embeddings added: %d\n", result.EmbeddingsAdded)
-	fmt.Printf("  Already had embeddings: %d\n", result.EmbeddingsSkipped)
+	summary := &embedPassSummary{result: result}
 
-	if len(result.Errors) > 0 {
-		fmt.Printf("  Errors: %d\n", len(result.Errors))
+	if result.EmbeddingsAdded > 0 {
+		vectorCount, err := rebuildHNSWIndex(ctx, s)
+		if err != nil {
+			return nil, fmt.Errorf("rebuilding HNSW index: %w", err)
+		}
+		summary.hnswRebuilt = true
+		summary.hnswVectorCount = vectorCount
+	}
+
+	return summary, nil
+}
+
+func rebuildHNSWIndex(ctx context.Context, s store.Store) (int, error) {
+	engine := search.NewEngine(s)
+	count, err := engine.BuildHNSW(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if count == 0 {
+		return 0, nil
+	}
+	if err := engine.SaveHNSW(getHNSWPath()); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func printEmbedPassSummary(summary *embedPassSummary, elapsed time.Duration) {
+	if summary == nil || summary.result == nil {
+		return
+	}
+
+	if !isTTY() {
+		fmt.Printf("embed memories_processed=%d embeddings_added=%d embeddings_skipped=%d errors=%d elapsed_ms=%d\n",
+			summary.result.MemoriesProcessed,
+			summary.result.EmbeddingsAdded,
+			summary.result.EmbeddingsSkipped,
+			len(summary.result.Errors),
+			elapsed.Milliseconds(),
+		)
+		return
+	}
+
+	fmt.Printf("\nEmbedding complete (%s):\n", elapsed.Round(time.Millisecond))
+	fmt.Printf("  Memories processed: %d\n", summary.result.MemoriesProcessed)
+	fmt.Printf("  Embeddings added: %d\n", summary.result.EmbeddingsAdded)
+	fmt.Printf("  Already had embeddings: %d\n", summary.result.EmbeddingsSkipped)
+	if summary.hnswRebuilt {
+		fmt.Printf("  HNSW rebuilt: %d vectors (%s)\n", summary.hnswVectorCount, getHNSWPath())
+	}
+
+	if len(summary.result.Errors) > 0 {
+		fmt.Printf("  Errors: %d\n", len(summary.result.Errors))
 		if globalVerbose {
-			for _, err := range result.Errors {
-				fmt.Printf("    Memory %d: %s\n", err.MemoryID, err.Message)
+			for _, embedErr := range summary.result.Errors {
+				fmt.Printf("    Memory %d: %s\n", embedErr.MemoryID, embedErr.Message)
 			}
 		}
 	}
+}
 
-	return nil
+func isRetryableEmbedError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var httpErr *embed.HTTPError
+	if errors.As(err, &httpErr) {
+		// Retry provider and infrastructure-level errors.
+		if httpErr.StatusCode == 408 || httpErr.StatusCode == 429 || httpErr.StatusCode >= 500 {
+			return true
+		}
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	transientHints := []string{
+		"connection refused",
+		"connection reset",
+		"context deadline exceeded",
+		"i/o timeout",
+		"no such host",
+		"temporarily unavailable",
+		"service unavailable",
+		"timeout",
+	}
+	for _, hint := range transientHints {
+		if strings.Contains(msg, hint) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func computeEmbedWatchBackoff(interval time.Duration, consecutiveFailures int) time.Duration {
+	if consecutiveFailures <= 0 {
+		return interval
+	}
+
+	base := 10 * time.Second
+	if interval < base {
+		base = interval
+	}
+	if base <= 0 {
+		base = 10 * time.Second
+	}
+
+	steps := consecutiveFailures - 1
+	if steps > 6 {
+		steps = 6
+	}
+	delay := base * time.Duration(1<<steps)
+	if interval > 0 && delay > interval {
+		delay = interval
+	}
+	if delay <= 0 {
+		delay = base
+	}
+	return delay
+}
+
+func waitForDurationOrCancel(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+
+	select {
+	case <-ctx.Done():
+		return true
+	case <-t.C:
+		return false
+	}
+}
+
+func getEmbedLockPath() string {
+	dbPath := getDBPath()
+	if dbPath == "" {
+		dbPath = store.DefaultDBPath
+	}
+	dbPath = expandUserPath(dbPath)
+	if dbPath == ":memory:" {
+		return filepath.Join(os.TempDir(), "cortex-embed.lock")
+	}
+	return filepath.Join(filepath.Dir(dbPath), "embed.lock")
+}
+
+func acquireEmbedRunLock(path string) (*embedRunLock, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil, fmt.Errorf("creating lock directory: %w", err)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err == nil {
+			lock := &embedRunLock{path: path, file: f}
+			_, _ = fmt.Fprintf(f, "pid=%d\nstarted_at=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339))
+			_ = f.Sync()
+			return lock, nil
+		}
+
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("acquiring embed lock: %w", err)
+		}
+
+		if attempt == 0 && isStaleEmbedLock(path, embedLockStaleAfter) {
+			_ = os.Remove(path)
+			continue
+		}
+
+		owner := readEmbedLockOwner(path)
+		if owner != "" {
+			return nil, fmt.Errorf("%w (%s)", errEmbedLockHeld, owner)
+		}
+		return nil, errEmbedLockHeld
+	}
+
+	return nil, errEmbedLockHeld
+}
+
+func (l *embedRunLock) Release() {
+	if l == nil {
+		return
+	}
+	if l.file != nil {
+		_ = l.file.Close()
+	}
+	_ = os.Remove(l.path)
+}
+
+func isStaleEmbedLock(path string, maxAge time.Duration) bool {
+	if maxAge <= 0 {
+		return false
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) > maxAge
+}
+
+func readEmbedLockOwner(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return ""
+	}
+	return strings.ReplaceAll(text, "\n", "; ")
 }
 
 func outputExtractJSON(facts []extract.ExtractedFact) error {
@@ -2891,7 +3268,7 @@ Commands:
   import <path>       Import memory from a file or directory
   reimport <path>     Wipe database and reimport from scratch (--embed to include embeddings)
   extract <file>      Extract facts from a single file (without importing)
-  embed <provider/model> Generate embeddings for all memories without embeddings
+  embed [provider/model] Generate embeddings for missing memories (or run daemon with --watch)
   search <query>      Search memory (keyword, semantic, or hybrid)
   reinforce <id>      Reinforce a fact (reset its decay timer)
   stats               Show memory statistics and health
@@ -2966,6 +3343,12 @@ Reimport Flags:
   --llm <provider/model>  Enable LLM-assisted extraction
   -f, --force         Skip confirmation prompt
 
+Embed Flags:
+  --batch-size <N>    Number of chunks per embed request (default: 10)
+  --force             Re-generate all embeddings (one-shot only)
+  --watch             Run as a daemon and refresh embeddings periodically
+  --interval <dur>    Watch interval (default: 30m, e.g. 5m, 1h)
+
 Reinforce:
   cortex reinforce <fact_id> [fact_id...]   Reset decay timer for specified facts
 
@@ -2978,6 +3361,8 @@ Examples:
   cortex list --facts --type kv
   cortex export --format markdown --output memories.md
   cortex --db ~/my-cortex.db list --source ~/notes.md
+  cortex embed ollama/nomic-embed-text --batch-size 10
+  cortex embed ollama/nomic-embed-text --watch --interval 30m --batch-size 10
   cortex mcp                          # Start MCP server (stdio, for Claude Desktop/Cursor)
   cortex mcp --port 8080              # Start MCP server (HTTP+SSE)
 
