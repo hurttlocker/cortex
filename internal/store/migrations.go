@@ -73,6 +73,7 @@ func (s *SQLiteStore) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_facts_memory_id ON facts(memory_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_type ON facts(fact_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate ON facts(subject, predicate)`,
 
 		// Embedding vectors for semantic search
 		`CREATE TABLE IF NOT EXISTS embeddings (
