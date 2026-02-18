@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
+	"strings"
 	"time"
 )
 
@@ -150,6 +152,116 @@ func (s *SQLiteStore) ReinforceFact(ctx context.Context, id int64) error {
 		return fmt.Errorf("fact %d not found", id)
 	}
 	return nil
+}
+
+// GetFactsByMemoryIDs retrieves all facts linked to the given memory IDs.
+func (s *SQLiteStore) GetFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) ([]*Fact, error) {
+	if len(memoryIDs) == 0 {
+		return nil, nil
+	}
+
+	placeholders := make([]string, len(memoryIDs))
+	args := make([]interface{}, len(memoryIDs))
+	for i, id := range memoryIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(
+		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at
+		 FROM facts WHERE memory_id IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("getting facts by memory IDs: %w", err)
+	}
+	defer rows.Close()
+
+	var facts []*Fact
+	for rows.Next() {
+		f := &Fact{}
+		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
+			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
+			&f.SourceQuote, &f.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scanning fact: %w", err)
+		}
+		facts = append(facts, f)
+	}
+	return facts, rows.Err()
+}
+
+// ReinforceFactsByMemoryIDs updates last_reinforced for all facts linked to the given memory IDs.
+// Returns the number of facts reinforced.
+func (s *SQLiteStore) ReinforceFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) (int, error) {
+	if len(memoryIDs) == 0 {
+		return 0, nil
+	}
+
+	now := time.Now().UTC()
+
+	// Build placeholders for IN clause
+	placeholders := make([]string, len(memoryIDs))
+	args := make([]interface{}, 0, len(memoryIDs)+1)
+	args = append(args, now)
+	for i, id := range memoryIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(
+		"UPDATE facts SET last_reinforced = ? WHERE memory_id IN (%s)",
+		strings.Join(placeholders, ","),
+	)
+
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("reinforcing facts by memory IDs: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("checking rows affected: %w", err)
+	}
+	return int(rows), nil
+}
+
+// GetConfidenceDistribution returns the distribution of effective confidence across all facts.
+// It calculates effective confidence using Ebbinghaus decay: confidence * exp(-decay_rate * days).
+func (s *SQLiteStore) GetConfidenceDistribution(ctx context.Context) (*ConfidenceDistribution, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT confidence, decay_rate, last_reinforced FROM facts`)
+	if err != nil {
+		return nil, fmt.Errorf("querying facts for confidence distribution: %w", err)
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC()
+	dist := &ConfidenceDistribution{}
+
+	for rows.Next() {
+		var confidence, decayRate float64
+		var lastReinforced time.Time
+		if err := rows.Scan(&confidence, &decayRate, &lastReinforced); err != nil {
+			return nil, fmt.Errorf("scanning fact: %w", err)
+		}
+
+		daysSince := now.Sub(lastReinforced).Hours() / 24
+		effective := confidence * math.Exp(-decayRate*daysSince)
+
+		dist.Total++
+		switch {
+		case effective >= 0.7:
+			dist.High++
+		case effective >= 0.3:
+			dist.Medium++
+		default:
+			dist.Low++
+		}
+	}
+
+	return dist, rows.Err()
 }
 
 // StaleFacts returns facts with low confidence that haven't been recalled recently.

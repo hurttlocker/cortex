@@ -1260,3 +1260,109 @@ func TestGetFactsByType(t *testing.T) {
 		}
 	}
 }
+
+func TestGetFactsByMemoryIDs(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Create two memories with facts
+	memID1, _ := s.AddMemory(ctx, &Memory{Content: "memory one"})
+	memID2, _ := s.AddMemory(ctx, &Memory{Content: "memory two"})
+	memID3, _ := s.AddMemory(ctx, &Memory{Content: "memory three (no facts)"})
+
+	s.AddFact(ctx, &Fact{MemoryID: memID1, Subject: "Q", Predicate: "lives_in", Object: "Philly", FactType: "location"})
+	s.AddFact(ctx, &Fact{MemoryID: memID1, Subject: "Q", Predicate: "age", Object: "30", FactType: "identity"})
+	s.AddFact(ctx, &Fact{MemoryID: memID2, Subject: "Mister", Predicate: "model", Object: "Opus", FactType: "kv"})
+
+	// Query both memory IDs
+	facts, err := s.GetFactsByMemoryIDs(ctx, []int64{memID1, memID2})
+	if err != nil {
+		t.Fatalf("GetFactsByMemoryIDs failed: %v", err)
+	}
+	if len(facts) != 3 {
+		t.Errorf("expected 3 facts, got %d", len(facts))
+	}
+
+	// Query just one
+	facts, err = s.GetFactsByMemoryIDs(ctx, []int64{memID2})
+	if err != nil {
+		t.Fatalf("GetFactsByMemoryIDs failed: %v", err)
+	}
+	if len(facts) != 1 {
+		t.Errorf("expected 1 fact, got %d", len(facts))
+	}
+
+	// Query memory with no facts
+	facts, err = s.GetFactsByMemoryIDs(ctx, []int64{memID3})
+	if err != nil {
+		t.Fatalf("GetFactsByMemoryIDs failed: %v", err)
+	}
+	if len(facts) != 0 {
+		t.Errorf("expected 0 facts, got %d", len(facts))
+	}
+
+	// Empty input
+	facts, err = s.GetFactsByMemoryIDs(ctx, []int64{})
+	if err != nil {
+		t.Fatalf("GetFactsByMemoryIDs failed: %v", err)
+	}
+	if len(facts) != 0 {
+		t.Errorf("expected 0 facts for empty input, got %d", len(facts))
+	}
+}
+
+func TestReinforceFactsByMemoryIDs(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	memID1, _ := s.AddMemory(ctx, &Memory{Content: "memory one"})
+	memID2, _ := s.AddMemory(ctx, &Memory{Content: "memory two"})
+
+	s.AddFact(ctx, &Fact{MemoryID: memID1, Subject: "A", Predicate: "is", Object: "1", FactType: "kv"})
+	s.AddFact(ctx, &Fact{MemoryID: memID1, Subject: "B", Predicate: "is", Object: "2", FactType: "kv"})
+	s.AddFact(ctx, &Fact{MemoryID: memID2, Subject: "C", Predicate: "is", Object: "3", FactType: "kv"})
+
+	time.Sleep(10 * time.Millisecond)
+
+	count, err := s.ReinforceFactsByMemoryIDs(ctx, []int64{memID1})
+	if err != nil {
+		t.Fatalf("ReinforceFactsByMemoryIDs failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 reinforced, got %d", count)
+	}
+
+	// Empty input
+	count, err = s.ReinforceFactsByMemoryIDs(ctx, []int64{})
+	if err != nil {
+		t.Fatalf("ReinforceFactsByMemoryIDs with empty failed: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 reinforced for empty input, got %d", count)
+	}
+}
+
+func TestGetConfidenceDistribution(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{Content: "distribution test"})
+
+	// Add facts with different decay rates
+	// All start at confidence=1.0, but different decay rates will produce different effective confidences
+	// identity (0.001) stays high, temporal (0.1) decays fast, state (0.05) medium
+	s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "A", Predicate: "is", Object: "1", FactType: "identity", Confidence: 1.0, DecayRate: 0.001})
+	s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "B", Predicate: "is", Object: "2", FactType: "kv", Confidence: 1.0, DecayRate: 0.01})
+
+	dist, err := s.GetConfidenceDistribution(ctx)
+	if err != nil {
+		t.Fatalf("GetConfidenceDistribution failed: %v", err)
+	}
+	if dist.Total != 2 {
+		t.Errorf("expected total 2, got %d", dist.Total)
+	}
+	// Both just created, so effective confidence ≈ 1.0 → both high
+	if dist.High != 2 {
+		t.Errorf("expected 2 high confidence facts, got %d", dist.High)
+	}
+}

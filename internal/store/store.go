@@ -91,6 +91,14 @@ type StoreStats struct {
 	DBSizeBytes    int64
 }
 
+// ConfidenceDistribution holds the distribution of effective confidence across facts.
+type ConfidenceDistribution struct {
+	High   int `json:"high"`   // >= 0.7
+	Medium int `json:"medium"` // 0.3 - 0.7
+	Low    int `json:"low"`    // < 0.3
+	Total  int `json:"total"`
+}
+
 // Freshness holds distribution of memories by import date buckets.
 type Freshness struct {
 	Today     int `json:"today"`
@@ -133,6 +141,9 @@ type Store interface {
 	ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, error)
 	UpdateFactConfidence(ctx context.Context, id int64, confidence float64) error
 	ReinforceFact(ctx context.Context, id int64) error
+	ReinforceFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) (int, error)
+	GetFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) ([]*Fact, error)
+	GetConfidenceDistribution(ctx context.Context) (*ConfidenceDistribution, error)
 
 	// Search
 	SearchFTS(ctx context.Context, query string, limit int) ([]*SearchResult, error)

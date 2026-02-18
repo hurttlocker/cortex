@@ -20,13 +20,14 @@ import (
 
 // Stats holds aggregate memory statistics for observability.
 type Stats struct {
-	TotalMemories int            `json:"memories"`
-	TotalFacts    int            `json:"facts"`
-	TotalSources  int            `json:"sources"`
-	StorageBytes  int64          `json:"storage_bytes"`
-	AvgConfidence float64        `json:"avg_confidence"`
-	FactsByType   map[string]int `json:"facts_by_type"`
-	Freshness     Freshness      `json:"freshness"`
+	TotalMemories          int                           `json:"memories"`
+	TotalFacts             int                           `json:"facts"`
+	TotalSources           int                           `json:"sources"`
+	StorageBytes           int64                         `json:"storage_bytes"`
+	AvgConfidence          float64                       `json:"avg_confidence"`
+	FactsByType            map[string]int                `json:"facts_by_type"`
+	Freshness              Freshness                     `json:"freshness"`
+	ConfidenceDistribution *store.ConfidenceDistribution `json:"confidence_distribution,omitempty"`
 }
 
 // Freshness holds distribution of memories by import date buckets.
@@ -124,6 +125,12 @@ func (e *Engine) GetStats(ctx context.Context) (*Stats, error) {
 		ThisWeek:  freshness.ThisWeek,
 		ThisMonth: freshness.ThisMonth,
 		Older:     freshness.Older,
+	}
+
+	// Get confidence distribution (decay-aware)
+	confDist, err := e.store.GetConfidenceDistribution(ctx)
+	if err == nil {
+		stats.ConfidenceDistribution = confDist
 	}
 
 	return stats, nil

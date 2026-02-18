@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hurttlocker/cortex/internal/store"
 )
@@ -757,5 +758,132 @@ func TestSearchHybrid_FallbackNilEmbedder(t *testing.T) {
 	// Results should be nil due to error
 	if results != nil {
 		t.Error("expected nil results when error occurs")
+	}
+}
+
+// --- Confidence Decay Tests ---
+
+func TestSearchAppliesConfidenceDecayWeighting(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Create two memories
+	id1, _ := s.AddMemory(ctx, &store.Memory{
+		Content:    "Go programming language features goroutines",
+		SourceFile: "~/notes/go.md",
+	})
+	id2, _ := s.AddMemory(ctx, &store.Memory{
+		Content:    "Go concurrency patterns and goroutine pools",
+		SourceFile: "~/notes/go-concurrency.md",
+	})
+
+	// Add facts: id1 has high confidence (identity, slow decay), id2 has low confidence (temporal, fast decay)
+	s.AddFact(ctx, &store.Fact{
+		MemoryID:   id1,
+		Subject:    "Go",
+		Predicate:  "feature",
+		Object:     "goroutines",
+		FactType:   "identity",
+		Confidence: 1.0,
+		DecayRate:  0.001,
+	})
+	s.AddFact(ctx, &store.Fact{
+		MemoryID:   id2,
+		Subject:    "Go",
+		Predicate:  "pattern",
+		Object:     "concurrency",
+		FactType:   "temporal",
+		Confidence: 0.3, // Already low confidence
+		DecayRate:  0.1,
+	})
+
+	engine := NewEngine(s)
+	results, err := engine.Search(ctx, "goroutines", DefaultOptions())
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) < 1 {
+		t.Fatal("expected at least 1 result")
+	}
+
+	// Both should be returned - confidence weighting adjusts scores but doesn't filter
+	// The exact ordering depends on BM25 scores + confidence blend
+	for _, r := range results {
+		if r.Score <= 0 {
+			t.Errorf("result score should be positive, got %f", r.Score)
+		}
+	}
+}
+
+func TestGetMemoryConfidenceMap(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &store.Memory{Content: "test memory"})
+	s.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "X",
+		Predicate:  "is",
+		Object:     "Y",
+		FactType:   "kv",
+		Confidence: 1.0,
+		DecayRate:  0.01,
+	})
+
+	engine := NewEngine(s)
+
+	// Just-created facts should have effective confidence ≈ 1.0
+	confMap := engine.getMemoryConfidenceMap(ctx, []int64{memID})
+	if conf, ok := confMap[memID]; !ok {
+		t.Error("expected memory in confidence map")
+	} else if conf < 0.99 {
+		t.Errorf("expected confidence ~1.0 for fresh fact, got %f", conf)
+	}
+
+	// Memory with no facts should get default 1.0
+	confMap = engine.getMemoryConfidenceMap(ctx, []int64{99999})
+	if conf, ok := confMap[int64(99999)]; !ok || conf != 1.0 {
+		t.Errorf("expected default confidence 1.0 for memory with no facts, got %f", conf)
+	}
+}
+
+func TestReinforceOnRecall(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &store.Memory{
+		Content:    "Go programming language with garbage collection",
+		SourceFile: "test.md",
+	})
+	factID, _ := s.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "Go",
+		Predicate:  "has",
+		Object:     "GC",
+		FactType:   "kv",
+		Confidence: 1.0,
+		DecayRate:  0.01,
+	})
+
+	// Get the original last_reinforced time
+	factBefore, _ := s.GetFact(ctx, factID)
+	originalTime := factBefore.LastReinforced
+
+	// Small sleep so timestamp changes
+	time.Sleep(50 * time.Millisecond)
+
+	// Search should trigger reinforce-on-recall
+	engine := NewEngine(s)
+	_, err := engine.Search(ctx, "Go garbage collection", DefaultOptions())
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+
+	// Give the goroutine a moment to complete
+	time.Sleep(100 * time.Millisecond)
+
+	factAfter, _ := s.GetFact(ctx, factID)
+	if !factAfter.LastReinforced.After(originalTime) {
+		t.Error("expected last_reinforced to be updated after search recall")
 	}
 }

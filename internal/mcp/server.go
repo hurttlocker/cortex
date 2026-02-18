@@ -68,6 +68,7 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	registerStatsTool(s, observeEngine)
 	registerFactsTool(s, cfg.Store)
 	registerStaleTool(s, observeEngine)
+	registerReinforceTool(s, cfg.Store)
 
 	// Register resources
 	registerStatsResource(s, observeEngine)
@@ -327,6 +328,64 @@ func registerStaleTool(s *server.MCPServer, engine *observe.Engine) {
 		}
 
 		data, _ := json.MarshalIndent(stale, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
+	})
+}
+
+func registerReinforceTool(s *server.MCPServer, st store.Store) {
+	tool := mcp.NewTool("cortex_reinforce",
+		mcp.WithDescription("Reinforce one or more facts by ID, resetting their Ebbinghaus decay timer. Use after cortex_stale to keep important facts fresh."),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithString("fact_ids",
+			mcp.Required(),
+			mcp.Description("Comma-separated fact IDs to reinforce (e.g. '42,108,256')"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		idsStr, err := req.RequireString("fact_ids")
+		if err != nil {
+			return mcp.NewToolResultError("fact_ids is required"), nil
+		}
+		idsStr = strings.TrimSpace(idsStr)
+		if idsStr == "" {
+			return mcp.NewToolResultError("fact_ids cannot be empty"), nil
+		}
+
+		parts := strings.Split(idsStr, ",")
+		reinforced := 0
+		var errors []string
+
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			var id int64
+			if _, err := fmt.Sscanf(part, "%d", &id); err != nil {
+				errors = append(errors, fmt.Sprintf("invalid ID %q", part))
+				continue
+			}
+			if err := st.ReinforceFact(ctx, id); err != nil {
+				errors = append(errors, fmt.Sprintf("fact %d: %v", id, err))
+				continue
+			}
+			reinforced++
+		}
+
+		result := map[string]interface{}{
+			"reinforced": reinforced,
+			"message":    fmt.Sprintf("Reinforced %d fact(s)", reinforced),
+		}
+		if len(errors) > 0 {
+			result["errors"] = errors
+		}
+
+		data, _ := json.MarshalIndent(result, "", "  ")
 		return mcp.NewToolResultText(string(data)), nil
 	})
 }

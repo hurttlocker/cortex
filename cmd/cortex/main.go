@@ -20,7 +20,7 @@ import (
 )
 
 // version is set by goreleaser via ldflags at build time.
-var version = "0.1.6"
+var version = "0.1.7"
 
 var (
 	globalDBPath  string
@@ -79,6 +79,16 @@ func main() {
 		}
 	case "conflicts":
 		if err := runConflicts(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "reinforce":
+		if err := runReinforce(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "reimport":
+		if err := runReimport(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -889,6 +899,177 @@ func runEmbeddingOnImportedMemories(ctx context.Context, s store.Store, embedFla
 	}, nil
 }
 
+func runReinforce(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex reinforce <fact_id> [fact_id...]")
+	}
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	reinforced := 0
+
+	for _, arg := range args {
+		id, err := strconv.ParseInt(arg, 10, 64)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Skipping invalid ID %q: %v\n", arg, err)
+			continue
+		}
+
+		if err := s.ReinforceFact(ctx, id); err != nil {
+			fmt.Fprintf(os.Stderr, "  Error reinforcing fact %d: %v\n", id, err)
+			continue
+		}
+		reinforced++
+	}
+
+	fmt.Printf("Reinforced %d fact(s)\n", reinforced)
+	return nil
+}
+
+func runReimport(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex reimport <path> [--recursive] [--extract] [--embed <provider/model>] [--force]")
+	}
+
+	// Parse flags
+	var paths []string
+	recursive := false
+	enableExtraction := false
+	embedFlag := ""
+	llmFlag := ""
+	force := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--recursive" || args[i] == "-r":
+			recursive = true
+		case args[i] == "--extract":
+			enableExtraction = true
+		case args[i] == "--embed" && i+1 < len(args):
+			i++
+			embedFlag = args[i]
+		case strings.HasPrefix(args[i], "--embed="):
+			embedFlag = strings.TrimPrefix(args[i], "--embed=")
+		case args[i] == "--llm" && i+1 < len(args):
+			i++
+			llmFlag = args[i]
+		case strings.HasPrefix(args[i], "--llm="):
+			llmFlag = strings.TrimPrefix(args[i], "--llm=")
+		case args[i] == "--force" || args[i] == "-f":
+			force = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		default:
+			paths = append(paths, args[i])
+		}
+	}
+
+	if len(paths) == 0 {
+		return fmt.Errorf("no path specified")
+	}
+
+	// Confirmation prompt (unless --force)
+	if !force {
+		fmt.Println("⚠️  This will WIPE the existing database and reimport from scratch.")
+		fmt.Printf("   Database: %s\n", getDBPath())
+		fmt.Printf("   Source:   %s\n", strings.Join(paths, ", "))
+		fmt.Print("\nContinue? [y/N] ")
+
+		var answer string
+		fmt.Scanln(&answer)
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Println("Aborted.")
+			return nil
+		}
+	}
+
+	// Step 1: Wipe the database
+	dbPath := getDBPath()
+	if dbPath == "" {
+		dbPath = store.DefaultDBPath
+	}
+	// Expand ~ if needed
+	if strings.HasPrefix(dbPath, "~/") {
+		home, _ := os.UserHomeDir()
+		dbPath = home + dbPath[1:]
+	}
+
+	fmt.Println("Step 1/3: Wiping database...")
+	if err := os.Remove(dbPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing database: %w", err)
+	}
+	// Also remove WAL and SHM files
+	os.Remove(dbPath + "-wal")
+	os.Remove(dbPath + "-shm")
+	fmt.Println("  ✓ Database wiped")
+
+	// Step 2: Import
+	fmt.Println("Step 2/3: Importing...")
+	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath()})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	engine := ingest.NewEngine(s)
+	ctx := context.Background()
+
+	opts := ingest.ImportOptions{
+		Recursive: recursive,
+		ProgressFn: func(current, total int, file string) {
+			fmt.Printf("  [%d/%d] %s\n", current, total, file)
+		},
+	}
+
+	totalResult := &ingest.ImportResult{}
+	for _, path := range paths {
+		result, err := engine.ImportFile(ctx, path, opts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Error importing %s: %v\n", path, err)
+			continue
+		}
+		totalResult.Add(result)
+	}
+	fmt.Printf("  ✓ Imported %d files (%d new memories, %d unchanged)\n",
+		totalResult.FilesImported, totalResult.MemoriesNew, totalResult.MemoriesUnchanged)
+
+	// Run extraction if requested
+	if enableExtraction && totalResult.MemoriesNew > 0 {
+		fmt.Println("  Extracting facts...")
+		extractionStats, err := runExtractionOnImportedMemories(ctx, s, llmFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Extraction error: %v\n", err)
+		} else {
+			fmt.Printf("  ✓ Extracted %d facts\n", extractionStats.FactsExtracted)
+		}
+	}
+
+	// Step 3: Embed (if requested)
+	if embedFlag != "" && totalResult.MemoriesNew > 0 {
+		fmt.Println("Step 3/3: Generating embeddings...")
+		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag)
+		if err != nil {
+			return fmt.Errorf("embedding error: %w", err)
+		}
+		fmt.Printf("  ✓ Generated %d embeddings\n", embedStats.EmbeddingsAdded)
+	} else if embedFlag == "" {
+		fmt.Println("Step 3/3: Skipped (no --embed flag)")
+	} else {
+		fmt.Println("Step 3/3: Skipped (no new memories)")
+	}
+
+	fmt.Println()
+	fmt.Print(ingest.FormatImportResult(totalResult))
+	fmt.Println("\n✅ Reimport complete!")
+	return nil
+}
+
 func runCleanup(args []string) error {
 	// Parse flags (none currently, reserved for future use)
 	for _, arg := range args {
@@ -1644,6 +1825,19 @@ func outputEnhancedStatsTTY(stats *observe.Stats, dateRange string) error {
 		}
 	}
 
+	if stats.ConfidenceDistribution != nil && stats.ConfidenceDistribution.Total > 0 {
+		fmt.Println("├─────────────────────────────────────────────┤")
+		fmt.Println("│ Confidence Health (Ebbinghaus decay)         │")
+		cd := stats.ConfidenceDistribution
+		total := float64(cd.Total)
+		highPct := float64(cd.High) * 100.0 / total
+		medPct := float64(cd.Medium) * 100.0 / total
+		lowPct := float64(cd.Low) * 100.0 / total
+		fmt.Printf("│   🟢 High (≥0.7):   %5d (%4.1f%%)            │\n", cd.High, highPct)
+		fmt.Printf("│   🟡 Medium:        %5d (%4.1f%%)            │\n", cd.Medium, medPct)
+		fmt.Printf("│   🔴 Low (<0.3):    %5d (%4.1f%%)            │\n", cd.Low, lowPct)
+	}
+
 	fmt.Println("├─────────────────────────────────────────────┤")
 	fmt.Println("│ Freshness                                    │")
 	fmt.Printf("│   Today:           %-25d │\n", stats.Freshness.Today)
@@ -1782,14 +1976,17 @@ Usage:
 
 Commands:
   import <path>       Import memory from a file or directory
+  reimport <path>     Wipe database and reimport from scratch (--embed to include embeddings)
   extract <file>      Extract facts from a single file (without importing)
   embed <provider/model> Generate embeddings for all memories without embeddings
   search <query>      Search memory (keyword, semantic, or hybrid)
+  reinforce <id>      Reinforce a fact (reset its decay timer)
   stats               Show memory statistics and health
   list                List memories or facts from the store
   export              Export the full memory store in different formats
   stale               Find outdated memory entries
   conflicts           Detect contradictory facts
+  cleanup             Remove garbage memories and headless facts
   mcp                 Start MCP (Model Context Protocol) server
   version             Print version
 
@@ -1830,6 +2027,16 @@ Export Flags:
 
 Stats Flags:
   --json              Force JSON output even in TTY
+
+Reimport Flags:
+  -r, --recursive     Recursively import from directories
+  --extract           Extract facts from imported memories
+  --embed <provider/model> Generate embeddings after import
+  --llm <provider/model>  Enable LLM-assisted extraction
+  -f, --force         Skip confirmation prompt
+
+Reinforce:
+  cortex reinforce <fact_id> [fact_id...]   Reset decay timer for specified facts
 
 MCP Flags:
   --port <N>          Start HTTP+SSE transport on port (default: stdio)

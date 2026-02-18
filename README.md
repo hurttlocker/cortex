@@ -88,6 +88,7 @@ claude mcp add cortex -- cortex mcp
 | `cortex_stats` | Memory statistics |
 | `cortex_facts` | Query extracted facts |
 | `cortex_stale` | Find fading/outdated facts |
+| `cortex_reinforce` | Reset decay timer on important facts |
 
 <details>
 <summary><b>Claude Desktop / Cursor setup</b></summary>
@@ -227,7 +228,7 @@ Inspired by [Ebbinghaus's forgetting curve](https://en.wikipedia.org/wiki/Forget
 | State | 14 days | "Working on Project Alpha" |
 | Temporal | 7 days | "Meeting on Tuesday" |
 
-When you search, results are weighted by confidence. Stale facts fade. Important facts persist. `cortex stale` shows you what's fading so you can reinforce or forget.
+When you search, results are weighted by effective confidence — stale facts rank lower. Facts are automatically reinforced when recalled (searched and returned). Use `cortex reinforce <id>` to manually reset the decay timer. `cortex stale` shows what's fading so you can reinforce or forget. `cortex stats` shows the full confidence distribution.
 
 ### 🧬 Provenance Chains — Know Where Every Fact Came From
 
@@ -430,8 +431,8 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 ### 🚧 Phase 2 — Distribution & Intelligence *(In Progress)*
 - ✅ **MCP Server**: Model Context Protocol server — plug Cortex into Claude Code, Claude Desktop, Cursor, OpenClaw, or any MCP-compatible client ([#22](https://github.com/hurttlocker/cortex/issues/22))
 - ✅ **Goreleaser CI**: Automated cross-platform binary builds on every tag ([#23](https://github.com/hurttlocker/cortex/issues/23))
-- **Activate Confidence Decay**: Make Ebbinghaus curve operational (facts lose confidence over time if not reinforced)
-- **`cortex reimport --embed`**: One command to rebuild entire knowledge base
+- ✅ **Confidence Decay Activated**: Ebbinghaus curve is now operational — search results weighted by effective confidence, facts auto-reinforced on recall, `cortex reinforce` command for manual reinforcement ([#24](https://github.com/hurttlocker/cortex/issues/24))
+- ✅ **`cortex reimport --embed`**: One command to wipe and rebuild entire knowledge base with optional embeddings ([#25](https://github.com/hurttlocker/cortex/issues/25))
 - **Web Dashboard**: Browser-based memory exploration and management
 - **Additional Importers**: PDF, DOCX, HTML support
 

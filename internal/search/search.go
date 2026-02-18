@@ -14,10 +14,17 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/store"
 )
+
+// ConfidenceWeight controls how much effective confidence affects search ranking.
+// 0.0 = no effect, 1.0 = fully weighted by confidence.
+// Default 0.2 gives a gentle boost to high-confidence results without
+// completely suppressing low-confidence ones that are otherwise relevant.
+const ConfidenceWeight = 0.2
 
 // Mode specifies the search strategy.
 type Mode string
@@ -116,6 +123,8 @@ func NewEngineWithEmbedder(s store.Store, e embed.Embedder) *Engine {
 }
 
 // Search performs a search using the specified mode.
+// After retrieving results, it applies confidence decay weighting and
+// reinforces facts linked to the returned memories (Ebbinghaus reinforcement-on-recall).
 func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Result, error) {
 	if query == "" {
 		return nil, nil
@@ -125,17 +134,118 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		opts.Limit = 10
 	}
 
+	var results []Result
+	var err error
+
 	switch opts.Mode {
 	case ModeKeyword, "":
-		return e.searchBM25(ctx, query, opts)
+		results, err = e.searchBM25(ctx, query, opts)
 	case ModeSemantic:
-		return e.searchSemantic(ctx, query, opts)
+		results, err = e.searchSemantic(ctx, query, opts)
 	case ModeHybrid:
-		return e.searchHybrid(ctx, query, opts)
+		results, err = e.searchHybrid(ctx, query, opts)
 	default:
 		return nil, fmt.Errorf("unknown search mode: %q", opts.Mode)
 	}
+
+	if err != nil || len(results) == 0 {
+		return results, err
+	}
+
+	// Apply confidence decay weighting and reinforce-on-recall
+	results = e.applyConfidenceDecay(ctx, results)
+
+	return results, nil
 }
+
+// applyConfidenceDecay adjusts search result scores based on the effective confidence
+// of facts linked to each memory, and reinforces those facts (Ebbinghaus recall).
+func (e *Engine) applyConfidenceDecay(ctx context.Context, results []Result) []Result {
+	// Collect memory IDs from results
+	memoryIDs := make([]int64, 0, len(results))
+	for _, r := range results {
+		if r.MemoryID > 0 {
+			memoryIDs = append(memoryIDs, r.MemoryID)
+		}
+	}
+
+	if len(memoryIDs) == 0 {
+		return results
+	}
+
+	// Get average effective confidence per memory from its linked facts
+	confidenceMap := e.getMemoryConfidenceMap(ctx, memoryIDs)
+
+	// Apply confidence weighting to scores
+	for i := range results {
+		if avgConf, ok := confidenceMap[results[i].MemoryID]; ok {
+			// Blend: score = (1 - weight) * original_score + weight * (original_score * effective_confidence)
+			// This gently penalizes stale memories without completely suppressing them
+			results[i].Score = (1-ConfidenceWeight)*results[i].Score + ConfidenceWeight*(results[i].Score*avgConf)
+		}
+	}
+
+	// Re-sort by adjusted score
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
+	// Reinforce-on-recall: update last_reinforced for facts linked to returned memories
+	// This is fire-and-forget — don't fail the search if reinforcement fails
+	go func() {
+		_, _ = e.store.ReinforceFactsByMemoryIDs(context.Background(), memoryIDs)
+	}()
+
+	return results
+}
+
+// getMemoryConfidenceMap returns the average effective confidence for facts linked to each memory ID.
+// Uses a single batch query for efficiency, then groups by memory ID.
+func (e *Engine) getMemoryConfidenceMap(ctx context.Context, memoryIDs []int64) map[int64]float64 {
+	confidenceMap := make(map[int64]float64)
+
+	facts, err := e.store.GetFactsByMemoryIDs(ctx, memoryIDs)
+	if err != nil || len(facts) == 0 {
+		// No facts found — assume full confidence for all memories
+		for _, id := range memoryIDs {
+			confidenceMap[id] = 1.0
+		}
+		return confidenceMap
+	}
+
+	// Group facts by memory ID and compute effective confidence
+	type accumulator struct {
+		totalConf float64
+		count     int
+	}
+	accum := make(map[int64]*accumulator)
+
+	now := timeNow()
+	for _, f := range facts {
+		days := math.Max(0, now.Sub(f.LastReinforced).Hours()/24)
+		effective := f.Confidence * math.Exp(-f.DecayRate*days)
+
+		if a, ok := accum[f.MemoryID]; ok {
+			a.totalConf += effective
+			a.count++
+		} else {
+			accum[f.MemoryID] = &accumulator{totalConf: effective, count: 1}
+		}
+	}
+
+	for _, id := range memoryIDs {
+		if a, ok := accum[id]; ok && a.count > 0 {
+			confidenceMap[id] = a.totalConf / float64(a.count)
+		} else {
+			confidenceMap[id] = 1.0 // No facts = assume full confidence
+		}
+	}
+
+	return confidenceMap
+}
+
+// timeNow returns the current time. Extracted for testing.
+var timeNow = func() time.Time { return time.Now().UTC() }
 
 // searchBM25 performs keyword search using the store's FTS5 capability.
 // Uses AND-first-then-OR strategy: tries implicit AND for precision,

@@ -352,3 +352,91 @@ func TestContainsInsensitive(t *testing.T) {
 		}
 	}
 }
+
+func TestReinforceTool(t *testing.T) {
+	s := setupTestStore(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	mcpServer := NewServer(ServerConfig{
+		Store:   s,
+		DBPath:  ":memory:",
+		Version: "test",
+	})
+
+	// Get a fact's last_reinforced before
+	factBefore, _ := s.GetFact(ctx, 1)
+	originalTime := factBefore.LastReinforced
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Call reinforce tool
+	result := callTool(t, mcpServer, "cortex_reinforce", map[string]interface{}{
+		"fact_ids": "1,2",
+	})
+
+	text := getTextContent(t, result)
+	var resp map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &resp); err != nil {
+		t.Fatalf("parsing response: %v", err)
+	}
+
+	reinforced := int(resp["reinforced"].(float64))
+	if reinforced != 2 {
+		t.Errorf("expected 2 reinforced, got %d", reinforced)
+	}
+
+	// Verify fact was actually reinforced
+	factAfter, _ := s.GetFact(ctx, 1)
+	if !factAfter.LastReinforced.After(originalTime) {
+		t.Error("expected last_reinforced to be updated")
+	}
+}
+
+func TestReinforceToolInvalidIDs(t *testing.T) {
+	s := setupTestStore(t)
+	defer s.Close()
+
+	mcpServer := NewServer(ServerConfig{
+		Store:   s,
+		DBPath:  ":memory:",
+		Version: "test",
+	})
+
+	// Invalid ID
+	result := callTool(t, mcpServer, "cortex_reinforce", map[string]interface{}{
+		"fact_ids": "abc,999999",
+	})
+
+	text := getTextContent(t, result)
+	var resp map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &resp); err != nil {
+		t.Fatalf("parsing response: %v", err)
+	}
+
+	// Should have errors for both (abc is invalid format, 999999 not found)
+	if resp["errors"] == nil {
+		t.Error("expected errors for invalid/missing IDs")
+	}
+}
+
+func TestReinforceToolEmptyIDs(t *testing.T) {
+	s := setupTestStore(t)
+	defer s.Close()
+
+	mcpServer := NewServer(ServerConfig{
+		Store:   s,
+		DBPath:  ":memory:",
+		Version: "test",
+	})
+
+	result := callTool(t, mcpServer, "cortex_reinforce", map[string]interface{}{
+		"fact_ids": "",
+	})
+
+	text := getTextContent(t, result)
+	// Empty fact_ids should return error
+	if text == "" {
+		t.Error("expected non-empty response for empty fact_ids")
+	}
+}
