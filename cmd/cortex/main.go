@@ -221,7 +221,7 @@ func expandUserPath(path string) string {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--llm <provider/model>] [--embed <provider/model>]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--similarity-threshold 0.95] [--dedupe-window-sec 300] [--llm <provider/model>] [--embed <provider/model>]")
 	}
 
 	// Parse flags
@@ -234,6 +234,9 @@ func runImport(args []string) error {
 	classFlag := ""
 	metadataFlag := ""
 	autoTag := false
+	captureDedupe := false
+	similarityThreshold := 0.95
+	dedupeWindowSec := 300
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -260,6 +263,34 @@ func runImport(args []string) error {
 			metadataFlag = strings.TrimPrefix(args[i], "--metadata=")
 		case args[i] == "--auto-tag":
 			autoTag = true
+		case args[i] == "--capture-dedupe":
+			captureDedupe = true
+		case args[i] == "--similarity-threshold" && i+1 < len(args):
+			i++
+			f, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --similarity-threshold value: %s", args[i])
+			}
+			similarityThreshold = f
+		case strings.HasPrefix(args[i], "--similarity-threshold="):
+			f, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--similarity-threshold="), 64)
+			if err != nil {
+				return fmt.Errorf("invalid --similarity-threshold value: %s", args[i])
+			}
+			similarityThreshold = f
+		case args[i] == "--dedupe-window-sec" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --dedupe-window-sec value: %s", args[i])
+			}
+			dedupeWindowSec = n
+		case strings.HasPrefix(args[i], "--dedupe-window-sec="):
+			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--dedupe-window-sec="))
+			if err != nil {
+				return fmt.Errorf("invalid --dedupe-window-sec value: %s", args[i])
+			}
+			dedupeWindowSec = n
 		case args[i] == "--llm" && i+1 < len(args):
 			i++
 			llmFlag = args[i]
@@ -277,9 +308,19 @@ func runImport(args []string) error {
 		}
 	}
 
+	if similarityThreshold <= 0 || similarityThreshold > 1 {
+		return fmt.Errorf("--similarity-threshold must be between 0 and 1")
+	}
+	if dedupeWindowSec <= 0 {
+		return fmt.Errorf("--dedupe-window-sec must be > 0")
+	}
+
 	// Set project on import options
 	opts.Project = projectFlag
 	opts.AutoTag = autoTag
+	opts.CaptureDedupeEnabled = captureDedupe
+	opts.CaptureSimilarityThreshold = similarityThreshold
+	opts.CaptureDedupeWindowSec = dedupeWindowSec
 
 	// Parse optional memory class
 	classFlag = store.NormalizeMemoryClass(classFlag)
@@ -3307,6 +3348,9 @@ Import Flags:
   --project <name>    Tag imported memories with a project (e.g., --project trading)
   --class <name>      Assign a memory class (rule|decision|preference|identity|status|scratch)
   --auto-tag          Infer project from file paths using built-in rules
+  --capture-dedupe    Enable near-duplicate suppression against recent captures
+  --similarity-threshold <F> Cosine similarity cutoff for dedupe (default: 0.95)
+  --dedupe-window-sec <N> Recent window in seconds for dedupe scan (default: 300)
   --embed <provider/model> Generate embeddings during import (e.g., --embed ollama/all-minilm)
   --llm <provider/model>  Enable LLM-assisted extraction (e.g., --llm openai/gpt-4o-mini)
 

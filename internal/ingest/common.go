@@ -32,6 +32,7 @@ type ImportResult struct {
 	MemoriesNew       int
 	MemoriesUpdated   int
 	MemoriesUnchanged int
+	MemoriesNearDuped int // Suppressed by near-duplicate hygiene
 	Errors            []ImportError
 }
 
@@ -43,6 +44,7 @@ func (r *ImportResult) Add(other *ImportResult) {
 	r.MemoriesNew += other.MemoriesNew
 	r.MemoriesUpdated += other.MemoriesUpdated
 	r.MemoriesUnchanged += other.MemoriesUnchanged
+	r.MemoriesNearDuped += other.MemoriesNearDuped
 	r.Errors = append(r.Errors, other.Errors...)
 }
 
@@ -63,6 +65,22 @@ type ImportOptions struct {
 	AutoTag     bool        // Infer project from file paths using default rules
 	Metadata    interface{} // *store.Metadata — stored as interface{} to avoid circular import
 	ProgressFn  func(current, total int, file string)
+
+	// Capture hygiene controls (Issue #36).
+	// Conservative defaults are applied by Normalize().
+	CaptureDedupeEnabled       bool
+	CaptureSimilarityThreshold float64
+	CaptureDedupeWindowSec     int
+}
+
+// Normalize applies sensible defaults for capture hygiene settings.
+func (o *ImportOptions) Normalize() {
+	if o.CaptureSimilarityThreshold <= 0 {
+		o.CaptureSimilarityThreshold = 0.95
+	}
+	if o.CaptureDedupeWindowSec <= 0 {
+		o.CaptureDedupeWindowSec = 300 // 5 minutes
+	}
 }
 
 // DefaultMaxFileSize is 10MB.

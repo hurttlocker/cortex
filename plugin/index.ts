@@ -30,6 +30,17 @@ const execFileAsync = promisify(execFile);
 // Types
 // ============================================================================
 
+interface CaptureHygieneConfig {
+  dedupe: {
+    enabled: boolean;
+  };
+  similarityThreshold: number;
+  dedupeWindowSec: number;
+  coalesceWindowSec: number;
+  shortCaptureMaxChars: number;
+  lowSignalPatterns: string[];
+}
+
 interface CortexConfig {
   binaryPath: string;
   dbPath: string;
@@ -41,6 +52,7 @@ interface CortexConfig {
   minScore: number;
   captureMaxChars: number;
   extractFacts: boolean;
+  capture: CaptureHygieneConfig;
 }
 
 interface CortexSearchResult {
@@ -105,6 +117,14 @@ function resolveDefaultBinaryPath(): string {
 
 function parseConfig(raw: unknown): CortexConfig {
   const cfg = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const capture = (cfg.capture && typeof cfg.capture === "object" ? cfg.capture : {}) as Record<string, unknown>;
+  const dedupe = (capture.dedupe && typeof capture.dedupe === "object" ? capture.dedupe : {}) as Record<string, unknown>;
+
+  const lowSignalDefaults = ["ok", "okay", "yes", "got it", "sounds good", "thanks", "thank you"];
+  const lowSignalPatterns = Array.isArray(capture.lowSignalPatterns)
+    ? capture.lowSignalPatterns.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
+    : lowSignalDefaults;
+
   return {
     binaryPath: typeof cfg.binaryPath === "string" ? cfg.binaryPath : resolveDefaultBinaryPath(),
     dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : join(homedir(), ".cortex", "cortex.db"),
@@ -116,6 +136,28 @@ function parseConfig(raw: unknown): CortexConfig {
     minScore: typeof cfg.minScore === "number" ? cfg.minScore : 0.3,
     captureMaxChars: typeof cfg.captureMaxChars === "number" ? cfg.captureMaxChars : 2000,
     extractFacts: cfg.extractFacts !== false, // Default ON
+    capture: {
+      dedupe: {
+        enabled: dedupe.enabled !== false,
+      },
+      similarityThreshold:
+        typeof capture.similarityThreshold === "number" && capture.similarityThreshold > 0 && capture.similarityThreshold <= 1
+          ? capture.similarityThreshold
+          : 0.95,
+      dedupeWindowSec:
+        typeof capture.dedupeWindowSec === "number" && capture.dedupeWindowSec > 0
+          ? capture.dedupeWindowSec
+          : 300,
+      coalesceWindowSec:
+        typeof capture.coalesceWindowSec === "number" && capture.coalesceWindowSec >= 0
+          ? capture.coalesceWindowSec
+          : 20,
+      shortCaptureMaxChars:
+        typeof capture.shortCaptureMaxChars === "number" && capture.shortCaptureMaxChars > 0
+          ? capture.shortCaptureMaxChars
+          : 220,
+      lowSignalPatterns,
+    },
   };
 }
 
@@ -170,7 +212,13 @@ class CortexCLI {
     }
   }
 
-  async importText(text: string, source: string, extract = true, metadata?: CortexMetadata): Promise<void> {
+  async importText(
+    text: string,
+    source: string,
+    extract = true,
+    metadata?: CortexMetadata,
+    hygiene?: { dedupeEnabled?: boolean; similarityThreshold?: number; dedupeWindowSec?: number },
+  ): Promise<void> {
     // Write text to a temp file, import it, then clean up
     const tmpDir = await mkdtemp(join(tmpdir(), "cortex-capture-"));
     const tmpFile = join(tmpDir, `${source}.md`);
@@ -179,6 +227,17 @@ class CortexCLI {
       await writeFile(tmpFile, text, "utf-8");
       const args = ["import", tmpFile];
       if (extract) args.push("--extract");
+
+      // Capture hygiene server-side dedupe controls (Issue #36)
+      if (hygiene?.dedupeEnabled) {
+        args.push("--capture-dedupe");
+        if (typeof hygiene.similarityThreshold === "number") {
+          args.push("--similarity-threshold", String(hygiene.similarityThreshold));
+        }
+        if (typeof hygiene.dedupeWindowSec === "number") {
+          args.push("--dedupe-window-sec", String(hygiene.dedupeWindowSec));
+        }
+      }
 
       // Attach structured metadata if provided (Issue #30)
       if (metadata) {
@@ -273,6 +332,178 @@ function formatCapturedExchange(userMsg: string, assistantMsg: string, channel?:
   return parts.join("\n");
 }
 
+function normalizeCaptureText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function wordFreq(text: string): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const token of normalizeCaptureText(text).split(" ")) {
+    if (!token || token.length < 2) continue;
+    out.set(token, (out.get(token) ?? 0) + 1);
+  }
+  return out;
+}
+
+function cosineSimilarity(a: string, b: string): number {
+  const av = wordFreq(a);
+  const bv = wordFreq(b);
+  if (av.size === 0 || bv.size === 0) return 0;
+
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (const [token, v] of av.entries()) {
+    dot += v * (bv.get(token) ?? 0);
+    normA += v * v;
+  }
+  for (const v of bv.values()) {
+    normB += v * v;
+  }
+
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+function hasImportantTag(text: string): boolean {
+  return /(#[ ]?important|\[important\]|important:|!important)/i.test(text);
+}
+
+function isLowSignalMessage(text: string, patterns: string[]): boolean {
+  if (!text || hasImportantTag(text)) return false;
+  const normalized = normalizeCaptureText(text);
+  if (!normalized) return true;
+  if (normalized.split(" ").length > 6) return false;
+
+  const normalizedPatterns = patterns.map((p) => normalizeCaptureText(p)).filter(Boolean);
+  if (normalizedPatterns.includes(normalized)) return true;
+
+  // Common one-liners and acknowledgement phrases
+  return /^(ok|okay|yes|yep|got it|sounds good|sure|thanks|thank you|cool)$/i.test(normalized);
+}
+
+interface CaptureRecord {
+  text: string;
+  canonical: string;
+  metadata: CortexMetadata;
+  source: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+  charCount: number;
+  segmentCount: number;
+}
+
+interface HygieneResult {
+  status: "captured" | "queued" | "skipped_low_signal" | "skipped_near_duplicate";
+  similarity?: number;
+  coalescedSegments?: number;
+}
+
+class CaptureHygiene {
+  private readonly recent: Array<{ canonical: string; ts: number }> = [];
+  private pending: CaptureRecord | null = null;
+  private pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(
+    private readonly cli: CortexCLI,
+    private readonly logger: { info: (...args: any[]) => void; warn: (...args: any[]) => void },
+    private readonly captureCfg: CaptureHygieneConfig,
+    private readonly extractFacts: boolean,
+  ) {}
+
+  async ingest(record: CaptureRecord): Promise<HygieneResult> {
+    // Drop low-signal trivial acknowledgements unless explicitly tagged important.
+    if (isLowSignalMessage(record.canonical, this.captureCfg.lowSignalPatterns)) {
+      return { status: "skipped_low_signal" };
+    }
+
+    // Plugin-side near-duplicate suppression against recent captures.
+    if (this.captureCfg.dedupe.enabled) {
+      const threshold = this.captureCfg.similarityThreshold;
+      const windowMs = this.captureCfg.dedupeWindowSec * 1000;
+      const now = Date.now();
+
+      let best = 0;
+      for (let i = this.recent.length - 1; i >= 0; i--) {
+        const rec = this.recent[i];
+        if (now - rec.ts > windowMs) continue;
+        const score = cosineSimilarity(record.canonical, rec.canonical);
+        if (score > best) best = score;
+      }
+
+      if (best >= threshold) {
+        return { status: "skipped_near_duplicate", similarity: best };
+      }
+    }
+
+    // Burst coalescing for short rapid-fire captures.
+    const isShort = record.charCount <= this.captureCfg.shortCaptureMaxChars;
+    if (this.captureCfg.coalesceWindowSec > 0 && isShort) {
+      if (this.pending && (record.createdAtMs - this.pending.updatedAtMs) <= this.captureCfg.coalesceWindowSec * 1000) {
+        this.pending.text = `${this.pending.text}\n\n---\n\n${record.text}`;
+        this.pending.canonical = `${this.pending.canonical} ${record.canonical}`.trim();
+        this.pending.updatedAtMs = record.createdAtMs;
+        this.pending.charCount += record.charCount;
+        this.pending.segmentCount += 1;
+        this.pending.metadata.message_count = (this.pending.metadata.message_count ?? 0) + (record.metadata.message_count ?? 0);
+        this.pending.metadata.timestamp_end = record.metadata.timestamp_end ?? new Date().toISOString();
+        this.scheduleFlush();
+        return { status: "queued", coalescedSegments: this.pending.segmentCount };
+      }
+
+      await this.flushPending();
+      this.pending = record;
+      this.scheduleFlush();
+      return { status: "queued", coalescedSegments: 1 };
+    }
+
+    await this.flushPending();
+    await this.persist(record);
+    return { status: "captured", coalescedSegments: 1 };
+  }
+
+  async flushPending(): Promise<void> {
+    if (!this.pending) return;
+
+    const record = this.pending;
+    this.pending = null;
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+      this.pendingTimer = null;
+    }
+
+    await this.persist(record);
+  }
+
+  private scheduleFlush() {
+    if (this.pendingTimer) {
+      clearTimeout(this.pendingTimer);
+    }
+    const waitMs = Math.max(1, this.captureCfg.coalesceWindowSec) * 1000;
+    this.pendingTimer = setTimeout(() => {
+      void this.flushPending().catch((err) => this.logger.warn(`cortex: pending flush failed: ${String(err)}`));
+    }, waitMs);
+  }
+
+  private async persist(record: CaptureRecord): Promise<void> {
+    await this.cli.importText(record.text, record.source, this.extractFacts, record.metadata, {
+      dedupeEnabled: this.captureCfg.dedupe.enabled,
+      similarityThreshold: this.captureCfg.similarityThreshold,
+      dedupeWindowSec: this.captureCfg.dedupeWindowSec,
+    });
+
+    this.recent.push({ canonical: record.canonical, ts: Date.now() });
+    while (this.recent.length > 50) {
+      this.recent.shift();
+    }
+  }
+}
+
 // ============================================================================
 // Plugin Definition
 // ============================================================================
@@ -286,6 +517,7 @@ const cortexPlugin = {
   register(api: OpenClawPluginApi) {
     const cfg = parseConfig(api.pluginConfig);
     const cli = new CortexCLI(cfg.binaryPath, cfg.dbPath, cfg.embedProvider, cfg.searchMode, api.logger);
+    const captureHygiene = new CaptureHygiene(cli, api.logger, cfg.capture, cfg.extractFacts);
 
     api.logger.info(`cortex: plugin registered (binary: ${cfg.binaryPath}, db: ${cfg.dbPath}, mode: ${cfg.searchMode})`);
 
@@ -502,6 +734,10 @@ const cortexPlugin = {
             console.log(`Auto-recall: ${cfg.autoRecall}`);
             console.log(`Auto-capture: ${cfg.autoCapture}`);
             console.log(`Extract facts: ${cfg.extractFacts}`);
+            console.log(`Capture dedupe: ${cfg.capture.dedupe.enabled}`);
+            console.log(`Capture similarity threshold: ${cfg.capture.similarityThreshold}`);
+            console.log(`Capture dedupe window: ${cfg.capture.dedupeWindowSec}s`);
+            console.log(`Capture coalesce window: ${cfg.capture.coalesceWindowSec}s`);
 
             // Verify binary exists
             try {
@@ -621,22 +857,40 @@ const cortexPlugin = {
           if (typeof ev.chatType === "string") metadata.chat_type = ev.chatType;
           else if (typeof ev.chat_type === "string") metadata.chat_type = ev.chat_type;
 
-          // Format the exchange
-          const exchange = formatCapturedExchange(
-            userText || "(no user message)",
-            assistantText || "(no assistant message)",
-            metadata.channel,
-          );
+          metadata.timestamp_end = new Date().toISOString();
 
-          // Import into Cortex with fact extraction + metadata
-          await cli.importText(exchange, "auto-capture", cfg.extractFacts, metadata);
+          const safeUser = userText || "(no user message)";
+          const safeAssistant = assistantText || "(no assistant message)";
+          const exchange = formatCapturedExchange(safeUser, safeAssistant, metadata.channel);
+
+          const result = await captureHygiene.ingest({
+            text: exchange,
+            canonical: `${safeUser}\n${safeAssistant}`,
+            metadata,
+            source: "auto-capture",
+            createdAtMs: Date.now(),
+            updatedAtMs: Date.now(),
+            charCount: exchange.length,
+            segmentCount: 1,
+          });
 
           const metaFields = Object.keys(metadata).filter(
             (k) => metadata[k as keyof CortexMetadata] !== undefined,
           ).length;
-          api.logger.info(
-            `cortex: auto-captured exchange (${userText.length + assistantText.length} chars, ${metaFields} metadata fields, extract: ${cfg.extractFacts})`,
-          );
+
+          if (result.status === "captured") {
+            api.logger.info(
+              `cortex: auto-captured exchange (${userText.length + assistantText.length} chars, ${metaFields} metadata fields)`,
+            );
+          } else if (result.status === "queued") {
+            api.logger.info(
+              `cortex: queued capture for coalescing (${result.coalescedSegments ?? 1} segment(s) in burst window)`,
+            );
+          } else if (result.status === "skipped_low_signal") {
+            api.logger.info("cortex: skipped low-signal capture");
+          } else if (result.status === "skipped_near_duplicate") {
+            api.logger.info(`cortex: skipped near-duplicate capture (similarity=${(result.similarity ?? 0).toFixed(3)})`);
+          }
         } catch (err: any) {
           api.logger.warn(`cortex: auto-capture failed: ${err.message}`);
         }
@@ -662,7 +916,12 @@ const cortexPlugin = {
           api.logger.warn(`cortex: binary not found at ${cfg.binaryPath} — install from https://github.com/hurttlocker/cortex/releases`);
         }
       },
-      stop: () => {
+      stop: async () => {
+        try {
+          await captureHygiene.flushPending();
+        } catch (err: any) {
+          api.logger.warn(`cortex: failed to flush pending capture on stop: ${err?.message ?? err}`);
+        }
         api.logger.info("cortex: stopped");
       },
     });

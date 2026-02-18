@@ -204,6 +204,7 @@ Every import tracks **provenance**: source file, line number, section header, an
 ```bash
 cortex import ~/notes/ --recursive    # Walk an entire directory
 cortex import chat.txt --llm ollama/gemma2:2b   # Optional LLM-assist for unstructured text
+cortex import /tmp/auto-capture.md --capture-dedupe --similarity-threshold 0.95 --dedupe-window-sec 300
 ```
 
 ### 🔍 Dual Search — Two Engines, Your Choice of Model
@@ -266,6 +267,20 @@ cortex search "anything" --show-metadata               # See agent/channel/model
 ```
 
 The OpenClaw plugin automatically captures session context on every conversation — agent ID, channel, model, token usage — with zero configuration. Over time, your memory becomes a structured knowledge graph of *who knew what, when, and where*.
+
+### 🧹 Auto-Capture Hygiene — Keep Memory Clean at Scale
+
+For high-volume auto-capture workflows, Cortex supports hygiene controls to reduce noisy repetition:
+
+```bash
+# Server-side near-duplicate suppression on import
+cortex import /tmp/auto-capture.md --capture-dedupe --similarity-threshold 0.95 --dedupe-window-sec 300
+```
+
+The OpenClaw plugin also supports:
+- near-duplicate suppression (cosine threshold on recent captures)
+- burst coalescing windows for short rapid-fire turns
+- low-signal acknowledgement filters (`ok`, `got it`, etc.)
 
 ### 📉 Confidence Decay — Memory That Fades Like Yours
 
