@@ -48,40 +48,51 @@ Cortex says: **bring everything.**
 
 ## 🚀 Get Started in 30 Seconds
 
-### Install
+### 1. Install
+
+Pick your platform — one command, no dependencies:
+
+| Platform | Command |
+|----------|---------|
+| **macOS (Apple Silicon)** | `curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-darwin-arm64.tar.gz \| tar xz && sudo mv cortex /usr/local/bin/` |
+| **macOS (Intel)** | `curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-darwin-amd64.tar.gz \| tar xz && sudo mv cortex /usr/local/bin/` |
+| **Linux (x86_64)** | `curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-linux-amd64.tar.gz \| tar xz && sudo mv cortex /usr/local/bin/` |
+| **Linux (ARM64)** | `curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-linux-arm64.tar.gz \| tar xz && sudo mv cortex /usr/local/bin/` |
+| **Windows** | Download `cortex-windows-amd64.tar.gz` from [Releases](https://github.com/hurttlocker/cortex/releases/latest) |
+| **Go install** | `go install github.com/hurttlocker/cortex/cmd/cortex@latest` |
+
+Verify: `cortex version` → should print `cortex 0.1.4`
+
+### 2. Import your data
 
 ```bash
-# Go install (if you have Go 1.24+)
-go install github.com/hurttlocker/cortex/cmd/cortex@latest
-
-# Or download a prebuilt binary
-# macOS (Apple Silicon)
-curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-darwin-arm64.tar.gz | tar xz
-sudo mv cortex /usr/local/bin/
-
-# macOS (Intel)
-curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-darwin-amd64.tar.gz | tar xz
-sudo mv cortex /usr/local/bin/
-
-# Linux (x86_64)
-curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-linux-amd64.tar.gz | tar xz
-sudo mv cortex /usr/local/bin/
+cortex import ~/my-notes/ --recursive        # folder of markdown/json/yaml/txt
+cortex import ~/MEMORY.md                     # single file
+cortex import ~/chat-export.json              # JSON works too
 ```
 
-### Use with Claude Code (MCP)
+### 3. Connect to Claude Code (MCP)
 
 ```bash
-# Import your notes, then wire it up — that's it
-cortex import ~/my-notes/ --recursive
 claude mcp add cortex -- cortex mcp
 ```
 
-Claude Code now has access to `cortex_search`, `cortex_import`, `cortex_stats`, `cortex_facts`, and `cortex_stale` as tools.
+**That's it.** Claude Code now has these tools:
+
+| Tool | What it does |
+|------|-------------|
+| `cortex_search` | Search memories (keyword, semantic, or hybrid) |
+| `cortex_import` | Save new memories |
+| `cortex_stats` | Memory statistics |
+| `cortex_facts` | Query extracted facts |
+| `cortex_stale` | Find fading/outdated facts |
 
 <details>
-<summary>Claude Desktop / Cursor setup</summary>
+<summary><b>Claude Desktop / Cursor setup</b></summary>
 
-Add to your MCP config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+Add to your MCP config file:
+- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
@@ -93,6 +104,23 @@ Add to your MCP config (`~/Library/Application Support/Claude/claude_desktop_con
   }
 }
 ```
+
+Restart Claude Desktop after saving.
+
+</details>
+
+<details>
+<summary><b>Optional: Enable semantic search</b></summary>
+
+Semantic search needs an embedding model. If you have [Ollama](https://ollama.com):
+
+```bash
+ollama pull nomic-embed-text
+cortex embed ollama/nomic-embed-text
+claude mcp add cortex -- cortex mcp --embed ollama/nomic-embed-text
+```
+
+Without this, Cortex uses BM25 keyword search (fast, no extra dependencies).
 
 </details>
 
