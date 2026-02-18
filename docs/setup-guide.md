@@ -136,7 +136,61 @@ cortex search "cortex setup" --limit 3
 
 You should see your setup note in the results. If so, Cortex is fully operational. ✅
 
-## 6. Ongoing Habits
+## 6. Recursive Reasoning (RLM)
+
+Cortex can reason over your memories using LLMs — either single-pass or recursive (iterative search→reason loop inspired by the [RLM paper](https://arxiv.org/abs/2512.24601)).
+
+### Quick Start
+
+```bash
+# Single-pass (fast, simple queries)
+cortex reason "What happened today?" --preset daily-digest --embed ollama/nomic-embed-text
+
+# Recursive (deep, complex queries — the LLM searches iteratively)
+cortex reason "Analyze all my project risks" --recursive -v --embed ollama/nomic-embed-text
+```
+
+### LLM Setup
+
+Cortex reason needs an LLM. Options:
+
+**Cloud (recommended for interactive use):**
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-...   # Get from https://openrouter.ai
+cortex reason "query" --recursive -v --embed ollama/nomic-embed-text
+# Auto-selects gemini-2.5-flash (interactive) or deepseek-v3.2 (deep analysis)
+```
+
+**Local (free, private — great for GPU users or scheduled cron):**
+```bash
+ollama pull phi4-mini   # 3.8B params, fits any machine
+cortex reason "query" --recursive --model phi4-mini --embed ollama/nomic-embed-text
+```
+
+### Built-in Presets
+
+```bash
+cortex reason --list   # See all presets
+```
+
+| Preset | Use For | Default Model |
+|--------|---------|---------------|
+| `daily-digest` | Daily activity summary | gemini-2.5-flash |
+| `fact-audit` | Find stale/bad facts | deepseek-v3.2 |
+| `weekly-dive` | Deep analysis of a topic | deepseek-v3.2 |
+| `conflict-check` | Find contradictions | gemini-2.5-flash |
+| `agent-review` | Agent performance review | gemini-2.5-flash |
+
+### Benchmark Models
+
+When a new model drops, test it on your own memory:
+
+```bash
+cortex bench --models "google/gemini-2.5-flash,deepseek/deepseek-chat" \
+  --embed ollama/nomic-embed-text --output report.md
+```
+
+## 7. Ongoing Habits
 
 | When | Do |
 |---|---|
@@ -145,7 +199,7 @@ You should see your setup note in the results. If so, Cortex is fully operationa
 | Weekly | Run `cortex stats` + `cortex stale 7` |
 | After corrections/learnings | Store the lesson immediately |
 
-## 7. OpenClaw Plugin (Optional)
+## 8. OpenClaw Plugin (Optional)
 
 If you're running [OpenClaw](https://github.com/openclaw/openclaw), the Cortex plugin adds automatic capture and recall:
 
