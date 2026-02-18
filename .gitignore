@@ -33,3 +33,4 @@ Thumbs.db
 models/
 dist-v0.1.3/
 dist/
+plugin/node_modules/

@@ -1,0 +1,76 @@
+{
+  "id": "openclaw-cortex",
+  "kind": "extension",
+  "uiHints": {
+    "binaryPath": {
+      "label": "Cortex Binary Path",
+      "placeholder": "~/bin/cortex",
+      "help": "Path to the cortex binary. Defaults to ~/bin/cortex or cortex in PATH."
+    },
+    "dbPath": {
+      "label": "Database Path",
+      "placeholder": "~/.cortex/cortex.db",
+      "help": "Path to Cortex SQLite database.",
+      "advanced": true
+    },
+    "embedProvider": {
+      "label": "Embedding Provider",
+      "placeholder": "ollama/nomic-embed-text",
+      "help": "Embedding model for semantic/hybrid search. Format: provider/model (e.g., ollama/nomic-embed-text)."
+    },
+    "searchMode": {
+      "label": "Search Mode",
+      "placeholder": "hybrid",
+      "help": "Default search mode: hybrid (recommended), bm25, or semantic."
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Automatically capture conversation exchanges into Cortex with fact extraction."
+    },
+    "autoRecall": {
+      "label": "Auto-Recall",
+      "help": "Automatically inject relevant Cortex memories into context before each AI turn."
+    },
+    "recallLimit": {
+      "label": "Recall Limit",
+      "placeholder": "3",
+      "help": "Maximum memories to inject per turn.",
+      "advanced": true
+    },
+    "minScore": {
+      "label": "Minimum Score",
+      "placeholder": "0.3",
+      "help": "Minimum search score for auto-recall results.",
+      "advanced": true
+    },
+    "captureMaxChars": {
+      "label": "Capture Max Chars",
+      "placeholder": "2000",
+      "help": "Maximum message length eligible for auto-capture.",
+      "advanced": true
+    },
+    "extractFacts": {
+      "label": "Extract Facts",
+      "help": "Run fact extraction on captured memories (recommended)."
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "binaryPath": { "type": "string" },
+      "dbPath": { "type": "string" },
+      "embedProvider": { "type": "string" },
+      "searchMode": {
+        "type": "string",
+        "enum": ["hybrid", "bm25", "semantic"]
+      },
+      "autoCapture": { "type": "boolean" },
+      "autoRecall": { "type": "boolean" },
+      "recallLimit": { "type": "number", "minimum": 1, "maximum": 10 },
+      "minScore": { "type": "number", "minimum": 0, "maximum": 1 },
+      "captureMaxChars": { "type": "number", "minimum": 100, "maximum": 10000 },
+      "extractFacts": { "type": "boolean" }
+    }
+  }
+}
