@@ -105,6 +105,10 @@ func (e *Engine) ImportFile(ctx context.Context, path string, opts ImportOptions
 
 	if len(rawMemories) == 0 {
 		result.FilesSkipped++
+		result.Errors = append(result.Errors, ImportError{
+			File:    absPath,
+			Message: "empty or whitespace-only content — nothing to import",
+		})
 		return result, nil
 	}
 
@@ -216,6 +220,16 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 	}
 
 	if existing != nil {
+		// If new metadata is provided, update the existing memory's metadata (#53)
+		if opts.Metadata != nil {
+			if meta, ok := opts.Metadata.(*store.Metadata); ok && meta != nil {
+				if err := e.store.UpdateMemoryMetadata(ctx, existing.ID, meta); err != nil {
+					return fmt.Errorf("updating metadata on existing memory: %w", err)
+				}
+				result.MemoriesUpdated++
+				return nil
+			}
+		}
 		result.MemoriesUnchanged++
 		return nil
 	}

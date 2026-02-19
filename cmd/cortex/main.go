@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/embed"
@@ -1509,12 +1510,17 @@ func runReimport(args []string) error {
 }
 
 func runCleanup(args []string) error {
-	// Parse flags (none currently, reserved for future use)
+	dryRun := false
 	for _, arg := range args {
-		if strings.HasPrefix(arg, "-") {
-			return fmt.Errorf("unknown flag: %s", arg)
+		switch arg {
+		case "--dry-run", "-n":
+			dryRun = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return fmt.Errorf("unknown flag: %s\nUsage: cortex cleanup [--dry-run]", arg)
+			}
+			return fmt.Errorf("unexpected argument: %s", arg)
 		}
-		return fmt.Errorf("unexpected argument: %s", arg)
 	}
 
 	s, err := store.NewStore(getStoreConfig())
@@ -1529,6 +1535,20 @@ func runCleanup(args []string) error {
 	ss, ok := s.(*store.SQLiteStore)
 	if !ok {
 		return fmt.Errorf("cleanup requires SQLiteStore backend")
+	}
+
+	if dryRun {
+		// Count what would be cleaned without deleting (#57)
+		var shortCount, numericCount, factsCount int
+		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories WHERE LENGTH(content) < 20 AND deleted_at IS NULL`).Scan(&shortCount)
+		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories WHERE content GLOB '[0-9]*' AND content NOT GLOB '*[^0-9]*' AND deleted_at IS NULL`).Scan(&numericCount)
+		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM facts WHERE subject IS NULL OR subject = ''`).Scan(&factsCount)
+
+		fmt.Printf("Cleanup dry run (no changes made):\n")
+		fmt.Printf("  Short memories to delete:   %d\n", shortCount)
+		fmt.Printf("  Numeric memories to delete: %d\n", numericCount)
+		fmt.Printf("  Headless facts to delete:   %d\n", factsCount)
+		return nil
 	}
 
 	// 1. Delete short memories (likely garbage chunks).
@@ -2121,7 +2141,37 @@ func isStaleEmbedLock(path string, maxAge time.Duration) bool {
 	if err != nil {
 		return false
 	}
-	return time.Since(info.ModTime()) > maxAge
+	// Check age-based staleness
+	if time.Since(info.ModTime()) > maxAge {
+		return true
+	}
+	// Check if the owning PID is still alive (#52)
+	data, _ := os.ReadFile(path)
+	if pid := extractPIDFromLock(string(data)); pid > 0 {
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return true // can't find process — stale
+		}
+		// On Unix, FindProcess always succeeds; send signal 0 to check liveness
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			return true // process is dead — stale lock
+		}
+	}
+	return false
+}
+
+// extractPIDFromLock parses "pid=12345" from lock file content.
+func extractPIDFromLock(content string) int {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "pid=") {
+			var pid int
+			if _, err := fmt.Sscanf(line, "pid=%d", &pid); err == nil {
+				return pid
+			}
+		}
+	}
+	return 0
 }
 
 func readEmbedLockOwner(path string) string {
@@ -3278,8 +3328,13 @@ func runBench(args []string) error {
 		}
 	}
 
-	fmt.Println("🧪 Cortex Reason Benchmark")
-	fmt.Println("─────────────────────────")
+	// When --json, all non-JSON output goes to stderr to avoid polluting stdout (#49)
+	progressOut := os.Stdout
+	if parsed.jsonOutput {
+		progressOut = os.Stderr
+	}
+	fmt.Fprintln(progressOut, "🧪 Cortex Reason Benchmark")
+	fmt.Fprintln(progressOut, "─────────────────────────")
 
 	opts := reason.BenchOptions{
 		Models:         models, // nil = defaults
@@ -3291,7 +3346,7 @@ func runBench(args []string) error {
 		CompareMode:    parsed.compareMode,
 		ComparedModels: parsed.comparedRaw,
 		ProgressFn: func(model, preset string, i, total int) {
-			fmt.Printf("  [%d/%d] %s × %s...\n", i, total, model, preset)
+			fmt.Fprintf(progressOut, "  [%d/%d] %s × %s...\n", i, total, model, preset)
 		},
 	}
 
