@@ -25,9 +25,9 @@ type LLM struct {
 
 // Default models for different use cases.
 const (
-	DefaultInteractiveModel = "google/gemini-2.5-flash" // Sub-3s, cheapest reliable
-	DefaultCronModel        = "deepseek/deepseek-v3.2"  // Deep analysis, cron/background
-	DefaultLocalModel       = "phi4-mini"               // Zero data leaves machine
+	DefaultInteractiveModel = "openai/gpt-5.1-codex-mini" // 3.6s, cheapest, deep recursive explorer
+	DefaultCronModel        = "openai/gpt-5.1-codex"     // Best non-recursive depth: pattern/risk/blind-spot analysis
+	DefaultLocalModel       = "phi4-mini"                 // Zero data leaves machine
 )
 
 // LLMConfig configures an LLM provider.

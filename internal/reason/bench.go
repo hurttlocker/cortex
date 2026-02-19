@@ -18,11 +18,11 @@ type BenchModel struct {
 // DefaultBenchModels is the standard model lineup for benchmarks.
 // Covers the cost/speed/quality spectrum. Updated as new models drop.
 var DefaultBenchModels = []BenchModel{
-	{Label: "gemini-2.5-flash", Provider: "openrouter", Model: "google/gemini-2.5-flash"},
+	{Label: "gpt-5.1-codex-mini", Provider: "openrouter", Model: "openai/gpt-5.1-codex-mini"},
+	{Label: "gpt-5.1-codex", Provider: "openrouter", Model: "openai/gpt-5.1-codex"},
 	{Label: "gemini-3-flash", Provider: "openrouter", Model: "google/gemini-3-flash-preview"},
 	{Label: "deepseek-v3.2", Provider: "openrouter", Model: "deepseek/deepseek-v3.2"},
-	{Label: "deepseek-chat", Provider: "openrouter", Model: "deepseek/deepseek-chat"},
-	{Label: "llama-4-maverick", Provider: "openrouter", Model: "meta-llama/llama-4-maverick"},
+	{Label: "claude-sonnet-4.5", Provider: "openrouter", Model: "anthropic/claude-sonnet-4.5"},
 }
 
 // LocalBenchModels are the local ollama models to test.
