@@ -34,6 +34,9 @@ func (s *SQLiteStore) migrateMetadataColumn() error {
 	// Add column
 	_, err = s.db.Exec(`ALTER TABLE memories ADD COLUMN metadata TEXT DEFAULT NULL`)
 	if err != nil {
+		if isDuplicateColumnError(err) {
+			return nil
+		}
 		return fmt.Errorf("adding metadata column: %w", err)
 	}
 
