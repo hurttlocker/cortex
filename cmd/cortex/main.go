@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/embed"
@@ -1762,7 +1763,7 @@ func runEmbed(args []string) error {
 
 	embedEngine := ingest.NewEmbedEngine(s, embedder)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if opts.watch {
@@ -2088,7 +2089,7 @@ func acquireEmbedRunLock(path string) (*embedRunLock, error) {
 			return nil, fmt.Errorf("acquiring embed lock: %w", err)
 		}
 
-		if attempt == 0 && isStaleEmbedLock(path, embedLockStaleAfter) {
+		if attempt == 0 && shouldReapEmbedLock(path, embedLockStaleAfter) {
 			_ = os.Remove(path)
 			continue
 		}
@@ -2122,6 +2123,64 @@ func isStaleEmbedLock(path string, maxAge time.Duration) bool {
 		return false
 	}
 	return time.Since(info.ModTime()) > maxAge
+}
+
+func shouldReapEmbedLock(path string, maxAge time.Duration) bool {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if pid, ok := parseEmbedLockPID(string(data)); ok {
+			if !isProcessAlive(pid) {
+				return true
+			}
+			return false
+		}
+	}
+	return isStaleEmbedLock(path, maxAge)
+}
+
+func parseEmbedLockPID(raw string) (int, bool) {
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "pid=") {
+			continue
+		}
+		pidStr := strings.TrimSpace(strings.TrimPrefix(line, "pid="))
+		if pidStr == "" {
+			return 0, false
+		}
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil || pid <= 0 {
+			return 0, false
+		}
+		return pid, true
+	}
+	return 0, false
+}
+
+func isProcessAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+
+	err = proc.Signal(syscall.Signal(0))
+	if err == nil {
+		return true
+	}
+
+	errStr := strings.ToLower(err.Error())
+	if strings.Contains(errStr, "operation not permitted") || strings.Contains(errStr, "permission denied") {
+		return true
+	}
+	if strings.Contains(errStr, "no such process") || strings.Contains(errStr, "process already finished") || errors.Is(err, os.ErrProcessDone) {
+		return false
+	}
+
+	// Unknown platform-specific error: be conservative and keep the lock.
+	return true
 }
 
 func readEmbedLockOwner(path string) string {

@@ -450,3 +450,24 @@ func TestAcquireEmbedRunLock_PreventsOverlap(t *testing.T) {
 		t.Fatalf("expected errEmbedLockHeld, got: %v", err)
 	}
 }
+
+func TestParseEmbedLockPID(t *testing.T) {
+	pid, ok := parseEmbedLockPID("pid=12345\nstarted_at=2026-01-01T00:00:00Z\n")
+	if !ok || pid != 12345 {
+		t.Fatalf("expected pid=12345, got pid=%d ok=%v", pid, ok)
+	}
+
+	if _, ok := parseEmbedLockPID("started_at=2026-01-01T00:00:00Z\n"); ok {
+		t.Fatal("expected parse failure when pid is missing")
+	}
+}
+
+func TestShouldReapEmbedLock_DeadPID(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "embed.lock")
+	if err := os.WriteFile(lockPath, []byte("pid=999999\nstarted_at=2026-01-01T00:00:00Z\n"), 0600); err != nil {
+		t.Fatalf("write lock: %v", err)
+	}
+	if !shouldReapEmbedLock(lockPath, 12*time.Hour) {
+		t.Fatal("expected stale lock reap for dead pid")
+	}
+}
