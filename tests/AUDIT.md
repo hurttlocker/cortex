@@ -38,7 +38,7 @@ export HOME_BACKUP="$HOME"
 # Linux x86: cortex-linux-amd64.tar.gz
 curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz | tar xz
 ./cortex version
-# ✅ PASS: prints "cortex 0.3.1" (or latest)
+# ✅ PASS: prints "cortex 0.3.2" (or latest)
 # ❌ FAIL: missing binary, wrong arch, permission denied
 ```
 
@@ -263,8 +263,8 @@ cortex conflicts --resolve last-write-wins --dry-run
 ### 4d. Supersede a fact
 ```bash
 # Get two fact IDs
-FACT1=$(cortex list --facts --json --limit 1 | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
-FACT2=$(cortex list --facts --json --limit 2 | python3 -c "import sys,json; print(json.load(sys.stdin)[1]['id'])")
+FACT1=$(cortex list --facts --json --limit 1 | python3 -c "import sys,json; row=json.load(sys.stdin)[0]; print(row.get('id', row.get('ID')))" )
+FACT2=$(cortex list --facts --json --limit 2 | python3 -c "import sys,json; row=json.load(sys.stdin)[1]; print(row.get('id', row.get('ID')))" )
 cortex supersede "$FACT1" --by "$FACT2" --reason "Auditor test"
 # ✅ PASS: fact marked as superseded
 # ❌ FAIL: error, or fact not actually marked
@@ -292,7 +292,7 @@ cortex stale --days 1
 
 ### 5b. Reinforce a fact (Ebbinghaus reset)
 ```bash
-FACT_ID=$(cortex list --facts --json --limit 1 | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+FACT_ID=$(cortex list --facts --json --limit 1 | python3 -c "import sys,json; row=json.load(sys.stdin)[0]; print(row.get('id', row.get('ID')))" )
 cortex reinforce "$FACT_ID"
 # ✅ PASS: "Reinforced fact <id>" — confidence should stay high
 # ❌ FAIL: error or no effect
@@ -562,7 +562,7 @@ sleep 3
 # Import a new file while watch is running
 echo "# New file for watch test" > "$CORTEX_TEST_DIR/watchtest.md"
 cortex import "$CORTEX_TEST_DIR/watchtest.md"
-sleep 10  # Wait for watch to pick it up
+sleep 20  # Give watch daemon enough time for at least 2 polling cycles
 
 kill $WATCH_PID 2>/dev/null
 # ✅ PASS: new memory gets embedded automatically
