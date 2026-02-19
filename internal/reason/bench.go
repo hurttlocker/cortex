@@ -41,8 +41,10 @@ type BenchPreset struct {
 // DefaultBenchPresets are the standard test queries.
 var DefaultBenchPresets = []BenchPreset{
 	{Name: "daily-digest", Query: "recent development activity and decisions"},
-	{Name: "fact-audit", Query: "data quality issues in extracted facts"},
-	{Name: "conflict-check", Query: "contradictory or inconsistent information"},
+	{Name: "fact-audit", Query: "fact extraction quality type classification missing subjects duplicates"},
+	{Name: "conflict-check", Query: "conflicting agent model configuration contradictory settings"},
+	{Name: "weekly-dive", Query: "architecture decisions tradeoffs implementation patterns"},
+	{Name: "agent-review", Query: "agent performance coordination delegation workflow patterns"},
 }
 
 // Pricing per million tokens (input, output) — updated Feb 2026.
