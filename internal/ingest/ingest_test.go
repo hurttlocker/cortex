@@ -668,6 +668,39 @@ func TestEngine_Dedup_SameContent(t *testing.T) {
 	}
 }
 
+func TestEngine_MetadataUpdateOnDedup(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	e := NewEngine(s)
+
+	path := filepath.Join(testdataDir(t), "sample-memory.md")
+
+	first, err := e.ImportFile(ctx, path, ImportOptions{})
+	if err != nil {
+		t.Fatalf("first import failed: %v", err)
+	}
+	if first.MemoriesNew == 0 {
+		t.Fatal("expected first import to create memories")
+	}
+
+	meta := &store.Metadata{AgentID: "test-agent"}
+	second, err := e.ImportFile(ctx, path, ImportOptions{Metadata: meta})
+	if err != nil {
+		t.Fatalf("second import with metadata failed: %v", err)
+	}
+	if second.MemoriesUpdated == 0 {
+		t.Fatalf("expected metadata-only reimport to update memories, got %+v", second)
+	}
+
+	withAgent, err := s.ListMemories(ctx, store.ListOpts{Limit: 100, Agent: "test-agent"})
+	if err != nil {
+		t.Fatalf("ListMemories(agent filter) failed: %v", err)
+	}
+	if len(withAgent) == 0 {
+		t.Fatal("expected memories to be searchable by updated metadata agent_id")
+	}
+}
+
 func TestEngine_DryRun(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

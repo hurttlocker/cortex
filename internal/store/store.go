@@ -169,6 +169,7 @@ type Store interface {
 	ListMemories(ctx context.Context, opts ListOpts) ([]*Memory, error)
 	DeleteMemory(ctx context.Context, id int64) error
 	UpdateMemory(ctx context.Context, id int64, content string) error
+	UpdateMetadata(ctx context.Context, id int64, metadata *Metadata) error
 
 	// Batch
 	AddMemoryBatch(ctx context.Context, memories []*Memory) ([]int64, error)

@@ -159,6 +159,32 @@ func TestAddMemory_EmptyContent(t *testing.T) {
 	}
 }
 
+func TestUpdateMetadata(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	id, err := s.AddMemory(ctx, &Memory{Content: "metadata update test", SourceFile: "test.md"})
+	if err != nil {
+		t.Fatalf("AddMemory failed: %v", err)
+	}
+
+	meta := &Metadata{AgentID: "auditor", Channel: "discord"}
+	if err := s.UpdateMetadata(ctx, id, meta); err != nil {
+		t.Fatalf("UpdateMetadata failed: %v", err)
+	}
+
+	m, err := s.GetMemory(ctx, id)
+	if err != nil {
+		t.Fatalf("GetMemory failed: %v", err)
+	}
+	if m == nil || m.Metadata == nil {
+		t.Fatal("expected metadata to be set")
+	}
+	if m.Metadata.AgentID != "auditor" {
+		t.Fatalf("expected agent_id=auditor, got %q", m.Metadata.AgentID)
+	}
+}
+
 func TestGetMemory(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

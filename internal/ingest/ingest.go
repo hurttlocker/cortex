@@ -216,6 +216,18 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 	}
 
 	if existing != nil {
+		if meta, ok := opts.Metadata.(*store.Metadata); ok {
+			if opts.DryRun {
+				result.MemoriesUpdated++
+				return nil
+			}
+			if err := e.store.UpdateMetadata(ctx, existing.ID, meta); err != nil {
+				return err
+			}
+			result.MemoriesUpdated++
+			return nil
+		}
+
 		result.MemoriesUnchanged++
 		return nil
 	}
