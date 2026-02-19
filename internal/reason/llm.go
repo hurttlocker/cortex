@@ -25,9 +25,9 @@ type LLM struct {
 
 // Default models for different use cases.
 const (
-	DefaultInteractiveModel = "openai/gpt-5.1-codex-mini"       // 3.6s single-shot, cheapest
-	DefaultCronModel        = "google/gemini-3-flash-preview"  // 5/5 recursive quality, consistent structure
-	DefaultLocalModel       = "phi4-mini"                      // Zero data leaves machine
+	DefaultInteractiveModel = "openai/gpt-5.1-codex-mini"     // 3.6s single-shot, cheapest
+	DefaultCronModel        = "google/gemini-3-flash-preview" // 5/5 recursive quality, consistent structure
+	DefaultLocalModel       = "phi4-mini"                     // Zero data leaves machine
 )
 
 // LLMConfig configures an LLM provider.
