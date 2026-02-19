@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -279,7 +280,7 @@ func NewStore(cfg StoreConfig) (Store, error) {
 	}
 
 	// Verify connection
-	if err := db.Ping(); err != nil {
+	if err := pingWithRetry(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("pinging database: %w", err)
 	}
@@ -305,7 +306,7 @@ func NewStore(cfg StoreConfig) (Store, error) {
 		}
 	}
 	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
+		if err := execWithRetry(db, p); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("setting pragma %q: %w", p, err)
 		}
@@ -320,13 +321,95 @@ func NewStore(cfg StoreConfig) (Store, error) {
 
 	// Run migrations (skip for read-only access)
 	if !cfg.ReadOnly {
-		if err := s.migrate(); err != nil {
+		if err := s.migrateWithRetry(); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("running migrations: %w", err)
 		}
 	}
 
 	return s, nil
+}
+
+func execWithRetry(db *sql.DB, stmt string, args ...interface{}) error {
+	const maxAttempts = 8
+	const baseDelay = 100 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		_, err := db.Exec(stmt, args...)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isSQLiteBusyError(err) || attempt == maxAttempts {
+			break
+		}
+
+		delay := baseDelay * time.Duration(1<<(attempt-1))
+		if delay > 2*time.Second {
+			delay = 2 * time.Second
+		}
+		time.Sleep(delay)
+	}
+	return lastErr
+}
+
+func pingWithRetry(db *sql.DB) error {
+	const maxAttempts = 8
+	const baseDelay = 100 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err := db.Ping()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isSQLiteBusyError(err) || attempt == maxAttempts {
+			break
+		}
+
+		delay := baseDelay * time.Duration(1<<(attempt-1))
+		if delay > 2*time.Second {
+			delay = 2 * time.Second
+		}
+		time.Sleep(delay)
+	}
+	return lastErr
+}
+
+func (s *SQLiteStore) migrateWithRetry() error {
+	const maxAttempts = 8
+	const baseDelay = 100 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err := s.migrate()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isSQLiteBusyError(err) || attempt == maxAttempts {
+			break
+		}
+
+		delay := baseDelay * time.Duration(1<<(attempt-1))
+		if delay > 2*time.Second {
+			delay = 2 * time.Second
+		}
+		time.Sleep(delay)
+	}
+	return lastErr
+}
+
+func isSQLiteBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "sqlite_busy") ||
+		strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked")
 }
 
 // Close closes the database connection.

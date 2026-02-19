@@ -26,7 +26,7 @@ import (
 )
 
 // version is set by goreleaser via ldflags at build time.
-var version = "0.3.1"
+var version = "0.3.2"
 
 var (
 	globalDBPath   string
@@ -225,6 +225,13 @@ func expandUserPath(path string) string {
 	return path
 }
 
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
 func runImport(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--similarity-threshold 0.95] [--dedupe-window-sec 300] [--llm <provider/model>] [--embed <provider/model>]")
@@ -366,6 +373,7 @@ func runImport(args []string) error {
 	}
 
 	totalResult := &ingest.ImportResult{}
+	hadPathErrors := false
 
 	for _, path := range paths {
 		fmt.Printf("Importing %s...\n", path)
@@ -376,6 +384,7 @@ func runImport(args []string) error {
 
 		result, err := engine.ImportFile(ctx, path, opts)
 		if err != nil {
+			hadPathErrors = true
 			fmt.Fprintf(os.Stderr, "  Error: %v\n", err)
 			continue
 		}
@@ -417,6 +426,10 @@ func runImport(args []string) error {
 
 	fmt.Println()
 	fmt.Print(ingest.FormatImportResult(totalResult))
+
+	if hadPathErrors || len(totalResult.Errors) > 0 {
+		return fmt.Errorf("import completed with %d error(s)", boolToInt(hadPathErrors)+len(totalResult.Errors))
+	}
 	return nil
 }
 

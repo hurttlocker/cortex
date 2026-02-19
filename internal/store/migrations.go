@@ -1,12 +1,67 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
 // migrate creates all tables if they don't exist and seeds metadata.
 func (s *SQLiteStore) migrate() error {
+	bootstrapDone, err := s.isMetaFlagEnabled("schema_bootstrap_complete")
+	if err != nil {
+		return fmt.Errorf("checking bootstrap state: %w", err)
+	}
+
+	if !bootstrapDone {
+		if err := s.runBootstrapDDL(); err != nil {
+			return err
+		}
+	}
+
+	// Seed metadata (outside bootstrap transaction — meta table now exists)
+	if err := s.seedMeta(); err != nil {
+		return fmt.Errorf("seeding metadata: %w", err)
+	}
+
+	if !bootstrapDone {
+		if err := s.setMetaFlag("schema_bootstrap_complete"); err != nil {
+			return fmt.Errorf("marking bootstrap complete: %w", err)
+		}
+	}
+
+	// Schema evolution: add project column (v0.2.0 — Issue #29)
+	// Uses ALTER TABLE which can't be inside CREATE TABLE IF NOT EXISTS.
+	// We check for column existence first to make it idempotent.
+	if err := s.migrateProjectColumn(); err != nil {
+		return fmt.Errorf("migrating project column: %w", err)
+	}
+
+	// Schema evolution: add metadata column (v0.2.0 — Issue #30)
+	if err := s.migrateMetadataColumn(); err != nil {
+		return fmt.Errorf("migrating metadata column: %w", err)
+	}
+
+	// Schema evolution: add memory_class column (v0.3.0 — Issue #34)
+	if err := s.migrateMemoryClassColumn(); err != nil {
+		return fmt.Errorf("migrating memory_class column: %w", err)
+	}
+
+	// Schema evolution: add superseded_by column to facts (v0.3.0 — Issue #35)
+	if err := s.migrateFactSupersededColumn(); err != nil {
+		return fmt.Errorf("migrating superseded_by column: %w", err)
+	}
+
+	// Schema evolution: multi-column FTS5 with source context (v0.2.0 — Issue #26)
+	if err := s.migrateFTSMultiColumn(); err != nil {
+		return fmt.Errorf("migrating FTS multi-column: %w", err)
+	}
+
+	return nil
+}
+
+func (s *SQLiteStore) runBootstrapDDL() error {
 	statements := []string{
 		// Core memory table
 		`CREATE TABLE IF NOT EXISTS memories (
@@ -21,9 +76,11 @@ func (s *SQLiteStore) migrate() error {
 			deleted_at     DATETIME
 		)`,
 
-		// FTS5 full-text search index
+		// FTS5 full-text search index (multi-column)
 		`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 			content,
+			source_file,
+			source_section,
 			content=memories,
 			content_rowid=id,
 			tokenize='porter unicode61'
@@ -31,29 +88,22 @@ func (s *SQLiteStore) migrate() error {
 
 		// FTS sync triggers
 		`CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-			INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+			INSERT INTO memories_fts(rowid, content, source_file, source_section)
+			VALUES (new.id, new.content, COALESCE(new.source_file, ''), COALESCE(new.source_section, ''));
 		END`,
 
 		`CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-			INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
+			INSERT INTO memories_fts(memories_fts, rowid, content, source_file, source_section)
+			VALUES('delete', old.id, old.content, COALESCE(old.source_file, ''), COALESCE(old.source_section, ''));
 		END`,
 
 		`CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-			INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
-			INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+			INSERT INTO memories_fts(memories_fts, rowid, content, source_file, source_section)
+			VALUES('delete', old.id, old.content, COALESCE(old.source_file, ''), COALESCE(old.source_section, ''));
+			INSERT INTO memories_fts(rowid, content, source_file, source_section)
+				SELECT new.id, new.content, COALESCE(new.source_file, ''), COALESCE(new.source_section, '')
+				WHERE new.deleted_at IS NULL;
 		END`,
-
-		// Fix #10: Recreate memories_au to skip FTS reinsert on soft-delete.
-		// DROP+CREATE is idempotent — fixes existing databases without a version gate.
-		`DROP TRIGGER IF EXISTS memories_au`,
-		`CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
-			INSERT INTO memories_fts(memories_fts, rowid, content) VALUES('delete', old.id, old.content);
-			INSERT INTO memories_fts(rowid, content)
-				SELECT new.id, new.content WHERE new.deleted_at IS NULL;
-		END`,
-
-		// One-time cleanup: purge FTS ghosts for already-soft-deleted memories.
-		`DELETE FROM memories_fts WHERE rowid IN (SELECT id FROM memories WHERE deleted_at IS NOT NULL)`,
 
 		// Extracted facts
 		`CREATE TABLE IF NOT EXISTS facts (
@@ -147,39 +197,39 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("committing migration: %w", err)
 	}
 
-	// Seed metadata (outside transaction — meta table now exists)
-	if err := s.seedMeta(); err != nil {
-		return fmt.Errorf("seeding metadata: %w", err)
-	}
-
-	// Schema evolution: add project column (v0.2.0 — Issue #29)
-	// Uses ALTER TABLE which can't be inside CREATE TABLE IF NOT EXISTS.
-	// We check for column existence first to make it idempotent.
-	if err := s.migrateProjectColumn(); err != nil {
-		return fmt.Errorf("migrating project column: %w", err)
-	}
-
-	// Schema evolution: add metadata column (v0.2.0 — Issue #30)
-	if err := s.migrateMetadataColumn(); err != nil {
-		return fmt.Errorf("migrating metadata column: %w", err)
-	}
-
-	// Schema evolution: add memory_class column (v0.3.0 — Issue #34)
-	if err := s.migrateMemoryClassColumn(); err != nil {
-		return fmt.Errorf("migrating memory_class column: %w", err)
-	}
-
-	// Schema evolution: add superseded_by column to facts (v0.3.0 — Issue #35)
-	if err := s.migrateFactSupersededColumn(); err != nil {
-		return fmt.Errorf("migrating superseded_by column: %w", err)
-	}
-
-	// Schema evolution: multi-column FTS5 with source context (v0.2.0 — Issue #26)
-	if err := s.migrateFTSMultiColumn(); err != nil {
-		return fmt.Errorf("migrating FTS multi-column: %w", err)
-	}
-
 	return nil
+}
+
+func (s *SQLiteStore) isMetaFlagEnabled(key string) (bool, error) {
+	var exists int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='meta'`).Scan(&exists); err != nil {
+		return false, err
+	}
+	if exists == 0 {
+		return false, nil
+	}
+
+	var value string
+	err := s.db.QueryRow("SELECT value FROM meta WHERE key = ?", key).Scan(&value)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, err
+	}
+	return value == "true", nil
+}
+
+func (s *SQLiteStore) setMetaFlag(key string) error {
+	_, err := s.db.Exec("INSERT OR REPLACE INTO meta (key, value) VALUES (?, 'true')", key)
+	return err
+}
+
+func isDuplicateColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
 
 // migrateProjectColumn adds the project column to memories if it doesn't exist.
@@ -210,6 +260,9 @@ func (s *SQLiteStore) migrateProjectColumn() error {
 	}
 	for _, stmt := range stmts {
 		if _, err := tx.Exec(stmt); err != nil {
+			if isDuplicateColumnError(err) {
+				continue
+			}
 			return fmt.Errorf("executing %q: %w", truncate(stmt, 60), err)
 		}
 	}
@@ -246,6 +299,9 @@ func (s *SQLiteStore) migrateMemoryClassColumn() error {
 	}
 	for _, stmt := range stms {
 		if _, err := tx.Exec(stmt); err != nil {
+			if isDuplicateColumnError(err) {
+				continue
+			}
 			return fmt.Errorf("executing %q: %w", truncate(stmt, 60), err)
 		}
 	}
@@ -285,6 +341,9 @@ func (s *SQLiteStore) migrateFactSupersededColumn() error {
 	}
 	for _, stmt := range stms {
 		if _, err := tx.Exec(stmt); err != nil {
+			if isDuplicateColumnError(err) {
+				continue
+			}
 			return fmt.Errorf("executing %q: %w", truncate(stmt, 60), err)
 		}
 	}
@@ -306,11 +365,43 @@ func (s *SQLiteStore) migrateFactSupersededColumn() error {
 // The migration is idempotent: checks a meta key to avoid re-running.
 // After upgrading, existing FTS data is rebuilt from the memories table.
 func (s *SQLiteStore) migrateFTSMultiColumn() error {
-	// Check if already migrated
-	var val string
-	err := s.db.QueryRow("SELECT value FROM meta WHERE key = 'fts_multi_column'").Scan(&val)
-	if err == nil && val == "true" {
-		return nil // Already migrated
+	const key = "fts_multi_column"
+
+	state, err := s.getMetaValue(key)
+	if err != nil {
+		return fmt.Errorf("checking FTS migration state: %w", err)
+	}
+	if state == "true" {
+		return nil
+	}
+	if state == "in_progress" {
+		if err := s.waitForMetaValue(key, "true", 30*time.Second); err != nil {
+			return fmt.Errorf("waiting for concurrent FTS migration: %w", err)
+		}
+		return nil
+	}
+
+	// Fresh DBs now bootstrap with multi-column FTS directly.
+	isMulti, err := s.hasFTSMultiSchema()
+	if err != nil {
+		return fmt.Errorf("checking FTS schema: %w", err)
+	}
+	if isMulti {
+		if _, err := s.db.Exec("INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_multi_column', 'true')"); err != nil {
+			return fmt.Errorf("marking FTS schema state: %w", err)
+		}
+		return nil
+	}
+
+	claimed, err := s.claimMetaMigration(key)
+	if err != nil {
+		return fmt.Errorf("claiming FTS migration: %w", err)
+	}
+	if !claimed {
+		if err := s.waitForMetaValue(key, "true", 30*time.Second); err != nil {
+			return fmt.Errorf("waiting for concurrent FTS migration: %w", err)
+		}
+		return nil
 	}
 
 	// Drop old triggers + FTS table, recreate with multi-column schema
@@ -326,7 +417,7 @@ func (s *SQLiteStore) migrateFTSMultiColumn() error {
 		// Create new multi-column FTS table
 		// content=memories + content_rowid=id makes this a content-synced table
 		// Three columns: content (main text), source_file (path), source_section (header)
-		`CREATE VIRTUAL TABLE memories_fts USING fts5(
+		`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 			content,
 			source_file,
 			source_section,
@@ -336,18 +427,18 @@ func (s *SQLiteStore) migrateFTSMultiColumn() error {
 		)`,
 
 		// New triggers that populate all 3 FTS columns
-		`CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+		`CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
 			INSERT INTO memories_fts(rowid, content, source_file, source_section)
 			VALUES (new.id, new.content, COALESCE(new.source_file, ''), COALESCE(new.source_section, ''));
 		END`,
 
-		`CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+		`CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
 			INSERT INTO memories_fts(memories_fts, rowid, content, source_file, source_section)
 			VALUES('delete', old.id, old.content, COALESCE(old.source_file, ''), COALESCE(old.source_section, ''));
 		END`,
 
 		// Update trigger: delete old entry, insert new only if not soft-deleted
-		`CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+		`CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
 			INSERT INTO memories_fts(memories_fts, rowid, content, source_file, source_section)
 			VALUES('delete', old.id, old.content, COALESCE(old.source_file, ''), COALESCE(old.source_section, ''));
 			INSERT INTO memories_fts(rowid, content, source_file, source_section)
@@ -358,6 +449,7 @@ func (s *SQLiteStore) migrateFTSMultiColumn() error {
 
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
+			_ = s.clearMetaKey(key)
 			return fmt.Errorf("executing FTS migration %q: %w", truncate(stmt, 80), err)
 		}
 	}
@@ -370,6 +462,7 @@ func (s *SQLiteStore) migrateFTSMultiColumn() error {
 		WHERE deleted_at IS NULL
 	`)
 	if err != nil {
+		_ = s.clearMetaKey(key)
 		return fmt.Errorf("rebuilding FTS index: %w", err)
 	}
 	rebuilt, _ := result.RowsAffected()
@@ -378,6 +471,7 @@ func (s *SQLiteStore) migrateFTSMultiColumn() error {
 	if _, err := s.db.Exec(
 		"INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_multi_column', 'true')",
 	); err != nil {
+		_ = s.clearMetaKey(key)
 		return fmt.Errorf("marking FTS migration complete: %w", err)
 	}
 
@@ -391,6 +485,82 @@ func (s *SQLiteStore) migrateFTSMultiColumn() error {
 
 	fmt.Printf("  FTS multi-column migration complete: %d memories indexed with source context\n", rebuilt)
 	return nil
+}
+
+func (s *SQLiteStore) getMetaValue(key string) (string, error) {
+	var value string
+	err := s.db.QueryRow("SELECT value FROM meta WHERE key = ?", key).Scan(&value)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return value, nil
+}
+
+func (s *SQLiteStore) hasFTSMultiSchema() (bool, error) {
+	rows, err := s.db.Query("SELECT name FROM pragma_table_info('memories_fts')")
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+			return false, nil
+		}
+		return false, err
+	}
+	defer rows.Close()
+
+	hasSourceFile := false
+	hasSourceSection := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		switch strings.ToLower(name) {
+		case "source_file":
+			hasSourceFile = true
+		case "source_section":
+			hasSourceSection = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return hasSourceFile && hasSourceSection, nil
+}
+
+func (s *SQLiteStore) claimMetaMigration(key string) (bool, error) {
+	result, err := s.db.Exec("INSERT OR IGNORE INTO meta (key, value) VALUES (?, 'in_progress')", key)
+	if err != nil {
+		return false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows == 1, nil
+}
+
+func (s *SQLiteStore) waitForMetaValue(key, want string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		value, err := s.getMetaValue(key)
+		if err != nil {
+			return err
+		}
+		if value == want {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for %s=%q (last=%q)", key, want, value)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+func (s *SQLiteStore) clearMetaKey(key string) error {
+	_, err := s.db.Exec("DELETE FROM meta WHERE key = ?", key)
+	return err
 }
 
 // seedMeta initializes the meta table with defaults if not already set.
