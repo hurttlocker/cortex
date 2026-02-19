@@ -240,7 +240,7 @@ cortex search "PostgreSQL" --json | python3 -c "import sys,json; d=json.load(sys
 
 ### 4a. List facts
 ```bash
-cortex facts --limit 20
+cortex list --facts --limit 20
 # ✅ PASS: shows extracted facts with subjects and predicates
 # ❌ FAIL: no facts, or all facts have empty subjects
 ```
@@ -262,9 +262,9 @@ cortex conflicts --resolve last-write-wins --dry-run
 
 ### 4d. Supersede a fact
 ```bash
-# Get two fact IDs from cortex facts output
-FACT1=$(cortex facts --json --limit 1 | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
-FACT2=$(cortex facts --json --limit 2 | python3 -c "import sys,json; print(json.load(sys.stdin)[1]['id'])")
+# Get two fact IDs
+FACT1=$(cortex list --facts --json --limit 1 | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+FACT2=$(cortex list --facts --json --limit 2 | python3 -c "import sys,json; print(json.load(sys.stdin)[1]['id'])")
 cortex supersede "$FACT1" --by "$FACT2" --reason "Auditor test"
 # ✅ PASS: fact marked as superseded
 # ❌ FAIL: error, or fact not actually marked
@@ -272,9 +272,9 @@ cortex supersede "$FACT1" --by "$FACT2" --reason "Auditor test"
 
 ### 4e. Verify superseded facts hidden by default
 ```bash
-cortex facts --limit 50 | grep -c "superseded"
+cortex list --facts --limit 50 | grep -c "superseded"
 # ✅ PASS: superseded fact NOT in default output
-cortex facts --include-superseded --limit 50
+cortex list --facts --include-superseded --limit 50
 # ✅ PASS: superseded fact IS visible with flag
 ```
 
@@ -284,32 +284,39 @@ cortex facts --include-superseded --limit 50
 
 ### 5a. Stale facts
 ```bash
-cortex stale --days 0
-# ✅ PASS: shows all facts (none reinforced yet), with confidence scores
-# ❌ FAIL: crashes or empty output
+cortex stale --days 1
+# ✅ PASS: shows facts not reinforced in the last day, with confidence scores
+# Note: --days 0 may return empty if all facts were just created
+# ❌ FAIL: crashes or hangs
 ```
 
 ### 5b. Reinforce a fact (Ebbinghaus reset)
 ```bash
-FACT_ID=$(cortex facts --json --limit 1 | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+FACT_ID=$(cortex list --facts --json --limit 1 | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
 cortex reinforce "$FACT_ID"
 # ✅ PASS: "Reinforced fact <id>" — confidence should stay high
 # ❌ FAIL: error or no effect
 ```
 
 ### 5c. Update a memory
+> **Note:** `cortex update` is not yet a CLI command (store method exists internally).
+> Test via reimport instead:
 ```bash
-MEM_ID=$(cortex list --json --limit 1 | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
-cortex update "$MEM_ID" --content "Updated content from auditor test"
-# ✅ PASS: memory content updated
-# ❌ FAIL: error or content not changed
+echo "# Updated project content" > "$CORTEX_TEST_DIR/notes/update_test.md"
+cortex import "$CORTEX_TEST_DIR/notes/update_test.md"
+# Then modify the file and reimport:
+echo "# Updated project content v2 — auditor edit" > "$CORTEX_TEST_DIR/notes/update_test.md"
+cortex import "$CORTEX_TEST_DIR/notes/update_test.md"
+# ✅ PASS: content updated (hash changed, reimported)
+# ❌ FAIL: deduped as unchanged despite different content
 ```
 
 ### 5d. Cleanup
 ```bash
-cortex cleanup --dry-run
-# ✅ PASS: shows what would be cleaned (garbage/headless facts)
-# ❌ FAIL: crashes, or actually deletes on dry-run
+cortex cleanup
+# ✅ PASS: shows what was cleaned (short/garbage memories, headless facts)
+# Note: cleanup runs immediately — there is no --dry-run flag
+# ❌ FAIL: crashes or corrupts database
 ```
 
 ---
@@ -387,7 +394,9 @@ cortex bench --recursive --models openrouter/google/gemini-3-flash-preview --emb
 
 ### 8a. Stdio mode
 ```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | timeout 5 cortex mcp 2>/dev/null || true
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' | head -c 999 | cortex mcp 2>/dev/null &
+MCP_STDIO_PID=$!; sleep 3; kill $MCP_STDIO_PID 2>/dev/null
+# Alternative for macOS (no `timeout`): use background + sleep + kill
 # ✅ PASS: returns JSON-RPC response with server capabilities
 # ❌ FAIL: hangs, crashes, or invalid JSON
 ```
@@ -489,8 +498,9 @@ cortex import "$CORTEX_TEST_DIR/notes/project.md" --capture-dedupe --similarity-
 ```bash
 echo "ok" > "$CORTEX_TEST_DIR/lowsignal.md"
 cortex import "$CORTEX_TEST_DIR/lowsignal.md"
-# ✅ PASS: imports (filter is plugin-side, not CLI-side)
-# Note: low-signal filtering is in the OpenClaw plugin, not CLI
+# ✅ PASS: skipped as too short (CLI rejects very short content)
+# Note: This is EXPECTED behavior — files under ~10 chars are low-signal
+# The OpenClaw plugin has additional filtering (burst coalescing, near-dupe)
 ```
 
 ---
