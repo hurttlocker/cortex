@@ -6,10 +6,10 @@ import (
 
 func TestParseAction(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wantAct  string
-		wantArg  string
+		name    string
+		input   string
+		wantAct string
+		wantArg string
 	}{
 		{
 			name:    "simple FINAL",

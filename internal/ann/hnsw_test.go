@@ -293,8 +293,8 @@ func TestCosineDistance(t *testing.T) {
 		{[]float32{1, 0}, []float32{1, 0}, 0},
 		{[]float32{1, 0}, []float32{0, 1}, 1},
 		{[]float32{1, 0}, []float32{-1, 0}, 2},
-		{[]float32{}, []float32{}, 2},          // empty
-		{[]float32{0, 0}, []float32{1, 0}, 2},  // zero norm
+		{[]float32{}, []float32{}, 2},         // empty
+		{[]float32{0, 0}, []float32{1, 0}, 2}, // zero norm
 	}
 
 	for _, tt := range tests {

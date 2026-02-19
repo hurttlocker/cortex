@@ -48,19 +48,19 @@ var DefaultBenchPresets = []BenchPreset{
 // Pricing per million tokens (input, output) — updated Feb 2026.
 // Models with {0, 0} are free tier / preview / pricing TBD.
 var ModelPricing = map[string][2]float64{
-	"google/gemini-2.5-flash":         {0.15, 0.60},
-	"google/gemini-3-flash-preview":   {0.15, 0.60},  // Preview pricing, may change
-	"deepseek/deepseek-chat":          {0.14, 0.28},
-	"deepseek/deepseek-v3.2":          {0.14, 0.28},  // Same tier as v3
-	"meta-llama/llama-4-maverick":     {0.20, 0.60},
-	"x-ai/grok-4.1-fast":             {0.20, 0.50},
-	"minimax/minimax-m2.5":            {0.10, 1.10},
-	"deepseek/deepseek-r1":            {0.55, 2.19},
-	"google/gemini-2.5-pro":           {1.25, 10.00},
-	"anthropic/claude-sonnet-4":       {3.00, 15.00},
-	"qwen/qwen-3-235b":               {0.20, 1.20},
-	"openai/gpt-oss-120b":             {0, 0},         // Preview/free
-	"openai/gpt-oss-safeguard-20b":    {0, 0},         // Preview/free
+	"google/gemini-2.5-flash":       {0.15, 0.60},
+	"google/gemini-3-flash-preview": {0.15, 0.60}, // Preview pricing, may change
+	"deepseek/deepseek-chat":        {0.14, 0.28},
+	"deepseek/deepseek-v3.2":        {0.14, 0.28}, // Same tier as v3
+	"meta-llama/llama-4-maverick":   {0.20, 0.60},
+	"x-ai/grok-4.1-fast":            {0.20, 0.50},
+	"minimax/minimax-m2.5":          {0.10, 1.10},
+	"deepseek/deepseek-r1":          {0.55, 2.19},
+	"google/gemini-2.5-pro":         {1.25, 10.00},
+	"anthropic/claude-sonnet-4":     {3.00, 15.00},
+	"qwen/qwen-3-235b":              {0.20, 1.20},
+	"openai/gpt-oss-120b":           {0, 0}, // Preview/free
+	"openai/gpt-oss-safeguard-20b":  {0, 0}, // Preview/free
 }
 
 // BenchResult holds one model × preset test result.
@@ -93,25 +93,25 @@ type BenchReport struct {
 
 // BenchSummary aggregates a model's performance across all presets.
 type BenchSummary struct {
-	Label      string  `json:"label"`
-	Model      string  `json:"model"`
-	Provider   string  `json:"provider"`
-	AvgTime    float64 `json:"avg_time_sec"`
-	AvgTokens  int     `json:"avg_tokens_out"`
-	TotalCost  float64 `json:"total_cost_usd"`
-	AvgCost    float64 `json:"avg_cost_usd"`
-	Errors     int     `json:"errors"`
-	Verdict    string  `json:"verdict"`
+	Label     string  `json:"label"`
+	Model     string  `json:"model"`
+	Provider  string  `json:"provider"`
+	AvgTime   float64 `json:"avg_time_sec"`
+	AvgTokens int     `json:"avg_tokens_out"`
+	TotalCost float64 `json:"total_cost_usd"`
+	AvgCost   float64 `json:"avg_cost_usd"`
+	Errors    int     `json:"errors"`
+	Verdict   string  `json:"verdict"`
 }
 
 // BenchOptions configures a benchmark run.
 type BenchOptions struct {
-	Models      []BenchModel  // Models to test (nil = DefaultBenchModels)
-	Presets     []BenchPreset // Presets to test (nil = DefaultBenchPresets)
-	IncludeLocal bool         // Include local ollama models
-	MaxContext  int           // Max context chars (default: 8000)
-	Verbose     bool          // Print progress
-	ProgressFn  func(model, preset string, i, total int) // Progress callback
+	Models       []BenchModel                             // Models to test (nil = DefaultBenchModels)
+	Presets      []BenchPreset                            // Presets to test (nil = DefaultBenchPresets)
+	IncludeLocal bool                                     // Include local ollama models
+	MaxContext   int                                      // Max context chars (default: 8000)
+	Verbose      bool                                     // Print progress
+	ProgressFn   func(model, preset string, i, total int) // Progress callback
 }
 
 // RunBenchmark executes the full benchmark suite.
@@ -171,7 +171,7 @@ func (e *Engine) RunBenchmark(ctx context.Context, opts BenchOptions) (*BenchRep
 			result, reasonErr := e.Reason(ctx, ReasonOptions{
 				Query:      bp.Query,
 				Preset:     bp.Name,
-				MaxContext:  maxCtx,
+				MaxContext: maxCtx,
 			})
 			wallTime := time.Since(start)
 

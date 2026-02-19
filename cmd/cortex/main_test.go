@@ -295,6 +295,16 @@ func TestRunSearch_NoArgs(t *testing.T) {
 	}
 }
 
+func TestRunSearch_ExplainFlagAccepted(t *testing.T) {
+	err := runSearch([]string{"--explain"})
+	if err == nil {
+		t.Fatal("expected usage error")
+	}
+	if strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("--explain should be accepted, got: %v", err)
+	}
+}
+
 func TestRunSupersede_MissingBy(t *testing.T) {
 	err := runSupersede([]string{"1"})
 	if err == nil {

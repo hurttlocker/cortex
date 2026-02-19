@@ -11,12 +11,12 @@ import (
 
 // EmbedOptions configures an embedding operation.
 type EmbedOptions struct {
-	BatchSize        int                             // Number of texts to embed per API call (default: 50)
-	AdaptiveBatching bool                            // Halve batch size on failure (default: true)
-	HealthCheckEvery int                             // Run health check every N batches (default: 5, 0 = disabled)
-	ProgressFn       func(current, total int)        // Progress callback
+	BatchSize         int                                             // Number of texts to embed per API call (default: 50)
+	AdaptiveBatching  bool                                            // Halve batch size on failure (default: true)
+	HealthCheckEvery  int                                             // Run health check every N batches (default: 5, 0 = disabled)
+	ProgressFn        func(current, total int)                        // Progress callback
 	VerboseProgressFn func(current, total, batchSize int, msg string) // Detailed progress
-	FilterFn         func(memory *store.Memory) bool // Optional filter for which memories to embed
+	FilterFn          func(memory *store.Memory) bool                 // Optional filter for which memories to embed
 }
 
 // DefaultEmbedOptions returns sensible defaults for embedding.

@@ -523,6 +523,61 @@ func TestResultsJSON_Array(t *testing.T) {
 	}
 }
 
+func TestSearchExplain_DefaultOff(t *testing.T) {
+	s := newTestStore(t)
+	seedTestData(t, s)
+	engine := NewEngine(s)
+	ctx := context.Background()
+
+	results, err := engine.Search(ctx, "Go", Options{Mode: ModeKeyword, Limit: 5})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results")
+	}
+	if results[0].Explain != nil {
+		t.Fatal("expected explain payload to be nil by default")
+	}
+}
+
+func TestSearchExplain_Enabled(t *testing.T) {
+	s := newTestStore(t)
+	seedTestData(t, s)
+	engine := NewEngine(s)
+	ctx := context.Background()
+
+	results, err := engine.Search(ctx, "Go", Options{Mode: ModeKeyword, Limit: 5, Explain: true})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results")
+	}
+
+	e := results[0].Explain
+	if e == nil {
+		t.Fatal("expected explain payload")
+	}
+	if e.Provenance.Source == "" {
+		t.Fatal("expected provenance source")
+	}
+	if e.RankComponents.BM25Score == nil {
+		t.Fatal("expected bm25 component in explain payload")
+	}
+	if e.RankComponents.FinalScore <= 0 {
+		t.Fatalf("expected positive final score, got %f", e.RankComponents.FinalScore)
+	}
+
+	data, err := json.Marshal(results[0])
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"explain"`) {
+		t.Fatalf("expected explain field in JSON: %s", string(data))
+	}
+}
+
 // --- MinScore Filter ---
 
 func TestSearchBM25_MinScore(t *testing.T) {
@@ -836,14 +891,14 @@ func TestGetMemoryConfidenceMap(t *testing.T) {
 	confMap := engine.getMemoryConfidenceMap(ctx, []int64{memID}, false)
 	if conf, ok := confMap[memID]; !ok {
 		t.Error("expected memory in confidence map")
-	} else if conf < 0.99 {
-		t.Errorf("expected confidence ~1.0 for fresh fact, got %f", conf)
+	} else if conf.effectiveConfidence < 0.99 {
+		t.Errorf("expected confidence ~1.0 for fresh fact, got %f", conf.effectiveConfidence)
 	}
 
 	// Memory with no facts should get default 1.0
 	confMap = engine.getMemoryConfidenceMap(ctx, []int64{99999}, false)
-	if conf, ok := confMap[int64(99999)]; !ok || conf != 1.0 {
-		t.Errorf("expected default confidence 1.0 for memory with no facts, got %f", conf)
+	if conf, ok := confMap[int64(99999)]; !ok || conf.effectiveConfidence != 1.0 {
+		t.Errorf("expected default confidence 1.0 for memory with no facts, got %f", conf.effectiveConfidence)
 	}
 }
 

@@ -435,6 +435,7 @@ func runSearch(args []string) error {
 	afterFlag := ""
 	beforeFlag := ""
 	showMetadata := false
+	explain := false
 	includeSuperseded := false
 
 	for i := 0; i < len(args); i++ {
@@ -473,6 +474,8 @@ func runSearch(args []string) error {
 			beforeFlag = strings.TrimPrefix(args[i], "--before=")
 		case args[i] == "--show-metadata":
 			showMetadata = true
+		case args[i] == "--explain":
+			explain = true
 		case args[i] == "--include-superseded":
 			includeSuperseded = true
 		case args[i] == "--mode" && i+1 < len(args):
@@ -528,7 +531,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--json] [--agent <id>] [--channel <name>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 
 	searchMode, err := search.ParseMode(mode)
@@ -595,6 +598,7 @@ func runSearch(args []string) error {
 		After:             afterFlag,
 		Before:            beforeFlag,
 		IncludeSuperseded: includeSuperseded,
+		Explain:           explain,
 	}
 
 	results, err := engine.Search(ctx, query, opts)
@@ -607,7 +611,7 @@ func runSearch(args []string) error {
 		return outputJSON(results)
 	}
 
-	return outputTTYSearch(query, results, showMetadata)
+	return outputTTYSearch(query, results, showMetadata, explain)
 }
 
 func runStats(args []string) error {
@@ -2543,10 +2547,10 @@ func outputJSON(results []search.Result) error {
 }
 
 func outputTTY(query string, results []search.Result) error {
-	return outputTTYSearch(query, results, false)
+	return outputTTYSearch(query, results, false, false)
 }
 
-func outputTTYSearch(query string, results []search.Result, showMetadata bool) error {
+func outputTTYSearch(query string, results []search.Result, showMetadata bool, explain bool) error {
 	if len(results) == 0 {
 		fmt.Printf("No results for %q\n", query)
 		return nil
@@ -2598,6 +2602,36 @@ func outputTTYSearch(query string, results []search.Result, showMetadata bool) e
 				fmt.Printf(" tokens:%d/%d", meta.InputTokens, meta.OutputTokens)
 			}
 			fmt.Println()
+		}
+		if explain && r.Explain != nil {
+			e := r.Explain
+			fmt.Printf("     🔎 source=%s\n", e.Provenance.Source)
+			if !e.Provenance.Timestamp.IsZero() {
+				fmt.Printf("     ⏱ imported=%s  age=%.1f days\n", e.Provenance.Timestamp.Format(time.RFC3339), e.Provenance.AgeDays)
+			}
+			fmt.Printf("     📊 confidence=%.3f effective=%.3f\n", e.Confidence.Confidence, e.Confidence.EffectiveConfidence)
+			fmt.Printf("     🧮 score: base=%.3f class×%.2f pre_conf=%.3f final=%.3f\n",
+				e.RankComponents.BaseScore,
+				e.RankComponents.ClassBoostMultiplier,
+				e.RankComponents.PreConfidenceScore,
+				e.RankComponents.FinalScore,
+			)
+			if e.RankComponents.BM25Score != nil {
+				if e.RankComponents.BM25Raw != nil {
+					fmt.Printf("     • bm25 raw=%.4f normalized=%.3f\n", *e.RankComponents.BM25Raw, *e.RankComponents.BM25Score)
+				} else {
+					fmt.Printf("     • bm25 normalized=%.3f\n", *e.RankComponents.BM25Score)
+				}
+			}
+			if e.RankComponents.SemanticScore != nil {
+				fmt.Printf("     • semantic=%.3f\n", *e.RankComponents.SemanticScore)
+			}
+			if e.RankComponents.HybridBM25Contribution != nil && e.RankComponents.HybridSemanticContribution != nil {
+				fmt.Printf("     • hybrid: bm25=%.3f semantic=%.3f\n", *e.RankComponents.HybridBM25Contribution, *e.RankComponents.HybridSemanticContribution)
+			}
+			if e.Why != "" {
+				fmt.Printf("     💡 %s\n", e.Why)
+			}
 		}
 		fmt.Println()
 	}
@@ -3433,6 +3467,7 @@ Search Flags:
   --class <list>      Filter by memory class (e.g., --class rule,decision)
   --no-class-boost    Disable class-aware ranking boosts
   --include-superseded Include memories tied only to superseded facts
+  --explain           Show provenance + rank factors + confidence/decay signals
   --json              Force JSON output even in TTY
 
 Import Flags:
@@ -3510,6 +3545,7 @@ Examples:
   cortex embed ollama/nomic-embed-text --watch --interval 30m --batch-size 10
   cortex supersede 101 --by 204 --reason "policy updated"
   cortex search "deployment rule" --include-superseded
+  cortex search "deployment rule" --explain --json
   cortex mcp                          # Start MCP server (stdio, for Claude Desktop/Cursor)
   cortex mcp --port 8080              # Start MCP server (HTTP+SSE)
 

@@ -23,7 +23,7 @@ type Engine struct {
 type EngineConfig struct {
 	SearchEngine *search.Engine
 	Store        store.Store
-	LLM         *LLM
+	LLM          *LLM
 	ConfigDir    string
 }
 
