@@ -443,11 +443,17 @@ cortex bench --models "google/gemini-2.5-flash,deepseek/deepseek-chat" \
   --embed ollama/nomic-embed-text \
   --output benchmark-report.md
 
+# Quick A/B (diff-style compare section in report)
+cortex bench --compare "google/gemini-2.5-flash,deepseek/deepseek-v3.2" --output ab-report.md
+
+# Benchmark recursive reasoning mode
+cortex bench --recursive --max-iterations 8 --max-depth 1 --output recursive-bench.md
+
 # Include local models
 cortex bench --local --embed ollama/nomic-embed-text
 ```
 
-Generates a markdown report with timing, token usage, cost estimates, and output quality for each model × preset combination. Run it whenever a new model drops.
+Generates a publication-ready markdown report with summary table, per-preset breakdown, winners by category, cost analysis, and (when using `--compare`) an A/B diff section. Default runs cover all 5 presets: `daily-digest`, `fact-audit`, `conflict-check`, `weekly-dive`, and `agent-review`.
 
 ### 👁️ Observability — Finally See What Your Agent Knows
 

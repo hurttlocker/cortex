@@ -102,14 +102,20 @@ func TestGetPreset_Unknown(t *testing.T) {
 
 func TestEstimateCost(t *testing.T) {
 	// gemini-2.5-flash: $0.15/M in, $0.60/M out
-	cost := estimateCost("google/gemini-2.5-flash", 2000, 500)
+	cost, known := estimateCost("google/gemini-2.5-flash", 2000, 500)
 	// Expected: (2000 * 0.15 / 1M) + (500 * 0.60 / 1M) = 0.0003 + 0.0003 = 0.0006
+	if !known {
+		t.Fatal("expected known cost for gemini-2.5-flash")
+	}
 	if cost < 0.0005 || cost > 0.0007 {
 		t.Errorf("estimateCost = %f, want ~0.0006", cost)
 	}
 
-	// Unknown model returns 0
-	cost = estimateCost("unknown/model", 1000, 1000)
+	// Unknown model returns cost unknown
+	cost, known = estimateCost("unknown/model", 1000, 1000)
+	if known {
+		t.Fatal("expected unknown cost for unknown model")
+	}
 	if cost != 0 {
 		t.Errorf("unknown model cost = %f, want 0", cost)
 	}

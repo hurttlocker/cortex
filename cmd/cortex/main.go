@@ -3116,37 +3116,120 @@ func runReason(args []string) error {
 	return nil
 }
 
-func runBench(args []string) error {
-	embedFlag := ""
-	includeLocal := false
-	jsonOutput := false
-	outputFile := ""
-	var customModels []string
+type benchCLIOptions struct {
+	embedFlag     string
+	includeLocal  bool
+	jsonOutput    bool
+	outputFile    string
+	customModels  []string
+	recursive     bool
+	maxIterations int
+	maxDepth      int
+	compareMode   bool
+	comparedRaw   []string
+}
+
+func parseBenchArgs(args []string) (benchCLIOptions, error) {
+	opts := benchCLIOptions{
+		maxIterations: 8,
+		maxDepth:      1,
+	}
 
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--embed" && i+1 < len(args):
 			i++
-			embedFlag = args[i]
+			opts.embedFlag = args[i]
 		case strings.HasPrefix(args[i], "--embed="):
-			embedFlag = strings.TrimPrefix(args[i], "--embed=")
+			opts.embedFlag = strings.TrimPrefix(args[i], "--embed=")
 		case args[i] == "--local":
-			includeLocal = true
+			opts.includeLocal = true
 		case args[i] == "--json":
-			jsonOutput = true
+			opts.jsonOutput = true
 		case args[i] == "--output" && i+1 < len(args):
 			i++
-			outputFile = args[i]
+			opts.outputFile = args[i]
 		case strings.HasPrefix(args[i], "--output="):
-			outputFile = strings.TrimPrefix(args[i], "--output=")
+			opts.outputFile = strings.TrimPrefix(args[i], "--output=")
 		case args[i] == "--models" && i+1 < len(args):
 			i++
-			customModels = strings.Split(args[i], ",")
+			opts.customModels = splitCSVArgs(args[i])
 		case strings.HasPrefix(args[i], "--models="):
-			customModels = strings.Split(strings.TrimPrefix(args[i], "--models="), ",")
+			opts.customModels = splitCSVArgs(strings.TrimPrefix(args[i], "--models="))
+		case args[i] == "--compare" && i+1 < len(args):
+			i++
+			opts.compareMode = true
+			opts.comparedRaw = splitCSVArgs(args[i])
+		case strings.HasPrefix(args[i], "--compare="):
+			opts.compareMode = true
+			opts.comparedRaw = splitCSVArgs(strings.TrimPrefix(args[i], "--compare="))
+		case args[i] == "--recursive":
+			opts.recursive = true
+		case args[i] == "--max-iterations" && i+1 < len(args):
+			i++
+			v, err := strconv.Atoi(args[i])
+			if err != nil || v <= 0 {
+				return opts, fmt.Errorf("invalid --max-iterations: %s", args[i])
+			}
+			opts.maxIterations = v
+		case strings.HasPrefix(args[i], "--max-iterations="):
+			v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--max-iterations="))
+			if err != nil || v <= 0 {
+				return opts, fmt.Errorf("invalid --max-iterations: %s", strings.TrimPrefix(args[i], "--max-iterations="))
+			}
+			opts.maxIterations = v
+		case args[i] == "--max-depth" && i+1 < len(args):
+			i++
+			v, err := strconv.Atoi(args[i])
+			if err != nil || v <= 0 {
+				return opts, fmt.Errorf("invalid --max-depth: %s", args[i])
+			}
+			opts.maxDepth = v
+		case strings.HasPrefix(args[i], "--max-depth="):
+			v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--max-depth="))
+			if err != nil || v <= 0 {
+				return opts, fmt.Errorf("invalid --max-depth: %s", strings.TrimPrefix(args[i], "--max-depth="))
+			}
+			opts.maxDepth = v
 		case strings.HasPrefix(args[i], "-"):
-			return fmt.Errorf("unknown flag: %s\nUsage: cortex bench [--embed <provider/model>] [--local] [--models m1,m2] [--output file.md] [--json]", args[i])
+			return opts, fmt.Errorf("unknown flag: %s\nUsage: cortex bench [--embed <provider/model>] [--local] [--models m1,m2] [--compare m1,m2] [--recursive] [--max-iterations N] [--max-depth N] [--output file.md] [--json]", args[i])
+		default:
+			return opts, fmt.Errorf("unexpected argument: %s", args[i])
 		}
+	}
+
+	if opts.compareMode {
+		if len(opts.customModels) > 0 {
+			return opts, fmt.Errorf("--compare cannot be used with --models")
+		}
+		if len(opts.comparedRaw) != 2 {
+			return opts, fmt.Errorf("--compare requires exactly two models (e.g. --compare model1,model2)")
+		}
+		opts.customModels = append([]string{}, opts.comparedRaw...)
+	}
+
+	return opts, nil
+}
+
+func splitCSVArgs(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func runBench(args []string) error {
+	parsed, err := parseBenchArgs(args)
+	if err != nil {
+		return err
 	}
 
 	// Open store
@@ -3158,8 +3241,8 @@ func runBench(args []string) error {
 
 	// Create search engine
 	var searchEngine *search.Engine
-	if embedFlag != "" {
-		cfg, err := embed.ParseEmbedFlag(embedFlag)
+	if parsed.embedFlag != "" {
+		cfg, err := embed.ParseEmbedFlag(parsed.embedFlag)
 		if err != nil {
 			return fmt.Errorf("parsing embed provider: %w", err)
 		}
@@ -3184,9 +3267,8 @@ func runBench(args []string) error {
 
 	// Build model list
 	var models []reason.BenchModel
-	if len(customModels) > 0 {
-		for _, m := range customModels {
-			m = strings.TrimSpace(m)
+	if len(parsed.customModels) > 0 {
+		for _, m := range parsed.customModels {
 			provider, model := reason.ParseProviderModel(m)
 			models = append(models, reason.BenchModel{
 				Label:    m,
@@ -3200,9 +3282,14 @@ func runBench(args []string) error {
 	fmt.Println("─────────────────────────")
 
 	opts := reason.BenchOptions{
-		Models:       models, // nil = defaults
-		IncludeLocal: includeLocal,
-		MaxContext:   8000,
+		Models:         models, // nil = defaults
+		IncludeLocal:   parsed.includeLocal,
+		MaxContext:     8000,
+		Recursive:      parsed.recursive,
+		MaxIterations:  parsed.maxIterations,
+		MaxDepth:       parsed.maxDepth,
+		CompareMode:    parsed.compareMode,
+		ComparedModels: parsed.comparedRaw,
 		ProgressFn: func(model, preset string, i, total int) {
 			fmt.Printf("  [%d/%d] %s × %s...\n", i, total, model, preset)
 		},
@@ -3214,7 +3301,7 @@ func runBench(args []string) error {
 		return err
 	}
 
-	if jsonOutput {
+	if parsed.jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		return enc.Encode(report)
@@ -3226,11 +3313,11 @@ func runBench(args []string) error {
 	fmt.Println(md)
 
 	// Save to file if requested
-	if outputFile != "" {
-		if err := os.WriteFile(outputFile, []byte(md), 0644); err != nil {
+	if parsed.outputFile != "" {
+		if err := os.WriteFile(parsed.outputFile, []byte(md), 0644); err != nil {
 			return fmt.Errorf("writing output: %w", err)
 		}
-		fmt.Printf("📄 Report saved to %s\n", outputFile)
+		fmt.Printf("📄 Report saved to %s\n", parsed.outputFile)
 	}
 
 	return nil
@@ -3526,6 +3613,16 @@ Embed Flags:
   --watch             Run as a daemon and refresh embeddings periodically
   --interval <dur>    Watch interval (default: 30m, e.g. 5m, 1h)
 
+Bench Flags:
+  --models <list>     Comma-separated models (e.g. google/gemini-2.5-flash,deepseek/deepseek-v3.2)
+  --compare <m1,m2>   Quick A/B compare mode for two models
+  --recursive         Run benchmark in recursive reasoning mode
+  --max-iterations <N> Recursive iteration cap (default: 8)
+  --max-depth <N>     Recursive sub-query depth cap (default: 1)
+  --local             Include local ollama models
+  --output <file>     Write markdown report to file
+  --json              Output report as JSON
+
 Reinforce:
   cortex reinforce <fact_id> [fact_id...]   Reset decay timer for specified facts
 
@@ -3546,6 +3643,8 @@ Examples:
   cortex supersede 101 --by 204 --reason "policy updated"
   cortex search "deployment rule" --include-superseded
   cortex search "deployment rule" --explain --json
+  cortex bench --compare google/gemini-2.5-flash,deepseek/deepseek-v3.2 --recursive
+  cortex bench --models openai/gpt-5.1-codex-mini,google/gemini-3-flash-preview --output bench.md
   cortex mcp                          # Start MCP server (stdio, for Claude Desktop/Cursor)
   cortex mcp --port 8080              # Start MCP server (HTTP+SSE)
 
