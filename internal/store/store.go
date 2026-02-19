@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -264,7 +265,14 @@ func NewStore(cfg StoreConfig) (Store, error) {
 
 	dsn := cfg.DBPath
 	if cfg.ReadOnly && cfg.DBPath != ":memory:" {
-		dsn = cfg.DBPath + "?mode=ro"
+		dsn = appendSQLiteDSNParam(dsn, "mode", "ro")
+	}
+	if cfg.DBPath != ":memory:" {
+		// Cross-process lock contention fix (#50): make SQLite wait briefly
+		// instead of failing immediately with SQLITE_BUSY.
+		dsn = appendSQLiteDSNParam(dsn, "_busy_timeout", "5000")
+		// modernc/sqlite applies DSN pragmas at open time, before Ping/PRAGMAs below.
+		dsn = appendSQLiteDSNParam(dsn, "_pragma", "busy_timeout(5000)")
 	}
 
 	db, err := sql.Open("sqlite", dsn)
@@ -343,4 +351,12 @@ func expandPath(path string) string {
 		return filepath.Join(home, path[1:])
 	}
 	return path
+}
+
+func appendSQLiteDSNParam(dsn, key, value string) string {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	return dsn + separator + key + "=" + value
 }

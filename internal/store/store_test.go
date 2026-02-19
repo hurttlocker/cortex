@@ -92,6 +92,18 @@ func TestWALMode(t *testing.T) {
 	}
 }
 
+func TestAppendSQLiteDSNParam(t *testing.T) {
+	got := appendSQLiteDSNParam("/tmp/cortex.db", "_busy_timeout", "5000")
+	if got != "/tmp/cortex.db?_busy_timeout=5000" {
+		t.Fatalf("unexpected dsn: %s", got)
+	}
+
+	got = appendSQLiteDSNParam("/tmp/cortex.db?mode=ro", "_busy_timeout", "5000")
+	if got != "/tmp/cortex.db?mode=ro&_busy_timeout=5000" {
+		t.Fatalf("unexpected dsn with existing query: %s", got)
+	}
+}
+
 func TestMetadata(t *testing.T) {
 	s := newTestStore(t)
 	ss := s.(*SQLiteStore)
