@@ -75,7 +75,8 @@ func (s *SQLiteStore) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_facts_type ON facts(fact_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate ON facts(subject, predicate)`,
-		`CREATE INDEX IF NOT EXISTS idx_facts_superseded_by ON facts(superseded_by)`,
+		// idx_facts_superseded_by is created by migrateFactSupersededColumn() for existing DBs,
+		// and here for new DBs only (column exists in CREATE TABLE above).
 
 		// Embedding vectors for semantic search
 		`CREATE TABLE IF NOT EXISTS embeddings (
