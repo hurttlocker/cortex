@@ -216,26 +216,41 @@ func (s *SQLiteStore) searchLikeFallback(ctx context.Context, query string, limi
 
 // extractSnippet extracts a relevant snippet around the query match in content.
 func extractSnippet(content, query string) string {
-	idx := strings.Index(strings.ToLower(content), strings.ToLower(query))
+	contentRunes := []rune(content)
+	if len(contentRunes) == 0 {
+		return ""
+	}
+
+	lowerContent := strings.ToLower(content)
+	lowerQuery := strings.ToLower(query)
+	idx := strings.Index(lowerContent, lowerQuery)
 	if idx < 0 {
-		if len(content) > 200 {
-			return content[:200] + "..."
+		if len(contentRunes) > 200 {
+			return string(contentRunes[:200]) + "..."
 		}
 		return content
 	}
-	start := idx - 60
+
+	matchStartRune := len([]rune(content[:idx]))
+	matchLenRunes := len([]rune(query))
+	if matchLenRunes <= 0 {
+		matchLenRunes = 1
+	}
+
+	start := matchStartRune - 60
 	if start < 0 {
 		start = 0
 	}
-	end := idx + len(query) + 60
-	if end > len(content) {
-		end = len(content)
+	end := matchStartRune + matchLenRunes + 60
+	if end > len(contentRunes) {
+		end = len(contentRunes)
 	}
-	snippet := content[start:end]
+
+	snippet := string(contentRunes[start:end])
 	if start > 0 {
 		snippet = "..." + snippet
 	}
-	if end < len(content) {
+	if end < len(contentRunes) {
 		snippet = snippet + "..."
 	}
 	return snippet

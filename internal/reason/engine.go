@@ -105,13 +105,20 @@ func (e *Engine) Reason(ctx context.Context, opts ReasonOptions) (*ReasonResult,
 	}
 
 	query := opts.Query
-	if query == "" {
-		query = preset.Name // Use preset name as default query
+	searchQuery := query
+	if searchQuery == "" {
+		searchQuery = preset.Name
 	}
 
-	results, err := e.searchEngine.Search(ctx, query, searchOpts)
+	results, err := e.searchEngine.Search(ctx, searchQuery, searchOpts)
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
+	}
+	if len(results) == 0 && query == "" {
+		results, err = e.fallbackRecentResults(ctx, preset.SearchLimit, opts.Project)
+		if err != nil {
+			return nil, fmt.Errorf("loading fallback context: %w", err)
+		}
 	}
 	searchTime := time.Since(searchStart)
 
@@ -157,6 +164,39 @@ func (e *Engine) Reason(ctx context.Context, opts ReasonOptions) (*ReasonResult,
 		TokensIn:     llmResult.PromptTokens,
 		TokensOut:    llmResult.CompletionTokens,
 	}, nil
+}
+
+func (e *Engine) fallbackRecentResults(ctx context.Context, limit int, project string) ([]search.Result, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	memories, err := e.store.ListMemories(ctx, store.ListOpts{
+		Limit:   limit,
+		SortBy:  "date",
+		Project: project,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]search.Result, 0, len(memories))
+	for _, m := range memories {
+		results = append(results, search.Result{
+			MemoryID:      m.ID,
+			Content:       m.Content,
+			SourceFile:    m.SourceFile,
+			SourceLine:    m.SourceLine,
+			SourceSection: m.SourceSection,
+			Project:       m.Project,
+			MemoryClass:   m.MemoryClass,
+			Metadata:      m.Metadata,
+			Score:         0,
+			MatchType:     "fallback_recent",
+			ImportedAt:    m.ImportedAt,
+		})
+	}
+	return results, nil
 }
 
 // buildConfidenceContext creates a context string with confidence annotations.
