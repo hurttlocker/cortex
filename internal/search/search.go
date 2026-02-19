@@ -76,6 +76,7 @@ type Options struct {
 	After             string   // Filter memories imported after date YYYY-MM-DD (Issue #30)
 	Before            string   // Filter memories imported before date YYYY-MM-DD (Issue #30)
 	IncludeSuperseded bool     // Include memories backed only by superseded facts
+	Explain           bool     // Attach explainability/provenance payloads to results
 }
 
 // Default minimum score thresholds by mode.
@@ -125,6 +126,46 @@ type Result struct {
 	MatchType     string          `json:"match_type"` // "bm25", "semantic", "hybrid"
 	MemoryID      int64           `json:"memory_id"`
 	ImportedAt    time.Time       `json:"imported_at,omitempty"` // For metadata date filtering
+	Explain       *ExplainDetails `json:"explain,omitempty"`
+}
+
+// ExplainDetails surfaces provenance and ranking factors for operator trust/debugging.
+type ExplainDetails struct {
+	Provenance     ExplainProvenance `json:"provenance"`
+	Confidence     ExplainConfidence `json:"confidence"`
+	RankComponents RankComponents    `json:"rank_components"`
+	Why            string            `json:"why,omitempty"`
+}
+
+type ExplainProvenance struct {
+	Source    string    `json:"source"`
+	Timestamp time.Time `json:"timestamp,omitempty"`
+	AgeDays   float64   `json:"age_days,omitempty"`
+}
+
+type ExplainConfidence struct {
+	Confidence          float64 `json:"confidence"`
+	EffectiveConfidence float64 `json:"effective_confidence"`
+}
+
+type RankComponents struct {
+	BaseScore                  float64  `json:"base_score"`
+	ClassBoostMultiplier       float64  `json:"class_boost_multiplier"`
+	PreConfidenceScore         float64  `json:"pre_confidence_score"`
+	ConfidenceWeight           float64  `json:"confidence_weight"`
+	FinalScore                 float64  `json:"final_score"`
+	BM25Raw                    *float64 `json:"bm25_raw,omitempty"`
+	BM25Score                  *float64 `json:"bm25_score,omitempty"`
+	SemanticScore              *float64 `json:"semantic_score,omitempty"`
+	HybridBM25Normalized       *float64 `json:"hybrid_bm25_normalized,omitempty"`
+	HybridSemanticNormalized   *float64 `json:"hybrid_semantic_normalized,omitempty"`
+	HybridBM25Contribution     *float64 `json:"hybrid_bm25_contribution,omitempty"`
+	HybridSemanticContribution *float64 `json:"hybrid_semantic_contribution,omitempty"`
+}
+
+type confidenceDetail struct {
+	confidence          float64
+	effectiveConfidence float64
 }
 
 // Searcher performs searches across the memory store.
@@ -263,7 +304,7 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		results = filterByClass(results, opts.Classes)
 	}
 	if !opts.DisableClassBoost {
-		results = applyClassBoost(results)
+		results = applyClassBoost(results, opts.Explain)
 	}
 
 	if !opts.IncludeSuperseded {
@@ -271,7 +312,12 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	}
 
 	// Apply confidence decay weighting and reinforce-on-recall
-	results = e.applyConfidenceDecay(ctx, results, opts.IncludeSuperseded)
+	var confidenceDetails map[int64]confidenceDetail
+	results, confidenceDetails = e.applyConfidenceDecay(ctx, results, opts.IncludeSuperseded, opts.Explain)
+
+	if opts.Explain {
+		e.addExplainability(results, confidenceDetails)
+	}
 
 	return results, nil
 }
@@ -323,7 +369,7 @@ func filterByClass(results []Result, allowed []string) []Result {
 	return filtered
 }
 
-func applyClassBoost(results []Result) []Result {
+func applyClassBoost(results []Result, explain bool) []Result {
 	if len(results) == 0 {
 		return results
 	}
@@ -334,7 +380,15 @@ func applyClassBoost(results []Result) []Result {
 		if !ok {
 			multiplier = 1.0
 		}
+		baseScore := results[i].Score
 		results[i].Score *= multiplier
+
+		if explain {
+			ensureExplain(&results[i])
+			results[i].Explain.RankComponents.BaseScore = baseScore
+			results[i].Explain.RankComponents.ClassBoostMultiplier = multiplier
+			results[i].Explain.RankComponents.PreConfidenceScore = results[i].Score
+		}
 	}
 
 	sort.Slice(results, func(i, j int) bool {
@@ -399,7 +453,7 @@ func matchChannel(r Result, channel string) bool {
 
 // applyConfidenceDecay adjusts search result scores based on the effective confidence
 // of facts linked to each memory, and reinforces those facts (Ebbinghaus recall).
-func (e *Engine) applyConfidenceDecay(ctx context.Context, results []Result, includeSuperseded bool) []Result {
+func (e *Engine) applyConfidenceDecay(ctx context.Context, results []Result, includeSuperseded bool, explain bool) ([]Result, map[int64]confidenceDetail) {
 	// Collect memory IDs from results
 	memoryIDs := make([]int64, 0, len(results))
 	for _, r := range results {
@@ -409,18 +463,39 @@ func (e *Engine) applyConfidenceDecay(ctx context.Context, results []Result, inc
 	}
 
 	if len(memoryIDs) == 0 {
-		return results
+		return results, map[int64]confidenceDetail{}
 	}
 
-	// Get average effective confidence per memory from its linked facts
+	// Get average confidence/effective-confidence per memory from linked facts.
 	confidenceMap := e.getMemoryConfidenceMap(ctx, memoryIDs, includeSuperseded)
 
 	// Apply confidence weighting to scores
 	for i := range results {
-		if avgConf, ok := confidenceMap[results[i].MemoryID]; ok {
-			// Blend: score = (1 - weight) * original_score + weight * (original_score * effective_confidence)
-			// This gently penalizes stale memories without completely suppressing them
-			results[i].Score = (1-ConfidenceWeight)*results[i].Score + ConfidenceWeight*(results[i].Score*avgConf)
+		detail, ok := confidenceMap[results[i].MemoryID]
+		if !ok {
+			detail = confidenceDetail{confidence: 1.0, effectiveConfidence: 1.0}
+		}
+
+		// Blend: score = (1 - weight) * original_score + weight * (original_score * effective_confidence)
+		// This gently penalizes stale memories without completely suppressing them.
+		preConfidenceScore := results[i].Score
+		results[i].Score = (1-ConfidenceWeight)*results[i].Score + ConfidenceWeight*(results[i].Score*detail.effectiveConfidence)
+
+		if explain {
+			ensureExplain(&results[i])
+			if results[i].Explain.RankComponents.BaseScore == 0 {
+				results[i].Explain.RankComponents.BaseScore = preConfidenceScore
+			}
+			if results[i].Explain.RankComponents.ClassBoostMultiplier == 0 {
+				results[i].Explain.RankComponents.ClassBoostMultiplier = 1.0
+			}
+			if results[i].Explain.RankComponents.PreConfidenceScore == 0 {
+				results[i].Explain.RankComponents.PreConfidenceScore = preConfidenceScore
+			}
+			results[i].Explain.RankComponents.ConfidenceWeight = ConfidenceWeight
+			results[i].Explain.RankComponents.FinalScore = results[i].Score
+			results[i].Explain.Confidence.Confidence = detail.confidence
+			results[i].Explain.Confidence.EffectiveConfidence = detail.effectiveConfidence
 		}
 	}
 
@@ -435,13 +510,13 @@ func (e *Engine) applyConfidenceDecay(ctx context.Context, results []Result, inc
 		_, _ = e.store.ReinforceFactsByMemoryIDs(context.Background(), memoryIDs)
 	}()
 
-	return results
+	return results, confidenceMap
 }
 
-// getMemoryConfidenceMap returns the average effective confidence for facts linked to each memory ID.
-// Uses a single batch query for efficiency, then groups by memory ID.
-func (e *Engine) getMemoryConfidenceMap(ctx context.Context, memoryIDs []int64, includeSuperseded bool) map[int64]float64 {
-	confidenceMap := make(map[int64]float64)
+// getMemoryConfidenceMap returns average base confidence + average effective confidence
+// for facts linked to each memory ID.
+func (e *Engine) getMemoryConfidenceMap(ctx context.Context, memoryIDs []int64, includeSuperseded bool) map[int64]confidenceDetail {
+	confidenceMap := make(map[int64]confidenceDetail)
 
 	var (
 		facts []*store.Fact
@@ -455,15 +530,16 @@ func (e *Engine) getMemoryConfidenceMap(ctx context.Context, memoryIDs []int64, 
 	if err != nil || len(facts) == 0 {
 		// No facts found — assume full confidence for all memories
 		for _, id := range memoryIDs {
-			confidenceMap[id] = 1.0
+			confidenceMap[id] = confidenceDetail{confidence: 1.0, effectiveConfidence: 1.0}
 		}
 		return confidenceMap
 	}
 
-	// Group facts by memory ID and compute effective confidence
+	// Group facts by memory ID and compute confidence/effective confidence.
 	type accumulator struct {
-		totalConf float64
-		count     int
+		totalConfidence          float64
+		totalEffectiveConfidence float64
+		count                    int
 	}
 	accum := make(map[int64]*accumulator)
 
@@ -473,22 +549,100 @@ func (e *Engine) getMemoryConfidenceMap(ctx context.Context, memoryIDs []int64, 
 		effective := f.Confidence * math.Exp(-f.DecayRate*days)
 
 		if a, ok := accum[f.MemoryID]; ok {
-			a.totalConf += effective
+			a.totalConfidence += f.Confidence
+			a.totalEffectiveConfidence += effective
 			a.count++
 		} else {
-			accum[f.MemoryID] = &accumulator{totalConf: effective, count: 1}
+			accum[f.MemoryID] = &accumulator{totalConfidence: f.Confidence, totalEffectiveConfidence: effective, count: 1}
 		}
 	}
 
 	for _, id := range memoryIDs {
 		if a, ok := accum[id]; ok && a.count > 0 {
-			confidenceMap[id] = a.totalConf / float64(a.count)
+			confidenceMap[id] = confidenceDetail{
+				confidence:          a.totalConfidence / float64(a.count),
+				effectiveConfidence: a.totalEffectiveConfidence / float64(a.count),
+			}
 		} else {
-			confidenceMap[id] = 1.0 // No facts = assume full confidence
+			confidenceMap[id] = confidenceDetail{confidence: 1.0, effectiveConfidence: 1.0} // No facts = assume full confidence
 		}
 	}
 
 	return confidenceMap
+}
+
+func ensureExplain(result *Result) {
+	if result.Explain != nil {
+		return
+	}
+	result.Explain = &ExplainDetails{}
+	result.Explain.RankComponents.ClassBoostMultiplier = 1.0
+}
+
+func (e *Engine) addExplainability(results []Result, confidenceMap map[int64]confidenceDetail) {
+	now := timeNow()
+	for i := range results {
+		ensureExplain(&results[i])
+
+		detail, ok := confidenceMap[results[i].MemoryID]
+		if !ok {
+			detail = confidenceDetail{confidence: 1.0, effectiveConfidence: 1.0}
+		}
+		results[i].Explain.Confidence.Confidence = detail.confidence
+		results[i].Explain.Confidence.EffectiveConfidence = detail.effectiveConfidence
+
+		if results[i].Explain.RankComponents.PreConfidenceScore == 0 {
+			results[i].Explain.RankComponents.PreConfidenceScore = results[i].Score
+		}
+		if results[i].Explain.RankComponents.FinalScore == 0 {
+			results[i].Explain.RankComponents.FinalScore = results[i].Score
+		}
+		if results[i].Explain.RankComponents.ConfidenceWeight == 0 {
+			results[i].Explain.RankComponents.ConfidenceWeight = ConfidenceWeight
+		}
+		if results[i].Explain.RankComponents.BaseScore == 0 {
+			results[i].Explain.RankComponents.BaseScore = results[i].Explain.RankComponents.PreConfidenceScore
+		}
+		if results[i].Explain.RankComponents.ClassBoostMultiplier == 0 {
+			results[i].Explain.RankComponents.ClassBoostMultiplier = 1.0
+		}
+
+		results[i].Explain.Provenance = ExplainProvenance{
+			Source:    buildSourceLabel(results[i]),
+			Timestamp: results[i].ImportedAt,
+		}
+		if !results[i].ImportedAt.IsZero() {
+			results[i].Explain.Provenance.AgeDays = math.Max(0, now.Sub(results[i].ImportedAt).Hours()/24)
+		}
+
+		results[i].Explain.Why = fmt.Sprintf(
+			"%s match with base %.3f × class %.2f, then confidence-adjusted to %.3f (effective confidence %.3f)",
+			results[i].MatchType,
+			results[i].Explain.RankComponents.BaseScore,
+			results[i].Explain.RankComponents.ClassBoostMultiplier,
+			results[i].Explain.RankComponents.FinalScore,
+			detail.effectiveConfidence,
+		)
+	}
+}
+
+func buildSourceLabel(result Result) string {
+	source := result.SourceFile
+	if source == "" {
+		source = "(unknown source)"
+	}
+	if result.SourceLine > 0 {
+		source = fmt.Sprintf("%s:%d", source, result.SourceLine)
+	}
+	if result.SourceSection != "" {
+		source = fmt.Sprintf("%s#%s", source, result.SourceSection)
+	}
+	return source
+}
+
+func floatPtr(v float64) *float64 {
+	val := v
+	return &val
 }
 
 // timeNow returns the current time. Extracted for testing.
@@ -553,6 +707,19 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 			MatchType:     "bm25",
 			MemoryID:      sr.Memory.ID,
 			ImportedAt:    sr.Memory.ImportedAt,
+		}
+		if opts.Explain {
+			r.Explain = &ExplainDetails{
+				RankComponents: RankComponents{
+					BaseScore:            score,
+					PreConfidenceScore:   score,
+					FinalScore:           score,
+					ClassBoostMultiplier: 1.0,
+					ConfidenceWeight:     ConfidenceWeight,
+					BM25Raw:              floatPtr(sr.Score),
+					BM25Score:            floatPtr(score),
+				},
+			}
 		}
 		allFiltered = append(allFiltered, r)
 
@@ -738,6 +905,18 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 			MemoryID:      sr.Memory.ID,
 			ImportedAt:    sr.Memory.ImportedAt,
 		}
+		if opts.Explain {
+			r.Explain = &ExplainDetails{
+				RankComponents: RankComponents{
+					BaseScore:            sr.Score,
+					PreConfidenceScore:   sr.Score,
+					FinalScore:           sr.Score,
+					ClassBoostMultiplier: 1.0,
+					ConfidenceWeight:     ConfidenceWeight,
+					SemanticScore:        floatPtr(sr.Score),
+				},
+			}
+		}
 		results = append(results, r)
 	}
 
@@ -776,7 +955,7 @@ func (e *Engine) searchSemanticHNSW(ctx context.Context, queryVec []float32, opt
 			continue // memory may have been deleted since index was built
 		}
 
-		results = append(results, Result{
+		r := Result{
 			Content:       mem.Content,
 			SourceFile:    mem.SourceFile,
 			SourceLine:    mem.SourceLine,
@@ -788,7 +967,20 @@ func (e *Engine) searchSemanticHNSW(ctx context.Context, queryVec []float32, opt
 			MatchType:     "semantic",
 			MemoryID:      mem.ID,
 			ImportedAt:    mem.ImportedAt,
-		})
+		}
+		if opts.Explain {
+			r.Explain = &ExplainDetails{
+				RankComponents: RankComponents{
+					BaseScore:            similarity,
+					PreConfidenceScore:   similarity,
+					FinalScore:           similarity,
+					ClassBoostMultiplier: 1.0,
+					ConfidenceWeight:     ConfidenceWeight,
+					SemanticScore:        floatPtr(similarity),
+				},
+			}
+		}
+		results = append(results, r)
 
 		if len(results) >= opts.Limit {
 			break
@@ -857,7 +1049,7 @@ func (e *Engine) searchHybrid(ctx context.Context, query string, opts Options) (
 		return bm25Result.results, nil
 	}
 
-	return mergeWeightedScores(bm25Result.results, semanticResult.results, opts.Limit), nil
+	return mergeWeightedScores(bm25Result.results, semanticResult.results, opts.Limit, opts.Explain), nil
 }
 
 // mergeWeightedScores combines BM25 and semantic results using normalized score fusion.
@@ -876,7 +1068,7 @@ func (e *Engine) searchHybrid(ctx context.Context, query string, opts Options) (
 //     high semantic similarity will rank highest
 const hybridAlpha = 0.3 // BM25 weight. Semantic weight = 1 - hybridAlpha
 
-func mergeWeightedScores(bm25Results, semanticResults []Result, limit int) []Result {
+func mergeWeightedScores(bm25Results, semanticResults []Result, limit int, explain bool) []Result {
 	// Normalize scores within each result set to 0-1 range
 	bm25Norm := normalizeResultScores(bm25Results)
 	semNorm := normalizeResultScores(semanticResults)
@@ -900,6 +1092,12 @@ func mergeWeightedScores(bm25Results, semanticResults []Result, limit int) []Res
 		if entry, exists := fusedMap[r.MemoryID]; exists {
 			// Result found by both engines — use semantic's content (usually richer)
 			entry.semantic = semNorm[i]
+			if len(strings.TrimSpace(r.Content)) > len(strings.TrimSpace(entry.result.Content)) {
+				entry.result.Content = r.Content
+			}
+			if entry.result.Snippet == "" {
+				entry.result.Snippet = r.Snippet
+			}
 		} else {
 			fusedMap[r.MemoryID] = &fusedEntry{
 				result:   r,
@@ -911,9 +1109,26 @@ func mergeWeightedScores(bm25Results, semanticResults []Result, limit int) []Res
 	// Calculate fused scores
 	var merged []Result
 	for _, entry := range fusedMap {
-		fusedScore := hybridAlpha*entry.bm25 + (1-hybridAlpha)*entry.semantic
+		bm25Contribution := hybridAlpha * entry.bm25
+		semanticContribution := (1 - hybridAlpha) * entry.semantic
+		fusedScore := bm25Contribution + semanticContribution
+
 		entry.result.Score = fusedScore
 		entry.result.MatchType = "hybrid"
+
+		if explain {
+			ensureExplain(&entry.result)
+			entry.result.Explain.RankComponents.BaseScore = fusedScore
+			entry.result.Explain.RankComponents.PreConfidenceScore = fusedScore
+			entry.result.Explain.RankComponents.FinalScore = fusedScore
+			entry.result.Explain.RankComponents.ClassBoostMultiplier = 1.0
+			entry.result.Explain.RankComponents.ConfidenceWeight = ConfidenceWeight
+			entry.result.Explain.RankComponents.HybridBM25Normalized = floatPtr(entry.bm25)
+			entry.result.Explain.RankComponents.HybridSemanticNormalized = floatPtr(entry.semantic)
+			entry.result.Explain.RankComponents.HybridBM25Contribution = floatPtr(bm25Contribution)
+			entry.result.Explain.RankComponents.HybridSemanticContribution = floatPtr(semanticContribution)
+		}
+
 		merged = append(merged, entry.result)
 	}
 

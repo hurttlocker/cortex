@@ -68,6 +68,10 @@ cortex search "what do I know about X" --mode semantic --embed ollama/nomic-embe
 
 # Class-filtered retrieval (rules/decisions first)
 cortex search "what's the deploy policy" --class rule,decision --limit 5
+
+# Explainability (provenance + rank factors + confidence/decay)
+cortex search "what's the deploy policy" --explain
+cortex search "what's the deploy policy" --json --explain
 ```
 
 ### Store

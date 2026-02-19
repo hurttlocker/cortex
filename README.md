@@ -226,6 +226,7 @@ cortex search "deployment process"                           # BM25 keyword (ins
 cortex search "what timezone" --mode semantic --embed ollama/nomic-embed-text  # Semantic
 cortex search "deployment" --mode hybrid --embed ollama/nomic-embed-text       # Both
 cortex search "merge policy" --class rule,decision            # Class-filtered retrieval
+cortex search "merge policy" --explain                        # Provenance + rank factors
 ```
 
 Embedding is provider-agnostic: Ollama (local, free), OpenAI, DeepSeek, OpenRouter, or any custom endpoint. In watch mode, Cortex only processes memories missing embeddings, applies exponential backoff if the provider is down, and rebuilds the HNSW ANN index automatically when new vectors land. BM25 search works with zero setup — no embeddings needed.
@@ -249,6 +250,23 @@ cortex list --class rule,decision
 ```
 
 Unclassified data remains fully searchable (backward compatible). Class boosts are conservative defaults and can be disabled per-query.
+
+### 🔎 Retrieval Explainability — Why This Result Ranked
+
+Need trust signals before memory gets injected into context? Use explain mode:
+
+```bash
+cortex search "deployment policy" --explain
+cortex search "deployment policy" --json --explain
+```
+
+Explain mode includes:
+- provenance (`source`, `timestamp`, `age_days`)
+- confidence signals (`confidence`, `effective_confidence`)
+- rank components (`bm25`/`semantic`/hybrid contributions, class boost multiplier, pre/post confidence scores)
+- a short `why` summary for fast operator review
+
+By default (without `--explain`) search stays on the fast path and does not include explainability payloads.
 
 ### 📋 Metadata-Enriched Capture — Know Who Said What, Where
 
