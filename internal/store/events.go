@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -152,7 +153,92 @@ func (s *SQLiteStore) SearchFTSWithProject(ctx context.Context, query string, li
 		r.Memory.Metadata = unmarshalMetadata(metadataStr)
 		results = append(results, r)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Fallback: if FTS returned nothing, try LIKE search for CJK/Unicode content (#51)
+	if len(results) == 0 && query != "" {
+		results, _ = s.searchLikeFallback(ctx, query, limit, project)
+	}
+
+	return results, nil
+}
+
+// searchLikeFallback uses SQL LIKE for queries that FTS5 can't tokenize well (CJK, etc.)
+func (s *SQLiteStore) searchLikeFallback(ctx context.Context, query string, limit int, project string) ([]*SearchResult, error) {
+	likePattern := "%" + query + "%"
+	var rows *sql.Rows
+	var err error
+
+	if project != "" {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT id, content, source_file, source_line, source_section,
+			        content_hash, project, memory_class, metadata, imported_at, updated_at
+			 FROM memories
+			 WHERE content LIKE ?
+			   AND deleted_at IS NULL
+			   AND project = ?
+			 LIMIT ?`,
+			likePattern, project, limit,
+		)
+	} else {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT id, content, source_file, source_line, source_section,
+			        content_hash, project, memory_class, metadata, imported_at, updated_at
+			 FROM memories
+			 WHERE content LIKE ?
+			   AND deleted_at IS NULL
+			 LIMIT ?`,
+			likePattern, limit,
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*SearchResult
+	for rows.Next() {
+		r := &SearchResult{Score: -0.5} // LIKE matches get a neutral score
+		var metadataStr sql.NullString
+		if err := rows.Scan(&r.Memory.ID, &r.Memory.Content, &r.Memory.SourceFile,
+			&r.Memory.SourceLine, &r.Memory.SourceSection, &r.Memory.ContentHash,
+			&r.Memory.Project, &r.Memory.MemoryClass, &metadataStr, &r.Memory.ImportedAt, &r.Memory.UpdatedAt); err != nil {
+			return nil, err
+		}
+		r.Memory.Metadata = unmarshalMetadata(metadataStr)
+		r.Snippet = extractSnippet(r.Memory.Content, query)
+		results = append(results, r)
+	}
 	return results, rows.Err()
+}
+
+// extractSnippet extracts a relevant snippet around the query match in content.
+func extractSnippet(content, query string) string {
+	idx := strings.Index(strings.ToLower(content), strings.ToLower(query))
+	if idx < 0 {
+		if len(content) > 200 {
+			return content[:200] + "..."
+		}
+		return content
+	}
+	start := idx - 60
+	if start < 0 {
+		start = 0
+	}
+	end := idx + len(query) + 60
+	if end > len(content) {
+		end = len(content)
+	}
+	snippet := content[start:end]
+	if start > 0 {
+		snippet = "..." + snippet
+	}
+	if end < len(content) {
+		snippet = snippet + "..."
+	}
+	return snippet
 }
 
 // GetSourceCount returns the number of distinct source files in memories.

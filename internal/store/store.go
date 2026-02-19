@@ -168,6 +168,7 @@ type Store interface {
 	ListMemories(ctx context.Context, opts ListOpts) ([]*Memory, error)
 	DeleteMemory(ctx context.Context, id int64) error
 	UpdateMemory(ctx context.Context, id int64, content string) error
+	UpdateMemoryMetadata(ctx context.Context, id int64, meta *Metadata) error
 
 	// Batch
 	AddMemoryBatch(ctx context.Context, memories []*Memory) ([]int64, error)
@@ -241,6 +242,11 @@ func (s *SQLiteStore) ExecContext(ctx context.Context, query string, args ...int
 	return s.db.ExecContext(ctx, query, args...)
 }
 
+// QueryRowContext executes a query expected to return at most one row.
+func (s *SQLiteStore) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	return s.db.QueryRowContext(ctx, query, args...)
+}
+
 // NewStore creates a new SQLite-backed Store.
 // Pass ":memory:" for in-memory databases (testing).
 func NewStore(cfg StoreConfig) (Store, error) {
@@ -283,17 +289,18 @@ func NewStore(cfg StoreConfig) (Store, error) {
 	db.SetMaxIdleConns(1)
 
 	// Enable pragmas — read-only mode skips WAL and synchronous (they require write access)
+	// busy_timeout=30000 (30s) handles concurrent multi-process access (#50)
 	var pragmas []string
 	if cfg.ReadOnly {
 		pragmas = []string{
 			"PRAGMA foreign_keys=ON",
-			"PRAGMA busy_timeout=10000",
+			"PRAGMA busy_timeout=30000",
 		}
 	} else {
 		pragmas = []string{
 			"PRAGMA journal_mode=WAL",
 			"PRAGMA foreign_keys=ON",
-			"PRAGMA busy_timeout=10000",
+			"PRAGMA busy_timeout=30000",
 			"PRAGMA synchronous=NORMAL",
 		}
 	}

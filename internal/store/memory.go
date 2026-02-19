@@ -213,6 +213,28 @@ func (s *SQLiteStore) UpdateMemory(ctx context.Context, id int64, content string
 	return nil
 }
 
+// UpdateMemoryMetadata updates the metadata JSON on an existing memory (#53).
+func (s *SQLiteStore) UpdateMemoryMetadata(ctx context.Context, id int64, meta *Metadata) error {
+	metaJSON := marshalMetadata(meta)
+	now := time.Now().UTC()
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE memories SET metadata = ?, updated_at = ?
+		 WHERE id = ? AND deleted_at IS NULL`,
+		metaJSON, now, id,
+	)
+	if err != nil {
+		return fmt.Errorf("updating metadata for memory %d: %w", id, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("memory %d not found or already deleted", id)
+	}
+	return nil
+}
+
 // AddMemoryBatch inserts multiple memories in a transaction.
 // Uses the configured batch size for chunking.
 func (s *SQLiteStore) AddMemoryBatch(ctx context.Context, memories []*Memory) ([]int64, error) {
