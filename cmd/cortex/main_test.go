@@ -305,6 +305,42 @@ func TestRunSearch_ExplainFlagAccepted(t *testing.T) {
 	}
 }
 
+func TestParseBenchArgs_Compare(t *testing.T) {
+	opts, err := parseBenchArgs([]string{"--compare", "google/gemini-2.5-flash,deepseek/deepseek-v3.2", "--recursive"})
+	if err != nil {
+		t.Fatalf("parseBenchArgs failed: %v", err)
+	}
+	if !opts.compareMode {
+		t.Fatal("expected compareMode=true")
+	}
+	if len(opts.customModels) != 2 {
+		t.Fatalf("expected 2 compare models, got %d", len(opts.customModels))
+	}
+	if !opts.recursive {
+		t.Fatal("expected recursive=true")
+	}
+}
+
+func TestParseBenchArgs_CompareAndModelsConflict(t *testing.T) {
+	_, err := parseBenchArgs([]string{"--compare", "a,b", "--models", "c,d"})
+	if err == nil {
+		t.Fatal("expected conflict error")
+	}
+	if !strings.Contains(err.Error(), "cannot be used") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseBenchArgs_InvalidCompareCount(t *testing.T) {
+	_, err := parseBenchArgs([]string{"--compare", "onlyone"})
+	if err == nil {
+		t.Fatal("expected compare arity error")
+	}
+	if !strings.Contains(err.Error(), "exactly two") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestRunSupersede_MissingBy(t *testing.T) {
 	err := runSupersede([]string{"1"})
 	if err == nil {

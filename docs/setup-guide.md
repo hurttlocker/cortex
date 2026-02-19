@@ -212,6 +212,12 @@ When a new model drops, test it on your own memory:
 ```bash
 cortex bench --models "google/gemini-2.5-flash,deepseek/deepseek-chat" \
   --embed ollama/nomic-embed-text --output report.md
+
+# Quick A/B compare
+cortex bench --compare "google/gemini-2.5-flash,deepseek/deepseek-v3.2" --output ab.md
+
+# Recursive benchmark (deep mode)
+cortex bench --recursive --max-iterations 8 --max-depth 1 --output recursive.md
 ```
 
 ## 7. Ongoing Habits
