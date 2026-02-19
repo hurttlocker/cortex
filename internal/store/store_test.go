@@ -580,6 +580,24 @@ func TestSearchFTS(t *testing.T) {
 	}
 }
 
+func TestSearchFTS_CJK(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.AddMemory(ctx, &Memory{Content: "これはテストです"})
+	if err != nil {
+		t.Fatalf("AddMemory failed: %v", err)
+	}
+
+	results, err := s.SearchFTS(ctx, "テスト", 10)
+	if err != nil {
+		t.Fatalf("SearchFTS CJK failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatalf("expected CJK query to return results")
+	}
+}
+
 func TestSearchFTS_BooleanQuery(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
+	"unicode"
 )
 
 // LogEvent appends a memory event to the event log.
@@ -152,7 +154,73 @@ func (s *SQLiteStore) SearchFTSWithProject(ctx context.Context, query string, li
 		r.Memory.Metadata = unmarshalMetadata(metadataStr)
 		results = append(results, r)
 	}
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(results) == 0 && containsCJK(query) {
+		return s.searchBySubstring(ctx, query, limit, project)
+	}
+
+	return results, nil
+}
+
+func containsCJK(text string) bool {
+	for _, r := range text {
+		if unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *SQLiteStore) searchBySubstring(ctx context.Context, query string, limit int, project string) ([]*SearchResult, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	needle := strings.TrimSpace(query)
+	if needle == "" {
+		return nil, nil
+	}
+
+	like := "%" + needle + "%"
+	base := `SELECT id, content, source_file, source_line, source_section,
+	       content_hash, project, memory_class, metadata, imported_at, updated_at
+	FROM memories
+	WHERE deleted_at IS NULL
+	  AND (content LIKE ? OR source_file LIKE ? OR source_section LIKE ?)`
+	args := []interface{}{like, like, like}
+	if project != "" {
+		base += " AND project = ?"
+		args = append(args, project)
+	}
+	base += " ORDER BY imported_at DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, base, args...)
+	if err != nil {
+		return nil, fmt.Errorf("substring search fallback: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]*SearchResult, 0, limit)
+	for rows.Next() {
+		r := &SearchResult{}
+		var metadataStr sql.NullString
+		if err := rows.Scan(&r.Memory.ID, &r.Memory.Content, &r.Memory.SourceFile,
+			&r.Memory.SourceLine, &r.Memory.SourceSection, &r.Memory.ContentHash,
+			&r.Memory.Project, &r.Memory.MemoryClass, &metadataStr, &r.Memory.ImportedAt, &r.Memory.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning substring result: %w", err)
+		}
+		r.Memory.Metadata = unmarshalMetadata(metadataStr)
+		r.Score = 0.01
+		r.Snippet = r.Memory.Content
+		results = append(results, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // GetSourceCount returns the number of distinct source files in memories.

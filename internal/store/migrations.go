@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const ftsTokenizer = "porter unicode61 tokenchars ''\\u3000\\u4e00\\u9fff\\u3040\\u309f\\u30a0\\u30ff''"
+
 // migrate creates all tables if they don't exist and seeds metadata.
 func (s *SQLiteStore) migrate() error {
 	statements := []string{
@@ -22,12 +24,12 @@ func (s *SQLiteStore) migrate() error {
 		)`,
 
 		// FTS5 full-text search index
-		`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+		fmt.Sprintf(`CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
 			content,
 			content=memories,
 			content_rowid=id,
-			tokenize='porter unicode61'
-		)`,
+			tokenize='%s'
+		)`, ftsTokenizer),
 
 		// FTS sync triggers
 		`CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
@@ -179,6 +181,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating FTS multi-column: %w", err)
 	}
 
+	// Schema evolution: update tokenizer for CJK search compatibility (v0.3.2 — Issue #51)
+	if err := s.migrateFTSTokenizerCJK(); err != nil {
+		return fmt.Errorf("migrating FTS tokenizer for CJK: %w", err)
+	}
+
 	return nil
 }
 
@@ -326,14 +333,14 @@ func (s *SQLiteStore) migrateFTSMultiColumn() error {
 		// Create new multi-column FTS table
 		// content=memories + content_rowid=id makes this a content-synced table
 		// Three columns: content (main text), source_file (path), source_section (header)
-		`CREATE VIRTUAL TABLE memories_fts USING fts5(
+		fmt.Sprintf(`CREATE VIRTUAL TABLE memories_fts USING fts5(
 			content,
 			source_file,
 			source_section,
 			content=memories,
 			content_rowid=id,
-			tokenize='porter unicode61'
-		)`,
+			tokenize='%s'
+		)`, ftsTokenizer),
 
 		// New triggers that populate all 3 FTS columns
 		`CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
@@ -390,6 +397,72 @@ func (s *SQLiteStore) migrateFTSMultiColumn() error {
 	}
 
 	fmt.Printf("  FTS multi-column migration complete: %d memories indexed with source context\n", rebuilt)
+	return nil
+}
+
+// migrateFTSTokenizerCJK updates the FTS tokenizer to include CJK tokenchars.
+// This fixes search misses for Japanese/Chinese/Korean terms (Issue #51).
+func (s *SQLiteStore) migrateFTSTokenizerCJK() error {
+	var val string
+	err := s.db.QueryRow("SELECT value FROM meta WHERE key = 'fts_cjk_tokenizer'").Scan(&val)
+	if err == nil && val == "true" {
+		return nil
+	}
+
+	stmts := []string{
+		`DROP TRIGGER IF EXISTS memories_ai`,
+		`DROP TRIGGER IF EXISTS memories_ad`,
+		`DROP TRIGGER IF EXISTS memories_au`,
+		`DROP TABLE IF EXISTS memories_fts`,
+		fmt.Sprintf(`CREATE VIRTUAL TABLE memories_fts USING fts5(
+			content,
+			source_file,
+			source_section,
+			content=memories,
+			content_rowid=id,
+			tokenize='%s'
+		)`, ftsTokenizer),
+		`CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
+			INSERT INTO memories_fts(rowid, content, source_file, source_section)
+			VALUES (new.id, new.content, COALESCE(new.source_file, ''), COALESCE(new.source_section, ''));
+		END`,
+		`CREATE TRIGGER memories_ad AFTER DELETE ON memories BEGIN
+			INSERT INTO memories_fts(memories_fts, rowid, content, source_file, source_section)
+			VALUES('delete', old.id, old.content, COALESCE(old.source_file, ''), COALESCE(old.source_section, ''));
+		END`,
+		`CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
+			INSERT INTO memories_fts(memories_fts, rowid, content, source_file, source_section)
+			VALUES('delete', old.id, old.content, COALESCE(old.source_file, ''), COALESCE(old.source_section, ''));
+			INSERT INTO memories_fts(rowid, content, source_file, source_section)
+				SELECT new.id, new.content, COALESCE(new.source_file, ''), COALESCE(new.source_section, '')
+				WHERE new.deleted_at IS NULL;
+		END`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("executing CJK FTS migration %q: %w", truncate(stmt, 80), err)
+		}
+	}
+
+	result, err := s.db.Exec(`
+		INSERT INTO memories_fts(rowid, content, source_file, source_section)
+		SELECT id, content, COALESCE(source_file, ''), COALESCE(source_section, '')
+		FROM memories
+		WHERE deleted_at IS NULL
+	`)
+	if err != nil {
+		return fmt.Errorf("rebuilding CJK FTS index: %w", err)
+	}
+	rebuilt, _ := result.RowsAffected()
+
+	if _, err := s.db.Exec(
+		"INSERT OR REPLACE INTO meta (key, value) VALUES ('fts_cjk_tokenizer', 'true')",
+	); err != nil {
+		return fmt.Errorf("marking CJK FTS migration complete: %w", err)
+	}
+
+	fmt.Printf("  FTS CJK tokenizer migration complete: %d memories reindexed\n", rebuilt)
 	return nil
 }
 
