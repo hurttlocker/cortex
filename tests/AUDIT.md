@@ -38,7 +38,7 @@ export HOME_BACKUP="$HOME"
 # Linux x86: cortex-linux-amd64.tar.gz
 curl -sSL https://github.com/hurttlocker/cortex/releases/latest/download/cortex-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz | tar xz
 ./cortex version
-# ✅ PASS: prints "cortex 0.3.2" (or latest)
+# ✅ PASS: prints "cortex 0.3.3" (or latest)
 # ❌ FAIL: missing binary, wrong arch, permission denied
 ```
 
