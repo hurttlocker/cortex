@@ -341,6 +341,15 @@ func TestParseBenchArgs_InvalidCompareCount(t *testing.T) {
 	}
 }
 
+func TestBenchProgressWriter(t *testing.T) {
+	if got := benchProgressWriter(true); got != os.Stderr {
+		t.Fatalf("expected stderr for json mode, got %v", got)
+	}
+	if got := benchProgressWriter(false); got != os.Stdout {
+		t.Fatalf("expected stdout for tty mode, got %v", got)
+	}
+}
+
 func TestRunSupersede_MissingBy(t *testing.T) {
 	err := runSupersede([]string{"1"})
 	if err == nil {

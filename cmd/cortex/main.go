@@ -3226,6 +3226,13 @@ func splitCSVArgs(raw string) []string {
 	return out
 }
 
+func benchProgressWriter(jsonOutput bool) *os.File {
+	if jsonOutput {
+		return os.Stderr
+	}
+	return os.Stdout
+}
+
 func runBench(args []string) error {
 	parsed, err := parseBenchArgs(args)
 	if err != nil {
@@ -3278,8 +3285,9 @@ func runBench(args []string) error {
 		}
 	}
 
-	fmt.Println("🧪 Cortex Reason Benchmark")
-	fmt.Println("─────────────────────────")
+	progressOut := benchProgressWriter(parsed.jsonOutput)
+	fmt.Fprintln(progressOut, "🧪 Cortex Reason Benchmark")
+	fmt.Fprintln(progressOut, "─────────────────────────")
 
 	opts := reason.BenchOptions{
 		Models:         models, // nil = defaults
@@ -3291,7 +3299,7 @@ func runBench(args []string) error {
 		CompareMode:    parsed.compareMode,
 		ComparedModels: parsed.comparedRaw,
 		ProgressFn: func(model, preset string, i, total int) {
-			fmt.Printf("  [%d/%d] %s × %s...\n", i, total, model, preset)
+			fmt.Fprintf(progressOut, "  [%d/%d] %s × %s...\n", i, total, model, preset)
 		},
 	}
 
