@@ -1,7 +1,7 @@
 # Cortex External Audit Guide
 
-> **Version:** v0.3.1 (post `82fabec`)
-> **Date:** 2026-02-18
+> **Version:** v0.3.2 (post `f0eea09`)
+> **Date:** 2026-02-19
 > **Purpose:** Break everything. Report what survives.
 
 Welcome, auditor. This guide walks you through a full functional test of Cortex — from zero to recursive AI reasoning. Every section is designed to be run in order. If something fails, document it and keep going.
@@ -311,11 +311,17 @@ cortex import "$CORTEX_TEST_DIR/notes/update_test.md"
 # ❌ FAIL: deduped as unchanged despite different content
 ```
 
-### 5d. Cleanup
+### 5d. Cleanup (dry run)
+```bash
+cortex cleanup --dry-run
+# ✅ PASS: shows counts of what WOULD be cleaned, no data modified
+# ❌ FAIL: actually deletes data, crashes, or flag not recognized
+```
+
+### 5e. Cleanup (execute)
 ```bash
 cortex cleanup
 # ✅ PASS: shows what was cleaned (short/garbage memories, headless facts)
-# Note: cleanup runs immediately — there is no --dry-run flag
 # ❌ FAIL: crashes or corrupts database
 ```
 
@@ -477,10 +483,32 @@ cortex search "PostgreSQL" --read-only --limit 3
 ### 9g. Empty/malformed input
 ```bash
 echo "" | cortex import /dev/stdin 2>&1
+# ✅ PASS: reports "empty or whitespace-only content" error (not silent)
 cortex search "" 2>&1
+# ✅ PASS: graceful error or empty results
 cortex reason "" 2>&1
-# ✅ PASS: graceful error messages for all three
-# ❌ FAIL: panics, crashes, or hangs
+# ✅ PASS: graceful error message
+# ❌ FAIL: any of the three panics, crashes, hangs, or silently succeeds with no output
+```
+
+### 9h. Metadata survives reimport
+```bash
+# Import without metadata first
+cortex import "$CORTEX_TEST_DIR/notes/project.md"
+# Now reimport WITH metadata — should update existing memory
+cortex import "$CORTEX_TEST_DIR/notes/project.md" --metadata '{"agent_id":"auditor","channel":"test"}'
+# Search with agent filter
+cortex search "PostgreSQL" --agent auditor --limit 5
+# ✅ PASS: returns results (metadata was applied to existing memory)
+# ❌ FAIL: empty results (metadata not updated on dedup match)
+```
+
+### 9i. bench --json is clean JSON
+```bash
+# Verify bench JSON output has no progress pollution on stdout
+cortex bench --models openrouter/google/gemini-3-flash-preview --embed ollama/nomic-embed-text --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Clean JSON: {len(d[\"results\"])} results')"
+# ✅ PASS: valid JSON parsed successfully (progress went to stderr)
+# ❌ FAIL: JSON parse error (progress mixed into stdout)
 ```
 
 ---
@@ -563,15 +591,15 @@ Copy and fill this out:
 | 2. Import | 7 | | | | |
 | 3. Search | 7 | | | | |
 | 4. Facts | 5 | | | | |
-| 5. Lifecycle | 4 | | | | |
+| 5. Lifecycle | 5 | | | | |
 | 6. Reasoning | 5 | | | | |
 | 7. Bench | 3 | | | | |
 | 8. MCP | 2 | | | | |
-| 9. Edge Cases | 7 | | | | |
+| 9. Edge Cases | 10 | | | | |
 | 10. Hygiene | 2 | | | | |
 | 11. HNSW | 2 | | | | |
 | 12. Watch | 1 | | | | |
-| **TOTAL** | **48** | | | | |
+| **TOTAL** | **52** | | | | |
 
 ## Critical Failures (blocks release)
 - [ ] ...
