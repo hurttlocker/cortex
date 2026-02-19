@@ -56,12 +56,13 @@ func (s *SQLiteStore) GetMemory(ctx context.Context, id int64) (*Memory, error) 
 	m := &Memory{}
 	var deletedAt sql.NullTime
 	var metadataStr sql.NullString
+	var memoryClass sql.NullString
 
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, content, source_file, source_line, source_section, content_hash, project, memory_class, metadata, imported_at, updated_at, deleted_at
 		 FROM memories WHERE id = ?`, id,
 	).Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine, &m.SourceSection,
-		&m.ContentHash, &m.Project, &m.MemoryClass, &metadataStr, &m.ImportedAt, &m.UpdatedAt, &deletedAt)
+		&m.ContentHash, &m.Project, &memoryClass, &metadataStr, &m.ImportedAt, &m.UpdatedAt, &deletedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -70,6 +71,7 @@ func (s *SQLiteStore) GetMemory(ctx context.Context, id int64) (*Memory, error) 
 		return nil, fmt.Errorf("getting memory %d: %w", id, err)
 	}
 
+	m.MemoryClass = memoryClass.String
 	m.Metadata = unmarshalMetadata(metadataStr)
 
 	if deletedAt.Valid {
@@ -152,10 +154,12 @@ func (s *SQLiteStore) ListMemories(ctx context.Context, opts ListOpts) ([]*Memor
 	for rows.Next() {
 		m := &Memory{}
 		var metadataStr sql.NullString
+		var memClass sql.NullString
 		if err := rows.Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine,
-			&m.SourceSection, &m.ContentHash, &m.Project, &m.MemoryClass, &metadataStr, &m.ImportedAt, &m.UpdatedAt); err != nil {
+			&m.SourceSection, &m.ContentHash, &m.Project, &memClass, &metadataStr, &m.ImportedAt, &m.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning memory row: %w", err)
 		}
+		m.MemoryClass = memClass.String
 		m.Metadata = unmarshalMetadata(metadataStr)
 		memories = append(memories, m)
 	}
@@ -287,11 +291,12 @@ func (s *SQLiteStore) insertBatch(ctx context.Context, memories []*Memory) ([]in
 // FindByHash looks up a memory by its content hash for deduplication.
 func (s *SQLiteStore) FindByHash(ctx context.Context, hash string) (*Memory, error) {
 	m := &Memory{}
+	var memClass sql.NullString
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, content, source_file, source_line, source_section, content_hash, project, memory_class, imported_at, updated_at
 		 FROM memories WHERE content_hash = ? AND deleted_at IS NULL`, hash,
 	).Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine, &m.SourceSection,
-		&m.ContentHash, &m.Project, &m.MemoryClass, &m.ImportedAt, &m.UpdatedAt)
+		&m.ContentHash, &m.Project, &memClass, &m.ImportedAt, &m.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -299,6 +304,7 @@ func (s *SQLiteStore) FindByHash(ctx context.Context, hash string) (*Memory, err
 	if err != nil {
 		return nil, fmt.Errorf("finding memory by hash: %w", err)
 	}
+	m.MemoryClass = memClass.String
 	return m, nil
 }
 

@@ -85,13 +85,15 @@ func (s *SQLiteStore) SearchEmbeddingWithProject(ctx context.Context, query []fl
 		var blob []byte
 		var memID int64
 		var metadataStr sql.NullString
+		var memClass sql.NullString
 		m := &Memory{}
 
 		if err := rows.Scan(&memID, &blob, &m.ID, &m.Content, &m.SourceFile,
-			&m.SourceLine, &m.SourceSection, &m.ContentHash, &m.Project, &m.MemoryClass,
+			&m.SourceLine, &m.SourceSection, &m.ContentHash, &m.Project, &memClass,
 			&metadataStr, &m.ImportedAt, &m.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning embedding row: %w", err)
 		}
+		m.MemoryClass = memClass.String
 		m.Metadata = unmarshalMetadata(metadataStr)
 
 		vec := bytesToFloat32(blob)
@@ -255,10 +257,12 @@ func (s *SQLiteStore) GetMemoriesByIDs(ctx context.Context, ids []int64) ([]*Mem
 	for rows.Next() {
 		m := &Memory{}
 		var metadataStr sql.NullString
+		var memClass sql.NullString
 		if err := rows.Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine,
-			&m.SourceSection, &m.ContentHash, &m.Project, &m.MemoryClass, &metadataStr, &m.ImportedAt, &m.UpdatedAt); err != nil {
+			&m.SourceSection, &m.ContentHash, &m.Project, &memClass, &metadataStr, &m.ImportedAt, &m.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning memory row: %w", err)
 		}
+		m.MemoryClass = memClass.String
 		m.Metadata = unmarshalMetadata(metadataStr)
 		memories = append(memories, m)
 	}
