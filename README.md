@@ -711,47 +711,43 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 ## 🗺️ Roadmap
 
 ### ✅ Phase 1 — Foundation *(Complete)*
-**All 7 PRDs delivered** (16,000+ lines of code, 7,500+ lines of tests, 300+ test functions):
-- **Storage** (PRD-001): SQLite + FTS5 foundation
-- **Import** (PRD-002): Multi-format ingestion (Markdown, JSON, YAML, CSV, plain text) with quality filters
-- **Extraction** (PRD-003): Rule-based fact extraction with subject inference from section headers + filenames; optional LLM-assist
-- **Search** (PRD-004): Dual search engine (BM25 + semantic) with Weighted Score Fusion hybrid
-- **CLI** (PRD-005): Full command-line interface with import/search/stats/export/cleanup
-- **Observability** (PRD-006): Memory stats, stale detection, conflict identification
-- **LLM-assist** (PRD-007): Optional LLM integration for enhanced extraction
-- **Data integrity**: FTS ghost cleanup on soft-delete, import garbage filtering, `cortex cleanup` command
+Core memory platform is shipped and stable:
+- SQLite + FTS5 storage, multi-format import, extraction, hybrid retrieval
+- CLI + MCP server + observability (stats/stale/conflicts)
+- Data hygiene and recovery commands (`cleanup`, `reimport`, `embed`, `index`)
 
-### 🚧 Phase 2 — Distribution & Intelligence *(In Progress)*
-- ✅ **MCP Server**: Model Context Protocol server — plug Cortex into Claude Code, Claude Desktop, Cursor, OpenClaw, or any MCP-compatible client ([#22](https://github.com/hurttlocker/cortex/issues/22))
-- ✅ **Goreleaser CI**: Automated cross-platform binary builds on every tag ([#23](https://github.com/hurttlocker/cortex/issues/23))
-- ✅ **Confidence Decay Activated**: Ebbinghaus curve is now operational — search results weighted by effective confidence, facts auto-reinforced on recall, `cortex reinforce` command for manual reinforcement ([#24](https://github.com/hurttlocker/cortex/issues/24))
-- ✅ **`cortex reimport --embed`**: One command to wipe and rebuild entire knowledge base with optional embeddings ([#25](https://github.com/hurttlocker/cortex/issues/25))
-- ✅ **Project Tagging**: Auto-tag memories by project using path-based and content-keyword rules, search scoped to project ([#29](https://github.com/hurttlocker/cortex/issues/29))
-- ✅ **Recursive Reasoning (RLM)**: LLM reasoning layer with iterative search loop inspired by [Recursive Language Models](https://arxiv.org/abs/2512.24601). 5 built-in presets, smart model routing, confidence-aware prompting, `cortex bench` for model comparison ([#31](https://github.com/hurttlocker/cortex/issues/31))
-- ✅ **Metadata Capture**: Session context (agent, channel, model, tokens) automatically captured with every memory — enables "who said what, when" queries ([#30](https://github.com/hurttlocker/cortex/issues/30))
-- ✅ **Memory Reliability Wave (#33–#37)**: embedding freshness, class-aware retrieval, capture hygiene, superseded fact model, and retrieval explainability shipped as a coordinated rollout ([#38](https://github.com/hurttlocker/cortex/issues/38))
-- ✅ **Conflict Resolution**: 4 strategies (last-write-wins, highest-confidence, newest, manual) with dry-run, Ebbinghaus-aware scoring, O(N) detection rewrite ([#14](https://github.com/hurttlocker/cortex/issues/14))
-- ✅ **Context-Aware Search**: Multi-column FTS5 (content + source_file + source_section) and context-enriched embeddings — BM25 and semantic search now match section headers and filenames, not just chunk body ([#26](https://github.com/hurttlocker/cortex/issues/26))
-- **Web Dashboard**: Browser-based memory exploration and management
-- **Additional Importers**: PDF, DOCX, HTML support
+### ✅ Phase 2 — Intelligence *(Complete)*
+- Recursive reasoning (`cortex reason --recursive`) and model benchmarking
+- Metadata/project-aware capture and retrieval
+- Conflict detection + resolution workflows
+- Context-aware search (multi-column FTS + context-enriched embeddings)
+- ANN/HNSW indexing path shipped (issue #18 closed)
 
-### 🔮 Phase 3 — Advanced Features
-- **Memory Lenses**: Context-aware memory filtering and boosting
-- **Differential Memory**: Version control for memory (diff, log, snapshot, restore)
-- **ANN Index**: Replace O(N) brute-force vector search with HNSW for 10K+ scale (#18)
-- **Plugin Ecosystem**: Custom importers and extractors
+### ✅ Phase 3 — Reliability & Release Hardening *(Complete for v0.3.4)*
+- External audit hardening wave delivered and promoted to stable `v0.3.4`
+- RC + delta audit process codified with go/no-go docs
+- Release artifact verification and reproducible smoke paths
 
-### 🌟 Phase 4 — Protocol & Community
-- **Cortex Memory Protocol (CMP)**: Standardized agent-memory interface
-- **Multi-agent Memory**: Scoped memory sharing between agents (#14)
-- **Graph Memory Layer**: Relationship-aware memory architecture
-- **HN / Reddit Launch**: Community launch once Phase 2 MCP server is ready
+### 🚀 Phase 4 — Ops Maturity *(Active, v0.3.5-dev lanes)*
+Shipped on `main`:
+- **Lane 1:** `cortex optimize` maintenance command
+- **Lane 2:** `scripts/slo_snapshot.sh` report artifacts (JSON/markdown)
+- **Lane 3:** CI guard for go/no-go doc/status drift (`scripts/ci_release_guard.sh`)
+- **Lane 4:** tag-release checklist enforcement before publish (`scripts/release_checklist.sh`)
+- **Lane 5:** scheduled SLO canary workflow with artifact uploads
+- **Lane 6:** thresholded canary warn/fail bands (`PASS|WARN|FAIL`)
 
-### Current Open Issues
-1. **O(N) brute-force semantic search**: Loads all embeddings into RAM — needs ANN index at scale ([#18](https://github.com/hurttlocker/cortex/issues/18))
-2. ~~**No multi-agent conflict resolution**~~: ✅ Shipped in v0.1.8 — 4 resolution strategies, Ebbinghaus decay, O(N) detection ([#14](https://github.com/hurttlocker/cortex/issues/14))
+### 🔭 Phase 5 — Next Priorities
+- SLO trend comparison across canary history (relative regression detection)
+- Cost/latency budget policy overlays for canary and release checks
+- Dashboard-grade visibility for release gates + canary trend history
 
-See [docs/RISKS.md](docs/RISKS.md) for detailed risk analysis and [docs/prd/](docs/prd/) for complete PRD specifications.
+### Current State
+- Latest stable release: **`v0.3.4`**
+- Current source fallback version: **`0.3.5-dev`**
+- Open issues: **none at time of last roadmap refresh**
+
+See [docs/CORTEX_DEEP_DIVE.md](docs/CORTEX_DEEP_DIVE.md) for the full strategic deep dive and [docs/prd/](docs/prd/) for detailed implementation specs.
 
 ---
 
