@@ -29,11 +29,23 @@ Data sources currently used:
 - `cortex stats --json`
 - `~/.cortex/reason-telemetry.jsonl`
 
-## Local preview
+## Local preview (static)
 ```bash
 python3 -m http.server 8787 --directory docs/visualizer
 # open http://127.0.0.1:8787/prototype-v1.html
 ```
+
+## Local preview (API + static, recommended)
+```bash
+python3 scripts/visualizer_api.py --bootstrap --port 8787
+# open http://127.0.0.1:8787/prototype-v1.html
+```
+
+API routes:
+- `GET /api/v1/canonical`
+- `GET /api/v1/obsidian`
+- `GET /api/v1/subgraph?focus=<node_id>&max_hops=2&max_nodes=200`
+- `GET /api/v1/health`
 
 ## Notes
 - Black/white baseline for shadcn alignment.

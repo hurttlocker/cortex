@@ -206,8 +206,15 @@ Contract notes:
 - Breaking changes: bump `schema_version` (v2, v3...)
 - Keep one previous version adapter for smooth UI migration
 
+## Current Producer Path (prototype)
+- Exporter: `scripts/visualizer_export.py`
+- API shim: `scripts/visualizer_api.py`
+  - `/api/v1/canonical` → canonical read-model
+  - `/api/v1/obsidian` → derived Obsidian adapter
+  - `/api/v1/subgraph` → bounded neighborhood extraction from canonical graph
+
 ## Next Steps
-1. Define exact producers for each contract (command adapter vs endpoint)
-2. Add golden fixtures under `tests/fixtures/visualizer/`
+1. Migrate producer path from script shim to first-class Cortex read-model endpoint/command
+2. Add richer evidence links and source line anchors for graph nodes/edges
 3. Bind #101-#104 UI modules to these contracts
 4. Keep Obsidian adapter derived-only (never as source-of-truth)
