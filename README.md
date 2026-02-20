@@ -723,13 +723,13 @@ Core memory platform is shipped and stable:
 - Context-aware search (multi-column FTS + context-enriched embeddings)
 - ANN/HNSW indexing path shipped (issue #18 closed)
 
-### ✅ Phase 3 — Reliability & Release Hardening *(Complete for v0.3.4)*
-- External audit hardening wave delivered and promoted to stable `v0.3.4`
+### ✅ Phase 3 — Reliability & Release Hardening *(Complete for v0.3.5)*
+- External audit hardening wave delivered and promoted to stable `v0.3.5`
 - RC + delta audit process codified with go/no-go docs
 - Release artifact verification and reproducible smoke paths
 
-### 🚀 Phase 4 — Ops Maturity *(Complete for v0.3.5-rc2 prep)*
-Shipped on `main`:
+### 🚀 Phase 4 — Ops Maturity *(Complete and promoted in v0.3.5 stable)*
+Shipped on `main` and now in stable release path:
 - **Lane 1:** `cortex optimize` maintenance command
 - **Lane 2:** `scripts/slo_snapshot.sh` report artifacts (JSON/markdown)
 - **Lane 3:** CI guard for go/no-go doc/status drift (`scripts/ci_release_guard.sh`)
@@ -738,18 +738,18 @@ Shipped on `main`:
 - **Lane 6:** thresholded canary warn/fail bands (`PASS|WARN|FAIL`)
 - **Lane 7:** deterministic runtime connectivity smoke gate (`scripts/connectivity_smoke.sh`)
 - **Lane 8:** one-command external audit preflight artifact (`scripts/audit_preflight.sh`)
-- **Lane 9:** v0.3.5-rc2 audit packet docs (`docs/audits/v0.3.5-rc2-*.md`, `docs/releases/v0.3.5-rc2.md`)
+- **Lane 9:** hostile-audit packet + immutable-target handoff docs (`docs/audits/v0.3.5-rc2-*.md`, `docs/releases/v0.3.5-rc2.md`)
 
 ### 🔭 Phase 5 — Next Priorities
-- Run external audit on immutable target `v0.3.5-rc2` and close findings
-- Codex real-work dogfooding loop (collect evidence, tune thresholds/prompting only when data justifies)
 - SLO trend comparison across canary history (relative regression detection)
+- Codex real-work dogfooding loop (collect evidence, tune thresholds/prompting only when data justifies)
 - Dashboard-grade visibility for release gates + canary trend history
+- UX polish for operator-facing audit/release evidence surfaces
 
 ### Current State
-- Latest stable release: **`v0.3.4`**
+- Latest stable release: **`v0.3.5`**
+- External hostile audit on immutable RC target (`v0.3.5-rc2`) verdict: **GO**
 - Current source fallback version: **`0.3.5-dev`**
-- Audit prep docs ready for next RC: **`v0.3.5-rc2`**
 - Open issues: **none**
 
 See [docs/CORTEX_DEEP_DIVE.md](docs/CORTEX_DEEP_DIVE.md) for the full strategic deep dive and [docs/prd/](docs/prd/) for detailed implementation specs.
@@ -768,7 +768,7 @@ go build ./cmd/cortex/
 go test ./...
 scripts/connectivity_smoke.sh   # end-to-end runtime gate (import→extract→search→optimize)
 scripts/audit_break_harness.sh  # adversarial sanity checks (missing paths + lock/concurrency regressions)
-scripts/audit_preflight.sh --tag v0.3.5-rc2   # generate audit-ready markdown + logs
+scripts/audit_preflight.sh --tag v0.3.5       # generate audit-ready markdown + logs
 ```
 
 - 📖 Read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
