@@ -21,6 +21,7 @@ Review:
 ```bash
 cortex stats --json
 cortex stale 7
+cortex optimize --check-only
 ```
 Confirm whether growth is expected (imports, captures) vs noise churn.
 
@@ -49,23 +50,19 @@ Run during low-traffic windows.
 cp ~/.cortex/cortex.db ~/.cortex/cortex.db.backup.$(date +%Y%m%d%H%M%S)
 ```
 
-2) Run integrity check:
+2) Run built-in maintenance (full path):
 ```bash
-sqlite3 ~/.cortex/cortex.db "PRAGMA integrity_check;"
-```
-Expected output: `ok`
-
-3) Reclaim space:
-```bash
-sqlite3 ~/.cortex/cortex.db "VACUUM;"
+cortex optimize
 ```
 
-4) Refresh planner stats:
+3) Optional targeted modes:
 ```bash
-sqlite3 ~/.cortex/cortex.db "ANALYZE;"
+cortex optimize --check-only
+cortex optimize --vacuum-only
+cortex optimize --analyze-only
 ```
 
-5) Verify post-state:
+4) Verify post-state:
 ```bash
 cortex stats --json
 ```
@@ -97,6 +94,29 @@ Track these checkpoints during growth reviews:
 
 If checkpoints regress materially, file/track under #64 and attach command output + DB size context.
 
+## Automated SLO Snapshot Report
+
+Use the helper script to capture checkpoint timing + status in one artifact:
+
+```bash
+scripts/slo_snapshot.sh --output /tmp/slo.json --markdown /tmp/slo.md
+```
+
+Optional production-style run (hybrid search):
+
+```bash
+scripts/slo_snapshot.sh \
+  --db ~/.cortex/cortex.db \
+  --query "deployment policy" \
+  --mode hybrid \
+  --embed ollama/nomic-embed-text \
+  --output /tmp/slo-hybrid.json \
+  --markdown /tmp/slo-hybrid.md
+```
+
+The script exits non-zero if any checkpoint fails.
+
 ## Related Tracking
 - #64 — DB growth guardrails follow-through
 - #74 — post-v0.3.4 reliability wave
+- #82 — SLO snapshot report tooling
