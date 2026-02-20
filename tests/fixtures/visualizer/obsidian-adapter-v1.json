@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "generated_at": "2026-02-20T16:06:12Z",
+  "generated_at": "2026-02-20T16:46:35Z",
   "source_snapshot": "canonical-v1",
   "graph": {
     "focus": "fact_canary_regression",
@@ -9,52 +9,67 @@
       "max_nodes": 200,
       "default_radius": 1
     },
+    "vault_dir": "/Users/marquisehurtt/cortex/docs/visualizer/data/obsidian-vault",
+    "index_path": "/Users/marquisehurtt/cortex/docs/visualizer/data/obsidian-vault/index.md",
+    "obsidian_index_uri": "obsidian://open?path=/Users/marquisehurtt/cortex/docs/visualizer/data/obsidian-vault/index.md",
     "nodes": [
       {
         "id": "fact_canary_regression",
         "title": "canary regression threshold exceeded",
         "type": "fact",
         "confidence": 0.91,
-        "timestamp": "2026-02-20T16:06:12Z",
+        "timestamp": "2026-02-20T16:46:35Z",
         "source_ref": "docs/ops-db-growth-guardrails.md",
         "links": [
           "artifact_canary_card",
           "artifact_release_summary",
           "src_ops_guardrails"
-        ]
+        ],
+        "note_file": "canary-regression-threshold-exceeded.md",
+        "note_path": "/Users/marquisehurtt/cortex/docs/visualizer/data/obsidian-vault/canary-regression-threshold-exceeded.md",
+        "obsidian_uri": "obsidian://open?path=/Users/marquisehurtt/cortex/docs/visualizer/data/obsidian-vault/canary-regression-threshold-exceeded.md"
       },
       {
         "id": "src_ops_guardrails",
         "title": "ops-db-growth-guardrails.md",
         "type": "source",
         "confidence": 0.88,
-        "timestamp": "2026-02-20T16:06:12Z",
+        "timestamp": "2026-02-20T16:46:35Z",
         "source_ref": "docs/ops-db-growth-guardrails.md",
         "links": [
           "fact_canary_regression"
-        ]
+        ],
+        "note_file": "ops-db-growth-guardrails-md.md",
+        "note_path": "/Users/marquisehurtt/cortex/docs/visualizer/data/obsidian-vault/ops-db-growth-guardrails-md.md",
+        "obsidian_uri": "obsidian://open?path=/Users/marquisehurtt/cortex/docs/visualizer/data/obsidian-vault/ops-db-growth-guardrails-md.md"
       },
       {
         "id": "artifact_release_summary",
         "title": "release summary",
         "type": "artifact",
         "confidence": 0.84,
-        "timestamp": "2026-02-20T16:06:12Z",
+        "timestamp": "2026-02-20T16:46:35Z",
         "source_ref": "docs/releases/v0.3.4.md",
         "links": [
           "fact_canary_regression"
-        ]
+        ],
+        "note_file": "release-summary.md",
+        "note_path": "/Users/marquisehurtt/cortex/docs/visualizer/data/obsidian-vault/release-summary.md",
+        "obsidian_uri": "obsidian://open?path=/Users/marquisehurtt/cortex/docs/visualizer/data/obsidian-vault/release-summary.md"
       },
       {
         "id": "artifact_canary_card",
         "title": "canary status card",
         "type": "artifact",
         "confidence": 0.81,
-        "timestamp": "2026-02-20T16:06:12Z",
+        "timestamp": "2026-02-20T16:46:35Z",
         "source_ref": "docs/CORTEX_DEEP_DIVE.md",
         "links": [
           "fact_canary_regression"
-        ]
+        ],
+        "note_file": "canary-status-card.md",
+        "note_path": "/Users/marquisehurtt/cortex/docs/visualizer/data/obsidian-vault/canary-status-card.md",
+        "obsidian_uri": "obsidian://open?path=/Users/marquisehurtt/cortex/docs/visualizer/data/obsidian-vault/canary-status-card.md"
       }
     ],
     "edges": [
@@ -64,7 +79,7 @@
         "to": "src_ops_guardrails",
         "kind": "sourced_from",
         "weight": 1.0,
-        "timestamp": "2026-02-20T16:06:12Z",
+        "timestamp": "2026-02-20T16:46:35Z",
         "source_ref": "docs/ops-db-growth-guardrails.md"
       },
       {
@@ -73,7 +88,7 @@
         "to": "artifact_release_summary",
         "kind": "influenced",
         "weight": 0.78,
-        "timestamp": "2026-02-20T16:06:12Z",
+        "timestamp": "2026-02-20T16:46:35Z",
         "source_ref": "docs/releases/v0.3.4.md"
       },
       {
@@ -82,7 +97,7 @@
         "to": "artifact_canary_card",
         "kind": "influenced",
         "weight": 0.74,
-        "timestamp": "2026-02-20T16:06:12Z",
+        "timestamp": "2026-02-20T16:46:35Z",
         "source_ref": "docs/CORTEX_DEEP_DIVE.md"
       }
     ]

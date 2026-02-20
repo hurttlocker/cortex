@@ -15,6 +15,7 @@ import os
 import pathlib
 import re
 import subprocess
+import urllib.parse
 from datetime import datetime, timezone
 
 
@@ -324,7 +325,7 @@ def build_snapshot(stats: dict, telemetry: list[dict]) -> dict:
     return snapshot
 
 
-def build_obsidian_graph(snapshot: dict) -> dict:
+def build_obsidian_graph(snapshot: dict, vault_dir: pathlib.Path | None = None) -> dict:
     graph = snapshot.get("data", {}).get("graph", {})
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])
@@ -337,8 +338,19 @@ def build_obsidian_graph(snapshot: dict) -> dict:
         if b in links_by_node and a:
             links_by_node[b].append(a)
 
+    file_by_id: dict[str, str] = {}
+    for n in nodes:
+        file_by_id[n["id"]] = f"{slugify(n.get('label') or n.get('id'))}.md"
+
+    vault_resolved = str(vault_dir.resolve()) if vault_dir else ""
+    index_path = str((vault_dir / "index.md").resolve()) if vault_dir else ""
+    index_uri = f"obsidian://open?path={urllib.parse.quote(index_path)}" if index_path else ""
+
     obs_nodes = []
     for n in nodes:
+        note_file = file_by_id.get(n.get("id"), "")
+        note_path = str((vault_dir / note_file).resolve()) if vault_dir and note_file else ""
+        obs_uri = f"obsidian://open?path={urllib.parse.quote(note_path)}" if note_path else ""
         obs_nodes.append(
             {
                 "id": n.get("id"),
@@ -348,6 +360,9 @@ def build_obsidian_graph(snapshot: dict) -> dict:
                 "timestamp": n.get("timestamp"),
                 "source_ref": n.get("source_ref"),
                 "links": sorted(set(links_by_node.get(n.get("id"), []))),
+                "note_file": note_file,
+                "note_path": note_path,
+                "obsidian_uri": obs_uri,
             }
         )
 
@@ -358,6 +373,9 @@ def build_obsidian_graph(snapshot: dict) -> dict:
         "graph": {
             "focus": graph.get("focus"),
             "bounds": graph.get("bounds", {}),
+            "vault_dir": vault_resolved,
+            "index_path": index_path,
+            "obsidian_index_uri": index_uri,
             "nodes": obs_nodes,
             "edges": edges,
         },
@@ -439,7 +457,9 @@ def main() -> None:
     stats = run_stats(cortex_bin)
     telemetry = parse_telemetry(pathlib.Path(args.telemetry))
     snapshot = build_snapshot(stats, telemetry)
-    obsidian_graph = build_obsidian_graph(snapshot)
+
+    vault_dir = pathlib.Path(args.obsidian_vault_dir).resolve() if args.obsidian_vault_dir else None
+    obsidian_graph = build_obsidian_graph(snapshot, vault_dir=vault_dir)
 
     out = pathlib.Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -449,8 +469,8 @@ def main() -> None:
     obs_out.parent.mkdir(parents=True, exist_ok=True)
     obs_out.write_text(json.dumps(obsidian_graph, indent=2), encoding="utf-8")
 
-    if args.obsidian_vault_dir:
-        export_obsidian_vault(obsidian_graph, pathlib.Path(args.obsidian_vault_dir))
+    if vault_dir:
+        export_obsidian_vault(obsidian_graph, vault_dir)
 
     print(f"wrote canonical snapshot: {out}")
     print(f"wrote obsidian adapter: {obs_out}")

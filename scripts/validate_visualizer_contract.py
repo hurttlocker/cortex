@@ -69,8 +69,25 @@ def validate_obsidian(path: pathlib.Path) -> None:
         require(data, k, "obsidian root")
 
     graph = data["graph"]
-    for k in ["focus", "bounds", "nodes", "edges"]:
+    for k in ["focus", "bounds", "nodes", "edges", "vault_dir", "index_path", "obsidian_index_uri"]:
         require(graph, k, "obsidian graph")
+
+    node_ids = set()
+    for idx, n in enumerate(graph.get("nodes", [])):
+        where = f"obsidian.graph.nodes[{idx}]"
+        for k in ["id", "title", "type", "timestamp", "source_ref", "links", "note_file", "note_path", "obsidian_uri"]:
+            require(n, k, where)
+        node_ids.add(n["id"])
+
+    for idx, e in enumerate(graph.get("edges", [])):
+        where = f"obsidian.graph.edges[{idx}]"
+        for k in ["id", "from", "to", "kind"]:
+            require(e, k, where)
+
+    for idx, n in enumerate(graph.get("nodes", [])):
+        for target in n.get("links", []):
+            if target not in node_ids:
+                fail(f"obsidian.graph.nodes[{idx}] link target missing node `{target}`")
 
     print(f"OK obsidian: {path}")
 
