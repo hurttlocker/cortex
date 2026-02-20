@@ -41,6 +41,12 @@ jobs:
             --db /tmp/canary.db \
             --query "deployment policy" \
             --mode keyword \
+            --warn-stats-ms 1500 \
+            --warn-search-ms 1500 \
+            --warn-conflicts-ms 2000 \
+            --fail-stats-ms 5000 \
+            --fail-search-ms 5000 \
+            --fail-conflicts-ms 7000 \
             --output /tmp/slo-canary.json \
             --markdown /tmp/slo-canary.md
 

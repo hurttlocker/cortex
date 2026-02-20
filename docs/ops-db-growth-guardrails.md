@@ -99,7 +99,10 @@ If checkpoints regress materially, file/track under #64 and attach command outpu
 Use the helper script to capture checkpoint timing + status in one artifact:
 
 ```bash
-scripts/slo_snapshot.sh --output /tmp/slo.json --markdown /tmp/slo.md
+scripts/slo_snapshot.sh \
+  --warn-stats-ms 3000 --warn-search-ms 5000 --warn-conflicts-ms 5000 \
+  --fail-stats-ms 7000 --fail-search-ms 10000 --fail-conflicts-ms 12000 \
+  --output /tmp/slo.json --markdown /tmp/slo.md
 ```
 
 Optional production-style run (hybrid search):
@@ -114,7 +117,7 @@ scripts/slo_snapshot.sh \
   --markdown /tmp/slo-hybrid.md
 ```
 
-The script exits non-zero if any checkpoint fails.
+The script emits `PASS`, `WARN`, or `FAIL` status in output artifacts and exits non-zero on command failures or fail-threshold breaches (unless `--warn-only-thresholds` is set).
 
 CI canary is also available via GitHub Actions workflow: `.github/workflows/slo-canary.yml`.
 
