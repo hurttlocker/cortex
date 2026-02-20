@@ -444,6 +444,8 @@ cortex reason "query" --recursive --preset weekly-dive  # → auto-selects deeps
 
 **Local models work great for scheduled/cron use** — even on CPU-only hardware, a 4B model can run recursive reasoning in 60-90s, perfect for nightly digests and audits. Users with GPUs (especially Apple Silicon with Metal) get interactive-speed local reasoning.
 
+For hardware-specific recommendations and benchmark workflow, see **[docs/LOCAL-LLM-PERFORMANCE.md](docs/LOCAL-LLM-PERFORMANCE.md)**.
+
 **Built-in reason telemetry (new):** every `cortex reason` run appends a JSONL event to `~/.cortex/reason-telemetry.jsonl` with mode (`one-shot` vs `recursive`), model/provider, tokens, durations, and estimated cost (when pricing is known). Disable with:
 
 ```bash
@@ -722,6 +724,7 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 - ✅ **Project Tagging**: Auto-tag memories by project using path-based and content-keyword rules, search scoped to project ([#29](https://github.com/hurttlocker/cortex/issues/29))
 - ✅ **Recursive Reasoning (RLM)**: LLM reasoning layer with iterative search loop inspired by [Recursive Language Models](https://arxiv.org/abs/2512.24601). 5 built-in presets, smart model routing, confidence-aware prompting, `cortex bench` for model comparison ([#31](https://github.com/hurttlocker/cortex/issues/31))
 - ✅ **Metadata Capture**: Session context (agent, channel, model, tokens) automatically captured with every memory — enables "who said what, when" queries ([#30](https://github.com/hurttlocker/cortex/issues/30))
+- ✅ **Memory Reliability Wave (#33–#37)**: embedding freshness, class-aware retrieval, capture hygiene, superseded fact model, and retrieval explainability shipped as a coordinated rollout ([#38](https://github.com/hurttlocker/cortex/issues/38))
 - ✅ **Conflict Resolution**: 4 strategies (last-write-wins, highest-confidence, newest, manual) with dry-run, Ebbinghaus-aware scoring, O(N) detection rewrite ([#14](https://github.com/hurttlocker/cortex/issues/14))
 - ✅ **Context-Aware Search**: Multi-column FTS5 (content + source_file + source_section) and context-enriched embeddings — BM25 and semantic search now match section headers and filenames, not just chunk body ([#26](https://github.com/hurttlocker/cortex/issues/26))
 - **Web Dashboard**: Browser-based memory exploration and management
