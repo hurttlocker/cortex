@@ -1,0 +1,58 @@
+name: SLO Canary
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily at 13:15 UTC
+    - cron: "15 13 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  slo-canary:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+
+      - name: Build cortex binary
+        run: go build -o /tmp/cortex ./cmd/cortex
+
+      - name: Seed canary DB fixture
+        run: |
+          cat > /tmp/canary-memory.md <<'EOF'
+          # Canary Fixture
+
+          Deployment policy: use staged rollout with strict rollback gates.
+          On-call owner: reliability.
+          EOF
+
+          /tmp/cortex --db /tmp/canary.db import /tmp/canary-memory.md
+
+      - name: Run SLO snapshot
+        run: |
+          scripts/slo_snapshot.sh \
+            --cortex-bin /tmp/cortex \
+            --db /tmp/canary.db \
+            --query "deployment policy" \
+            --mode keyword \
+            --output /tmp/slo-canary.json \
+            --markdown /tmp/slo-canary.md
+
+      - name: Add markdown summary to run
+        run: |
+          cat /tmp/slo-canary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload SLO artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: slo-canary-${{ github.run_id }}
+          path: |
+            /tmp/slo-canary.json
+            /tmp/slo-canary.md
+          retention-days: 30
