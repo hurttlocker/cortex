@@ -503,3 +503,29 @@ func TestAcquireEmbedRunLock_PreventsOverlap(t *testing.T) {
 		t.Fatalf("expected errEmbedLockHeld, got: %v", err)
 	}
 }
+
+func TestAcquireEmbedRunLock_ReclaimsMalformedPIDLock(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "embed.lock")
+	if err := os.WriteFile(lockPath, []byte("pid=not-a-number\nstarted_at=2026-01-01T00:00:00Z\n"), 0600); err != nil {
+		t.Fatalf("write malformed lock: %v", err)
+	}
+
+	lock, err := acquireEmbedRunLock(lockPath)
+	if err != nil {
+		t.Fatalf("expected malformed lock to be reclaimed, got: %v", err)
+	}
+	defer lock.Release()
+}
+
+func TestAcquireEmbedRunLock_ReclaimsZeroPIDLock(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "embed.lock")
+	if err := os.WriteFile(lockPath, []byte("pid=0\nstarted_at=2026-01-01T00:00:00Z\n"), 0600); err != nil {
+		t.Fatalf("write zero-pid lock: %v", err)
+	}
+
+	lock, err := acquireEmbedRunLock(lockPath)
+	if err != nil {
+		t.Fatalf("expected zero-pid lock to be reclaimed, got: %v", err)
+	}
+	defer lock.Release()
+}

@@ -2160,31 +2160,51 @@ func isStaleEmbedLock(path string, maxAge time.Duration) bool {
 	}
 	// Check if the owning PID is still alive (#52)
 	data, _ := os.ReadFile(path)
-	if pid := extractPIDFromLock(string(data)); pid > 0 {
-		proc, err := os.FindProcess(pid)
-		if err != nil {
-			return true // can't find process — stale
-		}
-		// On Unix, FindProcess always succeeds; send signal 0 to check liveness
-		if err := proc.Signal(syscall.Signal(0)); err != nil {
-			return true // process is dead — stale lock
-		}
+	pid, validPID := parseEmbedLockPID(string(data))
+	if !validPID {
+		fmt.Fprintf(os.Stderr, "warning: malformed embed lock %s; reclaiming stale lock\n", path)
+		return true
+	}
+	if !isProcessAlive(pid) {
+		return true // process is dead — stale lock
 	}
 	return false
 }
 
-// extractPIDFromLock parses "pid=12345" from lock file content.
-func extractPIDFromLock(content string) int {
+func parseEmbedLockPID(content string) (int, bool) {
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "pid=") {
-			var pid int
-			if _, err := fmt.Sscanf(line, "pid=%d", &pid); err == nil {
-				return pid
-			}
+		if !strings.HasPrefix(line, "pid=") {
+			continue
 		}
+		var pid int
+		if _, err := fmt.Sscanf(line, "pid=%d", &pid); err != nil {
+			return 0, false
+		}
+		if pid <= 0 {
+			return 0, false
+		}
+		return pid, true
 	}
-	return 0
+	return 0, false
+}
+
+// extractPIDFromLock parses "pid=12345" from lock file content.
+func extractPIDFromLock(content string) int {
+	pid, ok := parseEmbedLockPID(content)
+	if !ok {
+		return 0
+	}
+	return pid
+}
+
+func isProcessAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// On Unix, FindProcess always succeeds; send signal 0 to check liveness.
+	return proc.Signal(syscall.Signal(0)) == nil
 }
 
 func readEmbedLockOwner(path string) string {
