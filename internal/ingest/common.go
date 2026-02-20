@@ -71,6 +71,9 @@ type ImportOptions struct {
 	CaptureDedupeEnabled       bool
 	CaptureSimilarityThreshold float64
 	CaptureDedupeWindowSec     int
+	CaptureLowSignalEnabled    bool
+	CaptureMinChars            int
+	CaptureLowSignalPatterns   []string
 }
 
 // Normalize applies sensible defaults for capture hygiene settings.
@@ -80,6 +83,15 @@ func (o *ImportOptions) Normalize() {
 	}
 	if o.CaptureDedupeWindowSec <= 0 {
 		o.CaptureDedupeWindowSec = 300 // 5 minutes
+	}
+	if o.CaptureMinChars <= 0 {
+		o.CaptureMinChars = 20
+	}
+	if len(o.CaptureLowSignalPatterns) == 0 {
+		o.CaptureLowSignalPatterns = []string{
+			"ok", "okay", "yes", "yep", "got it", "sounds good",
+			"thanks", "thank you", "heartbeat_ok", "fire the test",
+		}
 	}
 }
 

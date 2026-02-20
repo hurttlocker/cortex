@@ -24,6 +24,8 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 
+import { cosineSimilarity, dedupeRecallResults, isLowSignalMessage } from "./hygiene.ts";
+
 const execFileAsync = promisify(execFile);
 
 // ============================================================================
@@ -38,7 +40,13 @@ interface CaptureHygieneConfig {
   dedupeWindowSec: number;
   coalesceWindowSec: number;
   shortCaptureMaxChars: number;
+  minCaptureChars: number;
   lowSignalPatterns: string[];
+}
+
+interface RecallDedupeConfig {
+  enabled: boolean;
+  similarityThreshold: number;
 }
 
 interface CortexConfig {
@@ -53,6 +61,7 @@ interface CortexConfig {
   captureMaxChars: number;
   extractFacts: boolean;
   capture: CaptureHygieneConfig;
+  recallDedupe: RecallDedupeConfig;
 }
 
 interface CortexSearchResult {
@@ -119,8 +128,20 @@ function parseConfig(raw: unknown): CortexConfig {
   const cfg = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const capture = (cfg.capture && typeof cfg.capture === "object" ? cfg.capture : {}) as Record<string, unknown>;
   const dedupe = (capture.dedupe && typeof capture.dedupe === "object" ? capture.dedupe : {}) as Record<string, unknown>;
+  const recallDedupe = (cfg.recallDedupe && typeof cfg.recallDedupe === "object" ? cfg.recallDedupe : {}) as Record<string, unknown>;
 
-  const lowSignalDefaults = ["ok", "okay", "yes", "got it", "sounds good", "thanks", "thank you"];
+  const lowSignalDefaults = [
+    "ok",
+    "okay",
+    "yes",
+    "yep",
+    "got it",
+    "sounds good",
+    "thanks",
+    "thank you",
+    "heartbeat_ok",
+    "fire the test",
+  ];
   const lowSignalPatterns = Array.isArray(capture.lowSignalPatterns)
     ? capture.lowSignalPatterns.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
     : lowSignalDefaults;
@@ -156,7 +177,18 @@ function parseConfig(raw: unknown): CortexConfig {
         typeof capture.shortCaptureMaxChars === "number" && capture.shortCaptureMaxChars > 0
           ? capture.shortCaptureMaxChars
           : 220,
+      minCaptureChars:
+        typeof capture.minCaptureChars === "number" && capture.minCaptureChars > 0
+          ? capture.minCaptureChars
+          : 20,
       lowSignalPatterns,
+    },
+    recallDedupe: {
+      enabled: recallDedupe.enabled !== false,
+      similarityThreshold:
+        typeof recallDedupe.similarityThreshold === "number" && recallDedupe.similarityThreshold > 0 && recallDedupe.similarityThreshold <= 1
+          ? recallDedupe.similarityThreshold
+          : 0.98,
     },
   };
 }
@@ -217,7 +249,14 @@ class CortexCLI {
     source: string,
     extract = true,
     metadata?: CortexMetadata,
-    hygiene?: { dedupeEnabled?: boolean; similarityThreshold?: number; dedupeWindowSec?: number },
+    hygiene?: {
+      dedupeEnabled?: boolean;
+      similarityThreshold?: number;
+      dedupeWindowSec?: number;
+      lowSignalEnabled?: boolean;
+      minCaptureChars?: number;
+      lowSignalPatterns?: string[];
+    },
   ): Promise<void> {
     // Write text to a temp file, import it, then clean up
     const tmpDir = await mkdtemp(join(tmpdir(), "cortex-capture-"));
@@ -236,6 +275,15 @@ class CortexCLI {
         }
         if (typeof hygiene.dedupeWindowSec === "number") {
           args.push("--dedupe-window-sec", String(hygiene.dedupeWindowSec));
+        }
+      }
+      if (hygiene?.lowSignalEnabled) {
+        args.push("--capture-low-signal");
+        if (typeof hygiene.minCaptureChars === "number") {
+          args.push("--capture-min-chars", String(hygiene.minCaptureChars));
+        }
+        for (const pattern of hygiene.lowSignalPatterns ?? []) {
+          args.push("--capture-low-signal-pattern", pattern);
         }
       }
 
@@ -332,61 +380,6 @@ function formatCapturedExchange(userMsg: string, assistantMsg: string, channel?:
   return parts.join("\n");
 }
 
-function normalizeCaptureText(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function wordFreq(text: string): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const token of normalizeCaptureText(text).split(" ")) {
-    if (!token || token.length < 2) continue;
-    out.set(token, (out.get(token) ?? 0) + 1);
-  }
-  return out;
-}
-
-function cosineSimilarity(a: string, b: string): number {
-  const av = wordFreq(a);
-  const bv = wordFreq(b);
-  if (av.size === 0 || bv.size === 0) return 0;
-
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-
-  for (const [token, v] of av.entries()) {
-    dot += v * (bv.get(token) ?? 0);
-    normA += v * v;
-  }
-  for (const v of bv.values()) {
-    normB += v * v;
-  }
-
-  if (normA === 0 || normB === 0) return 0;
-  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-function hasImportantTag(text: string): boolean {
-  return /(#[ ]?important|\[important\]|important:|!important)/i.test(text);
-}
-
-function isLowSignalMessage(text: string, patterns: string[]): boolean {
-  if (!text || hasImportantTag(text)) return false;
-  const normalized = normalizeCaptureText(text);
-  if (!normalized) return true;
-  if (normalized.split(" ").length > 6) return false;
-
-  const normalizedPatterns = patterns.map((p) => normalizeCaptureText(p)).filter(Boolean);
-  if (normalizedPatterns.includes(normalized)) return true;
-
-  // Common one-liners and acknowledgement phrases
-  return /^(ok|okay|yes|yep|got it|sounds good|sure|thanks|thank you|cool)$/i.test(normalized);
-}
-
 interface CaptureRecord {
   text: string;
   canonical: string;
@@ -418,7 +411,7 @@ class CaptureHygiene {
 
   async ingest(record: CaptureRecord): Promise<HygieneResult> {
     // Drop low-signal trivial acknowledgements unless explicitly tagged important.
-    if (isLowSignalMessage(record.canonical, this.captureCfg.lowSignalPatterns)) {
+    if (isLowSignalMessage(record.canonical, this.captureCfg.lowSignalPatterns, this.captureCfg.minCaptureChars)) {
       return { status: "skipped_low_signal" };
     }
 
@@ -495,6 +488,9 @@ class CaptureHygiene {
       dedupeEnabled: this.captureCfg.dedupe.enabled,
       similarityThreshold: this.captureCfg.similarityThreshold,
       dedupeWindowSec: this.captureCfg.dedupeWindowSec,
+      lowSignalEnabled: true,
+      minCaptureChars: this.captureCfg.minCaptureChars,
+      lowSignalPatterns: this.captureCfg.lowSignalPatterns,
     });
 
     this.recent.push({ canonical: record.canonical, ts: Date.now() });
@@ -738,6 +734,9 @@ const cortexPlugin = {
             console.log(`Capture similarity threshold: ${cfg.capture.similarityThreshold}`);
             console.log(`Capture dedupe window: ${cfg.capture.dedupeWindowSec}s`);
             console.log(`Capture coalesce window: ${cfg.capture.coalesceWindowSec}s`);
+            console.log(`Capture min chars: ${cfg.capture.minCaptureChars}`);
+            console.log(`Recall dedupe: ${cfg.recallDedupe.enabled}`);
+            console.log(`Recall dedupe similarity threshold: ${cfg.recallDedupe.similarityThreshold}`);
 
             // Verify binary exists
             try {
@@ -763,7 +762,14 @@ const cortexPlugin = {
         if (!event.prompt || event.prompt.length < 10) return;
 
         try {
-          const results = await cli.search(event.prompt, cfg.recallLimit, cfg.searchMode, cfg.minScore);
+          const fetchLimit = Math.max(cfg.recallLimit, cfg.recallLimit * 3);
+          const rawResults = await cli.search(event.prompt, fetchLimit, cfg.searchMode, cfg.minScore);
+          if (rawResults.length === 0) return;
+
+          const deduped = cfg.recallDedupe.enabled
+            ? dedupeRecallResults(rawResults, cfg.recallDedupe.similarityThreshold)
+            : rawResults;
+          const results = deduped.slice(0, cfg.recallLimit);
           if (results.length === 0) return;
 
           api.logger.info(`cortex: injecting ${results.length} memories (scores: ${results.map((r) => r.score.toFixed(2)).join(", ")})`);
@@ -788,6 +794,7 @@ const cortexPlugin = {
         try {
           // Extract user and assistant messages from this turn
           let userText = "";
+          let userTextRaw = "";
           let assistantText = "";
           let messageCount = 0;
 
@@ -807,9 +814,14 @@ const cortexPlugin = {
                 .join("\n");
             }
 
-            if (role === "user" && shouldCapture(text, cfg.captureMaxChars)) {
-              userText = text;
-              messageCount++;
+            if (role === "user") {
+              if (text.trim().length > 0) {
+                userTextRaw = text;
+              }
+              if (shouldCapture(text, cfg.captureMaxChars)) {
+                userText = text;
+                messageCount++;
+              }
             } else if (role === "assistant" && text.length > 20) {
               assistantText = text;
               messageCount++;
@@ -859,7 +871,7 @@ const cortexPlugin = {
 
           metadata.timestamp_end = new Date().toISOString();
 
-          const safeUser = userText || "(no user message)";
+          const safeUser = userText || userTextRaw || "(no user message)";
           const safeAssistant = assistantText || "(no assistant message)";
           const exchange = formatCapturedExchange(safeUser, safeAssistant, metadata.channel);
 

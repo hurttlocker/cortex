@@ -298,7 +298,16 @@ cortex import /tmp/auto-capture.md --capture-dedupe --similarity-threshold 0.95 
 The OpenClaw plugin also supports:
 - near-duplicate suppression (cosine threshold on recent captures)
 - burst coalescing windows for short rapid-fire turns
-- low-signal acknowledgement filters (`ok`, `got it`, etc.)
+- low-signal acknowledgement filters (`ok`, `got it`, `HEARTBEAT_OK`, `fire the test`)
+- recall-side dedupe before `<cortex-memories>` injection
+
+You can also update an existing memory in place:
+
+```bash
+cortex update 123 --content "Decision: use HNSW over FAISS" --extract
+# or
+cortex update 123 --file updated-note.md --extract
+```
 
 ### 🪦 Superseded/Tombstone Facts — Keep History, Hide Stale Truth
 
@@ -458,9 +467,10 @@ Generates a publication-ready markdown report with summary table, per-preset bre
 ### 👁️ Observability — Finally See What Your Agent Knows
 
 ```bash
-cortex stats        # Overview: counts, freshness, storage, top facts
+cortex stats        # Overview: counts, freshness, growth trends (24h/7d), storage, alerts
 cortex stale        # What's fading — reinforce, delete, or skip
-cortex conflicts    # Contradictions among active facts
+cortex conflicts    # Contradictions among active facts (compact grouped output)
+cortex conflicts --verbose  # Full per-conflict detail (no compacting)
 cortex conflicts --resolve highest-confidence  # Auto-resolve by confidence
 cortex conflicts --resolve newest --dry-run    # Preview before applying
 cortex conflicts --keep 12345 --drop 12346     # Surgical manual resolution

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -101,6 +102,11 @@ func main() {
 		}
 	case "supersede":
 		if err := runSupersede(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "update":
+		if err := runUpdate(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -234,7 +240,7 @@ func boolToInt(v bool) int {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--similarity-threshold 0.95] [--dedupe-window-sec 300] [--llm <provider/model>] [--embed <provider/model>]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--similarity-threshold 0.95] [--dedupe-window-sec 300] [--capture-low-signal] [--capture-min-chars 20] [--capture-low-signal-pattern <phrase>] [--llm <provider/model>] [--embed <provider/model>]")
 	}
 
 	// Parse flags
@@ -250,6 +256,9 @@ func runImport(args []string) error {
 	captureDedupe := false
 	similarityThreshold := 0.95
 	dedupeWindowSec := 300
+	captureLowSignal := false
+	captureMinChars := 20
+	captureLowSignalPatterns := []string{}
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -304,6 +313,26 @@ func runImport(args []string) error {
 				return fmt.Errorf("invalid --dedupe-window-sec value: %s", args[i])
 			}
 			dedupeWindowSec = n
+		case args[i] == "--capture-low-signal":
+			captureLowSignal = true
+		case args[i] == "--capture-min-chars" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --capture-min-chars value: %s", args[i])
+			}
+			captureMinChars = n
+		case strings.HasPrefix(args[i], "--capture-min-chars="):
+			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--capture-min-chars="))
+			if err != nil {
+				return fmt.Errorf("invalid --capture-min-chars value: %s", args[i])
+			}
+			captureMinChars = n
+		case args[i] == "--capture-low-signal-pattern" && i+1 < len(args):
+			i++
+			captureLowSignalPatterns = append(captureLowSignalPatterns, args[i])
+		case strings.HasPrefix(args[i], "--capture-low-signal-pattern="):
+			captureLowSignalPatterns = append(captureLowSignalPatterns, strings.TrimPrefix(args[i], "--capture-low-signal-pattern="))
 		case args[i] == "--llm" && i+1 < len(args):
 			i++
 			llmFlag = args[i]
@@ -327,6 +356,9 @@ func runImport(args []string) error {
 	if dedupeWindowSec <= 0 {
 		return fmt.Errorf("--dedupe-window-sec must be > 0")
 	}
+	if captureMinChars <= 0 {
+		return fmt.Errorf("--capture-min-chars must be > 0")
+	}
 
 	// Set project on import options
 	opts.Project = projectFlag
@@ -334,6 +366,9 @@ func runImport(args []string) error {
 	opts.CaptureDedupeEnabled = captureDedupe
 	opts.CaptureSimilarityThreshold = similarityThreshold
 	opts.CaptureDedupeWindowSec = dedupeWindowSec
+	opts.CaptureLowSignalEnabled = captureLowSignal
+	opts.CaptureMinChars = captureMinChars
+	opts.CaptureLowSignalPatterns = captureLowSignalPatterns
 
 	// Parse optional memory class
 	classFlag = store.NormalizeMemoryClass(classFlag)
@@ -760,6 +795,7 @@ func runStale(args []string) error {
 
 func runConflicts(args []string) error {
 	jsonOutput := false
+	verboseOutput := globalVerbose
 	resolveStrategy := ""
 	dryRun := false
 	limitFlag := 100
@@ -772,6 +808,8 @@ func runConflicts(args []string) error {
 		switch {
 		case args[i] == "--json":
 			jsonOutput = true
+		case args[i] == "--verbose" || args[i] == "-v":
+			verboseOutput = true
 		case args[i] == "--dry-run" || args[i] == "-n":
 			dryRun = true
 		case args[i] == "--resolve" && i+1 < len(args):
@@ -878,27 +916,7 @@ func runConflicts(args []string) error {
 			return enc.Encode(batch)
 		}
 
-		prefix := ""
-		if dryRun {
-			prefix = "[DRY RUN] "
-		}
-		fmt.Printf("%sConflict Resolution: %s\n", prefix, strategy)
-		fmt.Printf("  Total:    %d\n", batch.Total)
-		fmt.Printf("  Resolved: %d\n", batch.Resolved)
-		fmt.Printf("  Skipped:  %d\n", batch.Skipped)
-		fmt.Printf("  Errors:   %d\n", batch.Errors)
-		fmt.Println()
-
-		for _, r := range batch.Results {
-			status := "✅"
-			if r.Winner == "manual" {
-				status = "🔍"
-			} else if !r.Applied && !dryRun {
-				status = "❌"
-			}
-			fmt.Printf("  %s %s.%s: %s\n", status, r.Conflict.Fact1.Subject, r.Conflict.Fact1.Predicate, r.Reason)
-		}
-		return nil
+		return outputResolveBatchTTY(batch, strategy, dryRun, verboseOutput)
 	}
 
 	// Detection only (default)
@@ -911,7 +929,7 @@ func runConflicts(args []string) error {
 		return outputConflictsJSON(conflicts)
 	}
 
-	return outputConflictsTTY(conflicts)
+	return outputConflictsTTY(conflicts, verboseOutput)
 }
 
 func runExtract(args []string) error {
@@ -1377,6 +1395,122 @@ func runSupersede(args []string) error {
 		fmt.Printf(" (%s)", reason)
 	}
 	fmt.Println()
+	return nil
+}
+
+func runUpdate(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex update <memory_id> (--content \"...\" | --file <path>) [--extract]")
+	}
+
+	memoryID, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil || memoryID <= 0 {
+		return fmt.Errorf("invalid memory id %q", args[0])
+	}
+
+	contentFlag := ""
+	fileFlag := ""
+	reextract := false
+
+	for i := 1; i < len(args); i++ {
+		switch {
+		case args[i] == "--content" && i+1 < len(args):
+			i++
+			contentFlag = args[i]
+		case strings.HasPrefix(args[i], "--content="):
+			contentFlag = strings.TrimPrefix(args[i], "--content=")
+		case args[i] == "--file" && i+1 < len(args):
+			i++
+			fileFlag = args[i]
+		case strings.HasPrefix(args[i], "--file="):
+			fileFlag = strings.TrimPrefix(args[i], "--file=")
+		case args[i] == "--extract":
+			reextract = true
+		default:
+			return fmt.Errorf("unknown flag: %s", args[i])
+		}
+	}
+
+	if contentFlag == "" && fileFlag == "" {
+		return fmt.Errorf("must provide either --content or --file")
+	}
+	if contentFlag != "" && fileFlag != "" {
+		return fmt.Errorf("provide only one of --content or --file")
+	}
+
+	content := contentFlag
+	if fileFlag != "" {
+		bytes, err := os.ReadFile(expandUserPath(fileFlag))
+		if err != nil {
+			return fmt.Errorf("reading --file %s: %w", fileFlag, err)
+		}
+		content = string(bytes)
+	}
+	if strings.TrimSpace(content) == "" {
+		return fmt.Errorf("updated memory content cannot be empty")
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	memory, err := s.GetMemory(ctx, memoryID)
+	if err != nil {
+		return fmt.Errorf("loading memory %d: %w", memoryID, err)
+	}
+	if memory == nil {
+		return fmt.Errorf("memory %d not found", memoryID)
+	}
+
+	if err := s.UpdateMemory(ctx, memoryID, content); err != nil {
+		return err
+	}
+
+	factCount := int64(0)
+	if reextract {
+		if _, err := s.DeleteFactsByMemoryID(ctx, memoryID); err != nil {
+			return err
+		}
+
+		pipeline := extract.NewPipeline()
+		metadata := map[string]string{"source_file": memory.SourceFile}
+		if strings.HasSuffix(strings.ToLower(memory.SourceFile), ".md") {
+			metadata["format"] = "markdown"
+		}
+		if memory.SourceSection != "" {
+			metadata["source_section"] = memory.SourceSection
+		}
+
+		extractedFacts, err := pipeline.Extract(ctx, content, metadata)
+		if err != nil {
+			return fmt.Errorf("re-extracting facts: %w", err)
+		}
+
+		for _, extractedFact := range extractedFacts {
+			_, err := s.AddFact(ctx, &store.Fact{
+				MemoryID:    memoryID,
+				Subject:     extractedFact.Subject,
+				Predicate:   extractedFact.Predicate,
+				Object:      extractedFact.Object,
+				FactType:    extractedFact.FactType,
+				Confidence:  extractedFact.Confidence,
+				DecayRate:   extractedFact.DecayRate,
+				SourceQuote: extractedFact.SourceQuote,
+			})
+			if err != nil {
+				continue
+			}
+			factCount++
+		}
+	}
+
+	fmt.Printf("✅ Updated memory %d\n", memoryID)
+	if reextract {
+		fmt.Printf("   Re-extracted %d fact(s)\n", factCount)
+	}
 	return nil
 }
 
@@ -2883,35 +3017,176 @@ func outputConflictsJSON(conflicts []observe.Conflict) error {
 	return enc.Encode(conflicts)
 }
 
-func outputConflictsTTY(conflicts []observe.Conflict) error {
+const (
+	conflictDetailPreviewLimit = 10
+	conflictGroupPreviewLimit  = 8
+	resolveDetailPreviewLimit  = 12
+)
+
+type conflictGroupSummary struct {
+	Label         string
+	Count         int
+	MaxSimilarity float64
+}
+
+func formatFactText(subject, predicate, object string) string {
+	if subject != "" {
+		return fmt.Sprintf("%s %s %s", subject, predicate, object)
+	}
+	return fmt.Sprintf("%s: %s", predicate, object)
+}
+
+func conflictLabel(c observe.Conflict) string {
+	subject := strings.TrimSpace(c.Fact1.Subject)
+	if subject == "" {
+		subject = strings.TrimSpace(c.Fact2.Subject)
+	}
+	if subject == "" {
+		subject = "(no-subject)"
+	}
+
+	predicate := strings.TrimSpace(c.Fact1.Predicate)
+	if predicate == "" {
+		predicate = strings.TrimSpace(c.Fact2.Predicate)
+	}
+	if predicate == "" {
+		predicate = "(unknown)"
+	}
+
+	return fmt.Sprintf("%s.%s", subject, predicate)
+}
+
+func summarizeConflictGroups(conflicts []observe.Conflict) []conflictGroupSummary {
+	if len(conflicts) == 0 {
+		return nil
+	}
+
+	groups := make(map[string]*conflictGroupSummary, len(conflicts))
+	for _, c := range conflicts {
+		label := conflictLabel(c)
+		g, ok := groups[label]
+		if !ok {
+			g = &conflictGroupSummary{Label: label}
+			groups[label] = g
+		}
+		g.Count++
+		if c.Similarity > g.MaxSimilarity {
+			g.MaxSimilarity = c.Similarity
+		}
+	}
+
+	out := make([]conflictGroupSummary, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, *g)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count == out[j].Count {
+			return out[i].Label < out[j].Label
+		}
+		return out[i].Count > out[j].Count
+	})
+
+	return out
+}
+
+func outputConflictsTTY(conflicts []observe.Conflict, verbose bool) error {
 	if len(conflicts) == 0 {
 		fmt.Println("No conflicts detected.")
 		return nil
 	}
 
-	fmt.Printf("Conflicts Detected: %d\n\n", len(conflicts))
-
-	for _, c := range conflicts {
-		fmt.Println("❌ Attribute Conflict")
-
-		fact1Content := ""
-		if c.Fact1.Subject != "" {
-			fact1Content = fmt.Sprintf("%s %s %s", c.Fact1.Subject, c.Fact1.Predicate, c.Fact1.Object)
-		} else {
-			fact1Content = fmt.Sprintf("%s: %s", c.Fact1.Predicate, c.Fact1.Object)
+	fmt.Printf("Conflicts Detected: %d\n", len(conflicts))
+	groups := summarizeConflictGroups(conflicts)
+	if len(groups) > 0 {
+		fmt.Printf("Conflict Groups: %d\n\n", len(groups))
+		fmt.Println("Top conflict groups:")
+		show := len(groups)
+		if show > conflictGroupPreviewLimit {
+			show = conflictGroupPreviewLimit
 		}
-
-		fact2Content := ""
-		if c.Fact2.Subject != "" {
-			fact2Content = fmt.Sprintf("%s %s %s", c.Fact2.Subject, c.Fact2.Predicate, c.Fact2.Object)
-		} else {
-			fact2Content = fmt.Sprintf("%s: %s", c.Fact2.Predicate, c.Fact2.Object)
+		for i := 0; i < show; i++ {
+			g := groups[i]
+			fmt.Printf("  %2d. %-38s %4d (max similarity %.2f)\n", i+1, g.Label, g.Count, g.MaxSimilarity)
 		}
+		if show < len(groups) {
+			fmt.Printf("  ... %d more groups hidden\n", len(groups)-show)
+		}
+	}
 
-		fmt.Printf("   \"%s\" (confidence: %.2f)\n", fact1Content, c.Fact1.Confidence)
-		fmt.Printf("   \"%s\" (confidence: %.2f)\n", fact2Content, c.Fact2.Confidence)
+	detailLimit := len(conflicts)
+	if !verbose && detailLimit > conflictDetailPreviewLimit {
+		detailLimit = conflictDetailPreviewLimit
+	}
+
+	if detailLimit == len(conflicts) {
+		fmt.Println("\nDetailed conflicts:")
+	} else {
+		fmt.Printf("\nSample conflicts (showing %d of %d):\n", detailLimit, len(conflicts))
+	}
+
+	for i := 0; i < detailLimit; i++ {
+		c := conflicts[i]
+		fmt.Printf("\n❌ [%d/%d] %s conflict\n", i+1, len(conflicts), strings.Title(c.ConflictType))
+		fmt.Printf("   \"%s\" (confidence: %.2f, id: %d)\n", formatFactText(c.Fact1.Subject, c.Fact1.Predicate, c.Fact1.Object), c.Fact1.Confidence, c.Fact1.ID)
+		fmt.Printf("   \"%s\" (confidence: %.2f, id: %d)\n", formatFactText(c.Fact2.Subject, c.Fact2.Predicate, c.Fact2.Object), c.Fact2.Confidence, c.Fact2.ID)
 		fmt.Printf("   Similarity: %.2f\n", c.Similarity)
-		fmt.Println()
+	}
+
+	if detailLimit < len(conflicts) {
+		fmt.Printf("\n... %d additional conflicts hidden. Re-run with --verbose or --json for full detail.\n", len(conflicts)-detailLimit)
+	}
+
+	return nil
+}
+
+func outputResolveBatchTTY(batch *observe.ResolveBatch, strategy observe.Strategy, dryRun, verbose bool) error {
+	prefix := ""
+	if dryRun {
+		prefix = "[DRY RUN] "
+	}
+	fmt.Printf("%sConflict Resolution: %s\n", prefix, strategy)
+	fmt.Printf("  Total:    %d\n", batch.Total)
+	fmt.Printf("  Resolved: %d\n", batch.Resolved)
+	fmt.Printf("  Skipped:  %d\n", batch.Skipped)
+	fmt.Printf("  Errors:   %d\n", batch.Errors)
+
+	if len(batch.Results) == 0 {
+		return nil
+	}
+
+	winnerCounts := map[string]int{"fact1": 0, "fact2": 0, "manual": 0}
+	for _, r := range batch.Results {
+		winnerCounts[r.Winner]++
+	}
+	fmt.Printf("  Winners:  fact1=%d fact2=%d manual=%d\n", winnerCounts["fact1"], winnerCounts["fact2"], winnerCounts["manual"])
+
+	detailLimit := len(batch.Results)
+	if !verbose && detailLimit > resolveDetailPreviewLimit {
+		detailLimit = resolveDetailPreviewLimit
+	}
+
+	if detailLimit == len(batch.Results) {
+		fmt.Println("\nResolution details:")
+	} else {
+		fmt.Printf("\nResolution sample (showing %d of %d):\n", detailLimit, len(batch.Results))
+	}
+
+	for i := 0; i < detailLimit; i++ {
+		r := batch.Results[i]
+		status := "✅"
+		if r.Winner == "manual" {
+			status = "🔍"
+		} else if dryRun {
+			status = "🧪"
+		} else if !r.Applied {
+			status = "❌"
+		}
+		fmt.Printf("  %s [%d/%d] %s -> keep #%d drop #%d (%s)\n", status, i+1, len(batch.Results), conflictLabel(r.Conflict), r.WinnerID, r.LoserID, r.Reason)
+	}
+
+	if detailLimit < len(batch.Results) {
+		fmt.Printf("\n... %d additional resolution entries hidden. Re-run with --verbose or --json for full detail.\n", len(batch.Results)-detailLimit)
 	}
 
 	return nil
@@ -3594,6 +3869,7 @@ Commands:
   search <query>      Search memory (keyword, semantic, or hybrid)
   reinforce <id>      Reinforce a fact (reset its decay timer)
   supersede <id>      Mark a fact as superseded by a newer fact
+  update <id>         Update a memory's content (--content or --file)
   stats               Show memory statistics and health
   list                List memories or facts from the store
   export              Export the full memory store in different formats
@@ -3635,6 +3911,9 @@ Import Flags:
   --capture-dedupe    Enable near-duplicate suppression against recent captures
   --similarity-threshold <F> Cosine similarity cutoff for dedupe (default: 0.95)
   --dedupe-window-sec <N> Recent window in seconds for dedupe scan (default: 300)
+  --capture-low-signal Enable low-signal suppression for capture imports
+  --capture-min-chars <N> Minimum normalized chars before capture is accepted (default: 20)
+  --capture-low-signal-pattern <phrase> Add extra low-signal phrase (repeatable)
   --embed <provider/model> Generate embeddings during import (e.g., --embed ollama/all-minilm)
   --llm <provider/model>  Enable LLM-assisted extraction (e.g., --llm openai/gpt-4o-mini)
 
@@ -3667,6 +3946,7 @@ Stats Flags:
 
 Stale/Conflict Flags:
   --include-superseded Include superseded facts in stale/conflict views
+  --verbose, -v       Show full conflict/resolution details (skip compact output)
 
 Reimport Flags:
   -r, --recursive     Recursively import from directories
@@ -3697,6 +3977,10 @@ Reinforce:
 Supersede:
   cortex supersede <old_fact_id> --by <new_fact_id> [--reason <text>]
 
+Update:
+  cortex update <memory_id> --content "updated text" [--extract]
+  cortex update <memory_id> --file updated.md [--extract]
+
 MCP Flags:
   --port <N>          Start HTTP+SSE transport on port (default: stdio)
   --embed <provider/model> Enable semantic/hybrid search via embeddings
@@ -3709,6 +3993,7 @@ Examples:
   cortex embed ollama/nomic-embed-text --batch-size 10
   cortex embed ollama/nomic-embed-text --watch --interval 30m --batch-size 10
   cortex supersede 101 --by 204 --reason "policy updated"
+  cortex update 88 --content "Decision: use HNSW over FAISS" --extract
   cortex search "deployment rule" --include-superseded
   cortex search "deployment rule" --explain --json
   cortex bench --compare google/gemini-2.5-flash,deepseek/deepseek-v3.2 --recursive

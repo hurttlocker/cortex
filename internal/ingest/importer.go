@@ -10,7 +10,78 @@ import (
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
-var tokenSplitRE = regexp.MustCompile(`[^a-z0-9]+`)
+var (
+	tokenSplitRE                = regexp.MustCompile(`[^a-z0-9]+`)
+	importantTagRE              = regexp.MustCompile(`(?i)(#[ ]?important|\[important\]|important:|!important)`)
+	captureConversationBodyRE   = regexp.MustCompile(`(?s)###\s*User\s*(.*?)\s*###\s*Assistant\s*(.*)`)
+	captureOneLinerAckPatternRE = regexp.MustCompile(`^(ok|okay|yes|yep|got it|sounds good|sure|thanks|thank you|cool|heartbeat ok|fire the test|run test|do it)$`)
+)
+
+func normalizeCaptureFilterText(text string) string {
+	text = strings.ToLower(strings.TrimSpace(text))
+	if text == "" {
+		return ""
+	}
+	text = tokenSplitRE.ReplaceAllString(text, " ")
+	text = strings.Join(strings.Fields(text), " ")
+	return text
+}
+
+func extractCaptureBody(content string) string {
+	if m := captureConversationBodyRE.FindStringSubmatch(content); len(m) == 3 {
+		return strings.TrimSpace(m[1] + "\n" + m[2])
+	}
+	return content
+}
+
+func matchesLowSignalPattern(normalized string, opts ImportOptions) bool {
+	if normalized == "" {
+		return true
+	}
+	if captureOneLinerAckPatternRE.MatchString(normalized) {
+		return true
+	}
+	for _, p := range opts.CaptureLowSignalPatterns {
+		if normalizeCaptureFilterText(p) == normalized {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldSkipLowSignalCapture(content string, opts ImportOptions) bool {
+	opts.Normalize()
+	if !opts.CaptureLowSignalEnabled {
+		return false
+	}
+	if importantTagRE.MatchString(content) {
+		return false
+	}
+
+	if m := captureConversationBodyRE.FindStringSubmatch(content); len(m) == 3 {
+		userNorm := normalizeCaptureFilterText(m[1])
+		if userNorm != "" {
+			if len(userNorm) < opts.CaptureMinChars || matchesLowSignalPattern(userNorm, opts) {
+				return true
+			}
+		}
+	}
+
+	body := extractCaptureBody(content)
+	normalized := normalizeCaptureFilterText(body)
+	if normalized == "" {
+		return true
+	}
+	if len(normalized) < opts.CaptureMinChars {
+		return true
+	}
+
+	if len(strings.Fields(normalized)) > 8 {
+		return false
+	}
+
+	return matchesLowSignalPattern(normalized, opts)
+}
 
 // findNearDuplicate checks the recent memory window and returns true when
 // cosine similarity meets/exceeds threshold.

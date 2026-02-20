@@ -184,6 +184,7 @@ type Store interface {
 	ReinforceFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) (int, error)
 	GetFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) ([]*Fact, error)
 	GetFactsByMemoryIDsIncludingSuperseded(ctx context.Context, memoryIDs []int64) ([]*Fact, error)
+	DeleteFactsByMemoryID(ctx context.Context, memoryID int64) (int64, error)
 	GetConfidenceDistribution(ctx context.Context) (*ConfidenceDistribution, error)
 
 	// Search

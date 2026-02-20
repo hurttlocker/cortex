@@ -270,6 +270,20 @@ func (s *SQLiteStore) getFactsByMemoryIDs(ctx context.Context, memoryIDs []int64
 	return facts, rows.Err()
 }
 
+// DeleteFactsByMemoryID removes all facts linked to a memory.
+// Returns number of rows deleted.
+func (s *SQLiteStore) DeleteFactsByMemoryID(ctx context.Context, memoryID int64) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM facts WHERE memory_id = ?`, memoryID)
+	if err != nil {
+		return 0, fmt.Errorf("deleting facts for memory %d: %w", memoryID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("checking deleted rows for memory %d: %w", memoryID, err)
+	}
+	return rows, nil
+}
+
 // ReinforceFactsByMemoryIDs updates last_reinforced for all facts linked to the given memory IDs.
 // Returns the number of facts reinforced.
 func (s *SQLiteStore) ReinforceFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) (int, error) {
