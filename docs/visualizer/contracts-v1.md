@@ -202,12 +202,27 @@ Contract notes:
   "data": {
     "query": "...",
     "results": {
-      "bm25": [ { "rank": 1, "id": "...", "score": 0.88, "title": "..." } ],
-      "semantic": [ { "rank": 1, "id": "...", "score": 0.76, "title": "..." } ],
-      "hybrid": [ { "rank": 1, "id": "...", "score": 0.91, "title": "..." } ]
+      "bm25": [
+        { "id": "ops-db-growth-guardrails", "rank": 1, "score": 0.88, "title": "docs/ops-db-growth-guardrails.md", "why": "exact keyword overlap" }
+      ],
+      "semantic": [
+        { "id": "cortex-deep-dive", "rank": 1, "score": 0.93, "title": "docs/CORTEX_DEEP_DIVE.md", "why": "strong conceptual match" }
+      ],
+      "hybrid": [
+        { "id": "cortex-deep-dive", "rank": 1, "score": 0.91, "title": "docs/CORTEX_DEEP_DIVE.md", "why": "semantic + lexical rerank win" }
+      ]
     },
     "deltas": [
-      { "id": "...", "bm25_rank": 9, "hybrid_rank": 2, "reason": "semantic boost" }
+      {
+        "id": "cortex-deep-dive",
+        "title": "docs/CORTEX_DEEP_DIVE.md",
+        "bm25_rank": null,
+        "semantic_rank": 1,
+        "hybrid_rank": 1,
+        "movement_vs_bm25": null,
+        "movement_vs_semantic": 0,
+        "reason": "semantic strength lifted this result in hybrid rerank"
+      }
     ]
   }
 }

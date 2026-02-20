@@ -173,10 +173,15 @@
           </div>
         </article>
         <article class="card">
-          <div class="title"><span>Retrieval Debug (query replay)</span><span class="pill">bm25 vs hybrid</span></div>
-          <div class="split">
+          <div class="title"><span>Retrieval Debug (query replay)</span><span class="pill">bm25 vs semantic vs hybrid</span></div>
+          <div class="split" style="grid-template-columns: 1fr 1fr 1fr;">
             <div class="panel"><div class="small">BM25 top</div><ul id="bm25List"></ul></div>
+            <div class="panel"><div class="small">Semantic top</div><ul id="semanticList"></ul></div>
             <div class="panel"><div class="small">Hybrid top</div><ul id="hybridList"></ul></div>
+          </div>
+          <div class="panel" style="margin-top:10px">
+            <div class="small">Rank movement + reason</div>
+            <ul id="retrievalDeltaList"></ul>
           </div>
         </article>
       </section>
@@ -602,10 +607,46 @@
 
       const bm25 = document.getElementById('bm25List');
       bm25.innerHTML = '';
-      (d.retrieval?.results?.bm25 || []).forEach(x => { const li = document.createElement('li'); li.textContent = `#${x.rank} ${x.title}`; bm25.appendChild(li); });
+      (d.retrieval?.results?.bm25 || []).forEach(x => {
+        const li = document.createElement('li');
+        li.textContent = `#${x.rank} ${x.title}`;
+        li.title = x.why || '';
+        bm25.appendChild(li);
+      });
+
+      const semantic = document.getElementById('semanticList');
+      semantic.innerHTML = '';
+      (d.retrieval?.results?.semantic || []).forEach(x => {
+        const li = document.createElement('li');
+        li.textContent = `#${x.rank} ${x.title}`;
+        li.title = x.why || '';
+        semantic.appendChild(li);
+      });
+
       const hy = document.getElementById('hybridList');
       hy.innerHTML = '';
-      (d.retrieval?.results?.hybrid || []).forEach(x => { const li = document.createElement('li'); li.textContent = `#${x.rank} ${x.title}`; hy.appendChild(li); });
+      (d.retrieval?.results?.hybrid || []).forEach(x => {
+        const li = document.createElement('li');
+        li.textContent = `#${x.rank} ${x.title}`;
+        li.title = x.why || '';
+        hy.appendChild(li);
+      });
+
+      const deltaList = document.getElementById('retrievalDeltaList');
+      deltaList.innerHTML = '';
+      (d.retrieval?.deltas || []).forEach(row => {
+        const li = document.createElement('li');
+        const movement = row.movement_vs_bm25 == null
+          ? 'n/a'
+          : (row.movement_vs_bm25 > 0 ? `↑ ${row.movement_vs_bm25}` : row.movement_vs_bm25 < 0 ? `↓ ${Math.abs(row.movement_vs_bm25)}` : '→ 0');
+        li.textContent = `${row.title} • bm25→hybrid: ${movement} • ${row.reason || 'no reason provided'}`;
+        deltaList.appendChild(li);
+      });
+      if (!deltaList.children.length) {
+        const li = document.createElement('li');
+        li.textContent = 'No retrieval rank deltas available.';
+        deltaList.appendChild(li);
+      }
 
       activeGraph = d.graph || {};
       renderGraph(activeGraph);

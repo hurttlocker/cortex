@@ -93,12 +93,48 @@ def validate_canonical(path: pathlib.Path) -> None:
         if factor["status"] not in allowed:
             fail(f"{where}.status not in PASS|WARN|FAIL|NO_DATA")
 
+    retrieval = d["retrieval"]
+    for k in ["query", "results", "deltas"]:
+        require(retrieval, k, "retrieval")
+
+    results = retrieval["results"]
+    for mode in ["bm25", "semantic", "hybrid"]:
+        require(results, mode, "retrieval.results")
+        if not isinstance(results[mode], list):
+            fail(f"retrieval.results.{mode} must be an array")
+        for idx, row in enumerate(results[mode]):
+            where = f"retrieval.results.{mode}[{idx}]"
+            for key in ["id", "rank", "title", "score", "why"]:
+                require(row, key, where)
+
+    if not isinstance(retrieval["deltas"], list):
+        fail("retrieval.deltas must be an array")
+    for idx, row in enumerate(retrieval["deltas"]):
+        where = f"retrieval.deltas[{idx}]"
+        for key in [
+            "id",
+            "title",
+            "bm25_rank",
+            "semantic_rank",
+            "hybrid_rank",
+            "movement_vs_bm25",
+            "movement_vs_semantic",
+            "reason",
+        ]:
+            require(row, key, where)
+
     graph = d["graph"]
     for k in ["focus", "bounds", "nodes", "edges"]:
         require(graph, k, "graph")
 
     if not isinstance(graph["nodes"], list) or not isinstance(graph["edges"], list):
         fail("graph.nodes/edges must be arrays")
+
+    bounds = graph.get("bounds", {})
+    if not isinstance(bounds, dict):
+        fail("graph.bounds must be an object")
+    for k in ["max_hops", "max_nodes"]:
+        require(bounds, k, "graph.bounds")
 
     print(f"OK canonical: {path}")
 
