@@ -3065,7 +3065,7 @@ func outputConflictsJSON(conflicts []observe.Conflict) error {
 }
 
 const (
-	conflictDetailPreviewLimit = 10
+	conflictDetailPreviewLimit = 8
 	conflictGroupPreviewLimit  = 8
 	resolveDetailPreviewLimit  = 12
 )
@@ -3137,6 +3137,23 @@ func summarizeConflictGroups(conflicts []observe.Conflict) []conflictGroupSummar
 	return out
 }
 
+func rankConflictsForDisplay(conflicts []observe.Conflict) []observe.Conflict {
+	ordered := make([]observe.Conflict, len(conflicts))
+	copy(ordered, conflicts)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].Similarity == ordered[j].Similarity {
+			li := conflictLabel(ordered[i])
+			lj := conflictLabel(ordered[j])
+			if li == lj {
+				return ordered[i].Fact1.ID < ordered[j].Fact1.ID
+			}
+			return li < lj
+		}
+		return ordered[i].Similarity > ordered[j].Similarity
+	})
+	return ordered
+}
+
 func outputConflictsTTY(conflicts []observe.Conflict, verbose bool) error {
 	if len(conflicts) == 0 {
 		fmt.Println("No conflicts detected.")
@@ -3161,31 +3178,32 @@ func outputConflictsTTY(conflicts []observe.Conflict, verbose bool) error {
 		}
 	}
 
-	detailLimit := len(conflicts)
+	ranked := rankConflictsForDisplay(conflicts)
+	detailLimit := len(ranked)
 	if !verbose && detailLimit > conflictDetailPreviewLimit {
 		detailLimit = conflictDetailPreviewLimit
 	}
 
-	if detailLimit == len(conflicts) {
+	if detailLimit == len(ranked) {
 		fmt.Println("\nDetailed conflicts:")
 	} else {
-		fmt.Printf("\nSample conflicts (showing %d of %d):\n", detailLimit, len(conflicts))
+		fmt.Printf("\nSample conflicts (showing %d of %d):\n", detailLimit, len(ranked))
 	}
 
 	for i := 0; i < detailLimit; i++ {
-		c := conflicts[i]
+		c := ranked[i]
 		conflictType := c.ConflictType
 		if conflictType == "" {
 			conflictType = "attribute"
 		}
-		fmt.Printf("\n❌ [%d/%d] %s conflict\n", i+1, len(conflicts), conflictType)
+		fmt.Printf("\n❌ [%d/%d] %s conflict\n", i+1, len(ranked), conflictType)
 		fmt.Printf("   \"%s\" (confidence: %.2f, id: %d)\n", formatFactText(c.Fact1.Subject, c.Fact1.Predicate, c.Fact1.Object), c.Fact1.Confidence, c.Fact1.ID)
 		fmt.Printf("   \"%s\" (confidence: %.2f, id: %d)\n", formatFactText(c.Fact2.Subject, c.Fact2.Predicate, c.Fact2.Object), c.Fact2.Confidence, c.Fact2.ID)
 		fmt.Printf("   Similarity: %.2f\n", c.Similarity)
 	}
 
-	if detailLimit < len(conflicts) {
-		fmt.Printf("\n... %d additional conflicts hidden. Re-run with --verbose or --json for full detail.\n", len(conflicts)-detailLimit)
+	if detailLimit < len(ranked) {
+		fmt.Printf("\n... %d additional conflicts hidden. Re-run with --verbose or --json for full detail.\n", len(ranked)-detailLimit)
 	}
 
 	return nil

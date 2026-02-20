@@ -540,13 +540,13 @@ func TestOutputConflictsTTY_CompactsByDefault(t *testing.T) {
 	if !strings.Contains(out, "Top conflict groups") {
 		t.Fatalf("expected grouped summary, got: %q", out)
 	}
-	if !strings.Contains(out, "Sample conflicts (showing 10 of 14)") {
+	if !strings.Contains(out, "Sample conflicts (showing 8 of 14)") {
 		t.Fatalf("expected sample header, got: %q", out)
 	}
 	if !strings.Contains(out, "additional conflicts hidden") {
 		t.Fatalf("expected hidden-details hint, got: %q", out)
 	}
-	if strings.Contains(out, "[11/14]") {
+	if strings.Contains(out, "[9/14]") {
 		t.Fatalf("expected compact output to hide items after preview limit, got: %q", out)
 	}
 }
@@ -580,6 +580,33 @@ func TestOutputConflictsTTY_VerboseShowsAll(t *testing.T) {
 	}
 	if strings.Contains(out, "additional conflicts hidden") {
 		t.Fatalf("did not expect hidden-details hint in verbose mode, got: %q", out)
+	}
+}
+
+func TestOutputConflictsTTY_PrioritizesHigherSimilarity(t *testing.T) {
+	conflicts := []observe.Conflict{
+		{
+			ConflictType: "attribute",
+			Similarity:   0.42,
+			Fact1:        store.Fact{ID: 1, Subject: "user", Predicate: "email", Object: "low@example.com"},
+			Fact2:        store.Fact{ID: 101, Subject: "user", Predicate: "email", Object: "low2@example.com"},
+		},
+		{
+			ConflictType: "attribute",
+			Similarity:   0.97,
+			Fact1:        store.Fact{ID: 2, Subject: "user", Predicate: "email", Object: "high@example.com"},
+			Fact2:        store.Fact{ID: 102, Subject: "user", Predicate: "email", Object: "high2@example.com"},
+		},
+	}
+
+	out := captureStdout(func() {
+		if err := outputConflictsTTY(conflicts, false); err != nil {
+			t.Fatalf("outputConflictsTTY: %v", err)
+		}
+	})
+
+	if strings.Index(out, "Similarity: 0.97") > strings.Index(out, "Similarity: 0.42") {
+		t.Fatalf("expected higher-similarity conflict to be shown first, got: %q", out)
 	}
 }
 

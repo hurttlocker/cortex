@@ -250,7 +250,7 @@ cortex search "deploy requirements" --no-class-boost   # disable weighting when 
 cortex list --class rule,decision
 ```
 
-Unclassified data remains fully searchable (backward compatible). Class boosts are conservative defaults and can be disabled per-query.
+Unclassified data remains fully searchable (backward compatible). On startup, Cortex backfills legacy `NULL memory_class` rows to `''` and normalizes scan paths so mixed historical/new datasets stay query-safe. Class boosts are conservative defaults and can be disabled per-query.
 
 ### 🔎 Retrieval Explainability — Why This Result Ranked
 

@@ -49,6 +49,10 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateMemoryClassColumn(); err != nil {
 		return fmt.Errorf("migrating memory_class column: %w", err)
 	}
+	// Backfill legacy NULL classes to empty-string sentinel for robust scans/filtering (#63).
+	if err := s.migrateMemoryClassNullBackfill(); err != nil {
+		return fmt.Errorf("backfilling memory_class NULLs: %w", err)
+	}
 
 	// Schema evolution: add superseded_by column to facts (v0.3.0 — Issue #35)
 	if err := s.migrateFactSupersededColumn(); err != nil {
@@ -276,7 +280,7 @@ func (s *SQLiteStore) migrateProjectColumn() error {
 }
 
 // migrateMemoryClassColumn adds memory_class to memories for class-aware retrieval (Issue #34).
-// NULL means "unclassified" for backward compatibility.
+// Column stays nullable for compatibility with historical DBs; startup backfill normalizes NULLs.
 func (s *SQLiteStore) migrateMemoryClassColumn() error {
 	var count int
 	err := s.db.QueryRow(
@@ -310,6 +314,26 @@ func (s *SQLiteStore) migrateMemoryClassColumn() error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing memory_class migration: %w", err)
+	}
+	return nil
+}
+
+// migrateMemoryClassNullBackfill rewrites legacy NULL memory_class rows to "" (#63).
+// This keeps historical rows searchable while preventing NULL scan edge cases in older datasets.
+func (s *SQLiteStore) migrateMemoryClassNullBackfill() error {
+	var count int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='memory_class'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checking for memory_class column: %w", err)
+	}
+	if count == 0 {
+		return nil
+	}
+
+	if _, err := s.db.Exec(`UPDATE memories SET memory_class = '' WHERE memory_class IS NULL`); err != nil {
+		return fmt.Errorf("backfilling NULL memory_class values: %w", err)
 	}
 	return nil
 }
