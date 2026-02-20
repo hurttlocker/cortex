@@ -127,11 +127,24 @@
           </div>
         </article>
         <article class="card">
-          <div class="title"><span>Memory Quality Engine</span><span class="pill">composite</span></div>
+          <div class="title"><span>Memory Quality Engine</span><span class="pill">composite + explainability</span></div>
+          <div class="small" id="qualityFormula">formula: —</div>
+          <div class="spark" style="height:76px;margin:8px 0 10px"><svg id="qualityTrendSvg" viewBox="0 0 500 120" preserveAspectRatio="none"></svg></div>
+
           <div class="small">Conflict density</div><div class="meter"><span id="mConflict" style="width:0%"></span></div>
           <div class="small">Stale ratio pressure</div><div class="meter"><span id="mStale" style="width:0%"></span></div>
           <div class="small">Confidence health</div><div class="meter"><span id="mConf" style="width:0%"></span></div>
           <div class="small">Extraction yield</div><div class="meter"><span id="mYield" style="width:0%"></span></div>
+
+          <div class="small" style="margin-top:8px">Top degradation drivers</div>
+          <ul id="qualityDrivers"></ul>
+
+          <table class="table" style="margin-top:8px">
+            <thead><tr><th>Factor</th><th>Status</th><th>Metric</th><th>W</th><th>Impact</th></tr></thead>
+            <tbody id="qualityFactorsBody"></tbody>
+          </table>
+
+          <div class="small" style="margin-top:8px">Recommended actions (top 2)</div>
           <ul id="actions"></ul>
         </article>
       </section>
@@ -510,7 +523,8 @@
       document.getElementById('releaseReadiness').textContent = ov.release_readiness || '—';
       document.getElementById('releaseReason').textContent = (d.ops?.events?.[0]?.message) || 'no active warnings';
       document.getElementById('qualityScore').textContent = `${d.quality?.score ?? '—'}/100`;
-      document.getElementById('qualityDelta').textContent = `${d.quality?.delta_24h ?? 0} in last 24h`;
+      const qDelta = Number(d.quality?.delta_24h ?? 0);
+      document.getElementById('qualityDelta').textContent = `${qDelta >= 0 ? '+' : ''}${qDelta.toFixed(1)} in last 24h`;
       document.getElementById('reasonP95').textContent = `${ov.reason_p95_latency_s ?? 0}s`;
       document.getElementById('factsGrowth').textContent = `+${fmtNum(ov.facts_24h_growth || 0)}`;
 
@@ -539,17 +553,52 @@
 
       renderTrend(document.getElementById('trendSvg'), d.ops?.trend || []);
 
-      const f = d.quality?.factors || {};
+      const q = d.quality || {};
+      document.getElementById('qualityFormula').textContent = `formula: ${q.formula_version || 'unknown'}`;
+      renderTrend(document.getElementById('qualityTrendSvg'), q.trend_24h || []);
+
+      const f = q.factors || {};
       document.getElementById('mConflict').style.width = `${Math.round((f.conflict_density || 0) * 100)}%`;
       document.getElementById('mStale').style.width = `${Math.round((f.stale_pressure || 0) * 100)}%`;
       document.getElementById('mConf').style.width = `${Math.round((f.confidence_health || 0) * 100)}%`;
       document.getElementById('mYield').style.width = `${Math.round((f.extraction_yield || 0) * 100)}%`;
 
+      const drivers = document.getElementById('qualityDrivers');
+      drivers.innerHTML = '';
+      (q.top_drivers || []).slice(0, 3).forEach(dv => {
+        const li = document.createElement('li');
+        li.textContent = `${dv.label} (${dv.status}) • impact ${Number(dv.impact_points || 0).toFixed(1)}pts`;
+        li.title = `${dv.why || ''}\nRemediation: ${dv.remediation || ''}`;
+        drivers.appendChild(li);
+      });
+      if (!drivers.children.length) {
+        const li = document.createElement('li');
+        li.textContent = 'No active degradation drivers.';
+        drivers.appendChild(li);
+      }
+
+      const qualityRows = document.getElementById('qualityFactorsBody');
+      qualityRows.innerHTML = '';
+      (q.factors_v2 || []).forEach(fx => {
+        const tr = document.createElement('tr');
+        const metric = fx.value == null ? 'n/a' : `${(Number(fx.value) * 100).toFixed(1)}%`;
+        const impact = fx.weighted_score == null ? '0.0' : Number(fx.weighted_score).toFixed(1);
+        const statusClass = gateStatusClass(fx.status);
+        tr.innerHTML = `<td>${fx.label}</td><td><span class="dot ${statusClass}"></span>${fx.status}</td><td>${metric}</td><td>${Number(fx.weight || 0).toFixed(2)}</td><td>${impact}</td>`;
+        tr.title = `${fx.definition || 'No definition'}\nSource: ${fx.source || 'n/a'}`;
+        qualityRows.appendChild(tr);
+      });
+
       const actions = document.getElementById('actions');
       actions.innerHTML = '';
-      (d.quality?.actions || []).forEach(a => {
+      (q.actions || []).slice(0, 2).forEach(a => {
         const li = document.createElement('li'); li.textContent = a; actions.appendChild(li);
       });
+      if (!actions.children.length) {
+        const li = document.createElement('li');
+        li.textContent = 'No immediate action required.';
+        actions.appendChild(li);
+      }
 
       const bm25 = document.getElementById('bm25List');
       bm25.innerHTML = '';

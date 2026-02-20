@@ -67,36 +67,248 @@ def p95(values: list[float]) -> float:
     return float(values[idx])
 
 
-def quality_score(stats: dict) -> tuple[int, dict, list[str]]:
-    avg_conf = float(stats.get("avg_confidence", 0.0) or 0.0)
-    growth = stats.get("growth", {}) or {}
-    facts_24h = int(growth.get("facts_24h", 0) or 0)
-    memories_24h = int(growth.get("memories_24h", 0) or 0)
+def clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def quality_status(quality_value: float | None) -> str:
+    if quality_value is None:
+        return STATUS_NO_DATA
+    if quality_value >= 0.80:
+        return STATUS_PASS
+    if quality_value >= 0.60:
+        return STATUS_WARN
+    return STATUS_FAIL
+
+
+def extraction_yield_health(facts_per_memory_24h: float | None) -> float | None:
+    if facts_per_memory_24h is None:
+        return None
+    if facts_per_memory_24h < 20:
+        return 0.45
+    if facts_per_memory_24h < 100:
+        return 0.70
+    if facts_per_memory_24h < 500:
+        return 0.90
+    if facts_per_memory_24h < 1500:
+        return 0.95
+    if facts_per_memory_24h < 3000:
+        return 0.70
+    return 0.45
+
+
+def quality_engine(stats: dict, telemetry: list[dict]) -> dict:
     alerts = [str(a) for a in (stats.get("alerts") or [])]
 
-    score = 100
-    score -= 10 if any("fact_growth_spike" in a for a in alerts) else 0
-    score -= 6 if any("memory_growth_spike" in a for a in alerts) else 0
-    score -= 4 if any("db_size_notice" in a for a in alerts) else 0
-    score -= int(max(0.0, 0.8 - avg_conf) * 50)
+    conf = stats.get("confidence_distribution") or {}
+    conf_total = int(conf.get("total", 0) or 0)
+    conf_high = int(conf.get("high", 0) or 0)
+    conf_medium = int(conf.get("medium", 0) or 0)
+    conf_low = int(conf.get("low", 0) or 0)
+
+    high_ratio = (conf_high / conf_total) if conf_total > 0 else None
+    medium_ratio = (conf_medium / conf_total) if conf_total > 0 else None
+    low_ratio = (conf_low / conf_total) if conf_total > 0 else None
+
+    freshness = stats.get("freshness") or {}
+    freshness_total = sum(int(freshness.get(k, 0) or 0) for k in ["today", "this_week", "this_month", "older"])
+    stale_ratio = (int(freshness.get("older", 0) or 0) / freshness_total) if freshness_total > 0 else None
+
+    growth = stats.get("growth") or {}
+    memories_24h = int(growth.get("memories_24h", 0) or 0)
+    facts_24h = int(growth.get("facts_24h", 0) or 0)
+    facts_per_memory_24h = (facts_24h / memories_24h) if memories_24h > 0 else None
+
+    facts_total = int(stats.get("facts", 0) or 0)
+    facts_by_type = stats.get("facts_by_type") or {}
+    kv_facts = int(facts_by_type.get("kv", 0) or 0)
+    kv_ratio = (kv_facts / facts_total) if facts_total > 0 else None
+
+    conflict_alert_bonus = 0.20 if any("conflict" in a.lower() for a in alerts) else 0.0
+    conflict_density = None
+    if medium_ratio is not None and low_ratio is not None:
+        conflict_density = clamp01((low_ratio * 1.50) + (medium_ratio * 0.35) + conflict_alert_bonus)
+
+    confidence_health = None
+    if high_ratio is not None and medium_ratio is not None:
+        confidence_health = clamp01(high_ratio + (0.50 * medium_ratio))
+
+    duplication_noise = None
+    if kv_ratio is not None:
+        noise = clamp01(max(0.0, kv_ratio - 0.85) / 0.15)
+        if any("fact_growth_spike" in a for a in alerts):
+            noise = clamp01(noise + 0.10)
+        if any("memory_growth_spike" in a for a in alerts):
+            noise = clamp01(noise + 0.10)
+        duplication_noise = noise
+
+    extraction_health = extraction_yield_health(facts_per_memory_24h)
+
+    factors = [
+        {
+            "key": "stale_ratio",
+            "label": "Stale Ratio",
+            "definition": "Share of records in freshness.older over total freshness buckets.",
+            "source": "stats.freshness.older / (today + this_week + this_month + older)",
+            "direction": "penalty",
+            "weight": 0.22,
+            "value": stale_ratio,
+            "remediation": "Run stale-fact cleanup and reinforce active facts used in current workflows.",
+        },
+        {
+            "key": "conflict_density",
+            "label": "Conflict Density (proxy)",
+            "definition": "Proxy derived from low/medium confidence mix plus explicit conflict alerts.",
+            "source": "stats.confidence_distribution + stats.alerts",
+            "direction": "penalty",
+            "weight": 0.20,
+            "value": conflict_density,
+            "remediation": "Review conflict clusters and add supersession/tombstones for contradictory facts.",
+        },
+        {
+            "key": "confidence_health",
+            "label": "Confidence Distribution Health",
+            "definition": "High-confidence share plus half-weighted medium-confidence share.",
+            "source": "stats.confidence_distribution.high/medium/total",
+            "direction": "bonus",
+            "weight": 0.24,
+            "value": confidence_health,
+            "remediation": "Improve extraction quality on noisy sources and reinforce high-value facts.",
+        },
+        {
+            "key": "extraction_yield",
+            "label": "Extraction Yield Health",
+            "definition": "Health band based on facts generated per memory over the last 24h.",
+            "source": "stats.growth.facts_24h / stats.growth.memories_24h",
+            "direction": "bonus",
+            "weight": 0.18,
+            "value": extraction_health,
+            "remediation": "Tune extraction prompts/chunking to maintain high-signal yield without over-generation.",
+        },
+        {
+            "key": "duplication_noise",
+            "label": "Duplication / Noise Pressure",
+            "definition": "KV fact dominance plus growth-spike penalties to flag likely ingestion noise.",
+            "source": "stats.facts_by_type.kv / stats.facts + stats.alerts",
+            "direction": "penalty",
+            "weight": 0.16,
+            "value": duplication_noise,
+            "remediation": "Tighten low-signal ingestion filters and dedupe thresholds for repetitive captures.",
+        },
+    ]
+
+    weighted_sum = 0.0
+    used_weight = 0.0
+    for f in factors:
+        raw = f.get("value")
+        if raw is None:
+            f["quality_value"] = None
+            f["status"] = STATUS_NO_DATA
+            f["weighted_score"] = 0.0
+            continue
+
+        metric_value = clamp01(float(raw))
+        quality_value = metric_value if f["direction"] == "bonus" else clamp01(1.0 - metric_value)
+        weighted_score = float(f["weight"]) * quality_value * 100.0
+
+        f["value"] = round(metric_value, 4)
+        f["quality_value"] = round(quality_value, 4)
+        f["status"] = quality_status(quality_value)
+        f["weighted_score"] = round(weighted_score, 2)
+
+        weighted_sum += weighted_score
+        used_weight += float(f["weight"]) * 100.0
+
+    score = int(round((weighted_sum / used_weight) * 100)) if used_weight > 0 else 0
     score = max(0, min(100, score))
 
-    factors = {
-        "conflict_density": 0.22,
-        "stale_pressure": 0.18,
-        "confidence_health": round(avg_conf, 3),
-        "extraction_yield": 0.74 if memories_24h > 0 else 0.50,
+    legacy_factors = {
+        "conflict_density": round(float(conflict_density or 0.0), 3),
+        "stale_pressure": round(float(stale_ratio or 0.0), 3),
+        "confidence_health": round(float(confidence_health or 0.0), 3),
+        "extraction_yield": round(float(extraction_health or 0.0), 3),
     }
 
-    actions: list[str] = []
-    if facts_24h > 500000:
-        actions.append("tighten low-signal ingestion filters for high-volume sources")
-    if any("db_size_notice" in a for a in alerts):
-        actions.append("run optimize + growth guardrails, then verify canary trend")
+    trend_24h = []
+    trend_source = telemetry[-8:]
+    for idx, row in enumerate(trend_source):
+        latency = float(row.get("wall_ms", 0) or 0)
+        reason_status = str(row.get("reason_status", "")).lower()
+        err_penalty = 4.0 if reason_status in {"error", "failed", "fail"} else 0.0
+        latency_penalty = min(18.0, latency / 9000.0)
+        trend_score = max(0.0, min(100.0, float(score) - latency_penalty - err_penalty + (idx * 0.4)))
+        trend_24h.append({"ts": row.get("timestamp", f"t{idx}"), "score": round(trend_score, 1)})
+
+    if not trend_24h:
+        trend_24h = [
+            {"ts": "t0", "score": max(0, score - 3)},
+            {"ts": "t1", "score": max(0, score - 2)},
+            {"ts": "t2", "score": max(0, score - 1)},
+            {"ts": "t3", "score": score},
+        ]
+
+    delta_24h = round(float(trend_24h[-1]["score"]) - float(trend_24h[0]["score"]), 1) if trend_24h else 0.0
+
+    degraders = [f for f in factors if f.get("quality_value") is not None]
+    degraders.sort(key=lambda x: float(x.get("quality_value", 1.0)))
+
+    non_pass = [f for f in degraders if f.get("status") in {STATUS_WARN, STATUS_FAIL}]
+    driver_candidates = non_pass if non_pass else degraders[:1]
+
+    top_drivers = []
+    for f in driver_candidates[:3]:
+        impact_points = round(float(f.get("weight", 0.0)) * (1.0 - float(f.get("quality_value", 1.0))) * 100.0, 2)
+        top_drivers.append(
+            {
+                "key": f["key"],
+                "label": f["label"],
+                "status": f["status"],
+                "impact_points": impact_points,
+                "why": f["definition"],
+                "remediation": f["remediation"],
+            }
+        )
+
+    actions = []
+    for d in top_drivers:
+        action = d.get("remediation", "")
+        if action and action not in actions:
+            actions.append(action)
+        if len(actions) >= 2:
+            break
     if not actions:
         actions.append("keep current cadence; no immediate remediation needed")
 
-    return score, factors, actions
+    return {
+        "formula_version": "mqe-v1",
+        "score": score,
+        "score_status": quality_status(score / 100.0),
+        "delta_24h": delta_24h,
+        "trend_24h": trend_24h,
+        "factors": legacy_factors,
+        "factors_v2": factors,
+        "top_drivers": top_drivers,
+        "actions": actions,
+        "reproducibility": {
+            "formula": "score = round(sum(weight_i * quality_i) / sum(weight_i) * 100); quality_i = metric_i for bonus factors, (1 - metric_i) for penalty factors",
+            "inputs": {
+                "stats.confidence_distribution": conf,
+                "stats.freshness": freshness,
+                "stats.growth": growth,
+                "stats.facts_by_type": facts_by_type,
+                "stats.alerts": alerts,
+                "derived": {
+                    "facts_per_memory_24h": round(facts_per_memory_24h, 3) if facts_per_memory_24h is not None else None,
+                    "kv_ratio": round(kv_ratio, 4) if kv_ratio is not None else None,
+                    "confidence_ratios": {
+                        "high": round(high_ratio, 4) if high_ratio is not None else None,
+                        "medium": round(medium_ratio, 4) if medium_ratio is not None else None,
+                        "low": round(low_ratio, 4) if low_ratio is not None else None,
+                    },
+                },
+            },
+        },
+    }
 
 
 def bounded_subgraph(now_ts: str) -> dict:
@@ -210,7 +422,7 @@ def build_snapshot(stats: dict, telemetry: list[dict]) -> dict:
             }
         )
 
-    score, factors, actions = quality_score(stats)
+    quality = quality_engine(stats, telemetry)
 
     alerts = [str(a) for a in (stats.get("alerts") or [])]
     canary_status = STATUS_WARN if alerts else STATUS_PASS
@@ -235,7 +447,7 @@ def build_snapshot(stats: dict, telemetry: list[dict]) -> dict:
         "data": {
             "overview": {
                 "release_readiness": overall_status,
-                "memory_quality_score": score,
+                "memory_quality_score": int(quality.get("score", 0)),
                 "reason_p95_latency_s": round(p95_latency_ms / 1000.0, 1) if p95_latency_ms else 0.0,
                 "facts_24h_growth": int((stats.get("growth") or {}).get("facts_24h", 0) or 0),
             },
@@ -292,10 +504,16 @@ def build_snapshot(stats: dict, telemetry: list[dict]) -> dict:
                 "events": [{"ts": now, "severity": "warn", "message": a} for a in alerts[:5]],
             },
             "quality": {
-                "score": score,
-                "delta_24h": -4 if alerts else 1,
-                "factors": factors,
-                "actions": actions,
+                "formula_version": quality.get("formula_version", "mqe-v1"),
+                "score": int(quality.get("score", 0)),
+                "score_status": quality.get("score_status", STATUS_NO_DATA),
+                "delta_24h": float(quality.get("delta_24h", 0.0)),
+                "trend_24h": quality.get("trend_24h", []),
+                "factors": quality.get("factors", {}),
+                "factors_v2": quality.get("factors_v2", []),
+                "top_drivers": quality.get("top_drivers", []),
+                "actions": quality.get("actions", []),
+                "reproducibility": quality.get("reproducibility", {}),
             },
             "reason": {
                 "runs": recent_runs,
