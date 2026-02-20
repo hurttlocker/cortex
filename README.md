@@ -464,9 +464,34 @@ Use this as the default decision rule while Codex rollout is active:
 Rollout report command (telemetry summary by mode, p50/p95 latency, cost, provider/model mix):
 
 ```bash
+# Runtime CLI subcommand (recommended)
+cortex codex-rollout-report
+
+# Script wrapper (backward-compatible)
 scripts/codex_rollout_report.sh
-# or
+
+# Legacy helper binary still works
 go run ./cmd/codex-rollout-report --file ~/.cortex/reason-telemetry.jsonl
+```
+
+Optional quality gates (for CI/cron checks):
+
+- one-shot p95 latency threshold (default `20000ms`)
+- recursive known-cost completeness threshold (default `0.80`)
+- warn-only mode (default `true`) vs strict non-zero exit mode
+
+```bash
+# Warn-only (default): emit warnings, exit 0
+cortex codex-rollout-report --warn-only
+
+# Strict mode: exit non-zero when guardrails fail
+cortex codex-rollout-report --warn-only=false
+
+# Tuned thresholds
+cortex codex-rollout-report \
+  --one-shot-p95-warn-ms 15000 \
+  --recursive-known-cost-min-share 0.90 \
+  --warn-only=false
 ```
 
 ### 📊 Benchmark Command — Test Any Model
