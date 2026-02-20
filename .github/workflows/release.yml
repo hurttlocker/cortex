@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   release:
@@ -21,7 +22,9 @@ jobs:
           go-version: "1.24"
 
       - name: Release checklist guard
-        run: scripts/release_checklist.sh --tag "${{ github.ref_name }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/release_checklist.sh --tag "${{ github.ref_name }}" --repo "${{ github.repository }}" --require-latest-slo-pass
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
