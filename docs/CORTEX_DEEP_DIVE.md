@@ -7,8 +7,8 @@
 ## Last Updated
 
 - **Updated:** 2026-02-20 (ET)
-- **Repo checked:** `hurttlocker/cortex` @ `25bae09` (main)
-- **Latest stable release:** `v0.3.4`
+- **Repo checked:** `hurttlocker/cortex` @ `23e55ba` (main)
+- **Latest stable release:** `v0.3.5`
 - **Current dev fallback version in source:** `0.3.5-dev`
 
 ---
@@ -18,18 +18,18 @@
 Cortex has moved from “feature buildout” into “operational hardening + release discipline.”
 
 ### What is true right now
-- Stable release is live: **v0.3.4**
-- v0.3.5-rc2 audit packet scaffolding is prepared (`docs/audits/` + `docs/releases/`)
-- Visualizer v1 closure sequence is complete (#99 and #104 are closed)
-- Post-release hardening lanes (v0.3.5-dev) are fully shipped on `main`
+- Stable release is live: **v0.3.5**
+- External hostile audit on immutable RC target `v0.3.5-rc2` returned **GO** with no reproducible product findings
+- Visualizer v1 closure sequence is complete (#99 and #104 closed)
+- Ops hardening lanes are shipped and stable-tagged
 - Current open issue count: **0** (at time of refresh)
 
 ### Most recent merged wave (top commits)
-1. `25bae09` — close #104: retrieval debug deltas + bounded provenance closure (#121)
-2. `8c8488e` — one-command external audit preflight script + docs (#120)
-3. `21a39fa` — deterministic connectivity smoke gate in CI/release flow (#118)
-4. `71977db` — memory quality engine composite + explainability (#116)
-5. `1f874a6` — reason run inspector filters + drill-down (#114)
+1. `23e55ba` — merge stable release prep docs/changelog for `v0.3.5` (#128)
+2. `8f7aa9d` — merge rc2 audit packet + roadmap sync (#127)
+3. `1a7482e` — merge release checklist portability fix (no hard `rg` dependency) (#126)
+4. `e77aa5c` — merge visualizer traversal-style output path guard (#125)
+5. `3a0c8db` — merge closure for external findings F-01..F-05 (#124)
 
 ---
 
@@ -39,10 +39,10 @@ Cortex has moved from “feature buildout” into “operational hardening + rel
 Import, extraction, hybrid search, MCP, reasoning, and observability are delivered and in production use.
 
 ## Layer 2 — Reliability + Release Readiness (DONE)
-The v0.3.4 cycle delivered audit fit, immutable target auditing, release artifact verification, and explicit go/no-go docs.
+The v0.3.4 → v0.3.5 cycle delivered immutable-target auditing, release artifact verification, hostile fresh-user break testing, and explicit go/no-go handoff docs.
 
-## Layer 3 — Ops Maturity (COMPLETE FOR RC PREP)
-High-impact ops controls are now in place:
+## Layer 3 — Ops Maturity (DONE)
+High-impact ops controls are in place and exercised in a successful stable promotion:
 - `cortex optimize` maintenance path
 - SLO snapshot artifact generation
 - CI doc drift guardrails
@@ -51,20 +51,22 @@ High-impact ops controls are now in place:
 - Thresholded canary regression signaling
 - Deterministic connectivity smoke gate
 - One-command audit preflight evidence generation
+- Adversarial break harness coverage for common failure classes
 
 ## Layer 4 — Next Expansion (NEXT)
-Natural next targets are external-audit execution on immutable RC, codex-in-production tuning based on telemetry, and trend-aware regression intelligence/dashboarding.
+Natural next targets are trend-aware regression intelligence, codex-in-production tuning from telemetry, and richer operator surfaces for release/audit observability.
 
 ---
 
 ## Release State
 
 ### Published tags (latest first)
-`v0.3.4`, `v0.3.4-rc1`, `v0.3.3`, `v0.3.2`, `v0.3.1`, `v0.3.0`, ...
+`v0.3.5`, `v0.3.5-rc2`, `v0.3.5-rc1`, `v0.3.4`, `v0.3.4-rc1`, `v0.3.3`, ...
 
 ### Stable release
-- **v0.3.4** (non-draft, non-prerelease)
+- **v0.3.5** (non-draft, non-prerelease)
 - Cross-platform artifacts + checksums published
+- Promotion preceded by external hostile-audit **GO** on immutable `v0.3.5-rc2`
 
 ### Release process maturity (current)
 - CI build/test/vet gates
@@ -73,6 +75,7 @@ Natural next targets are external-audit execution on immutable RC, codex-in-prod
 - Docs drift gate: `scripts/ci_release_guard.sh`
 - Runtime connectivity gate: `scripts/connectivity_smoke.sh`
 - Auditor evidence gate: `scripts/audit_preflight.sh`
+- Adversarial gate: `scripts/audit_break_harness.sh`
 
 ---
 
@@ -100,12 +103,12 @@ The prior document anchored to `v0.3.3` / `968954e` and emphasized audit hardeni
 
 Now, beyond that baseline, Cortex added:
 
-1. **Stable promotion to v0.3.4** after audit loop
+1. **Stable promotion to v0.3.4 and then v0.3.5** via immutable-target audit discipline
 2. **Reliability lane completion** (optimize, SLO snapshot/canary, checklist/doc drift guards)
 3. **Deterministic connectivity gate** for release/runtime path validation
 4. **One-command audit preflight** that emits markdown + per-step logs
 5. **Visualizer v1 closure** including retrieval-debug deltas and bounded provenance explorer
-6. **RC audit packet scaffolding** for `v0.3.5-rc2` (go/no-go + auditor command pack + release notes)
+6. **External hostile audit GO on `v0.3.5-rc2`** with no reproducible product findings before stable promotion
 
 ---
 
@@ -162,12 +165,12 @@ The platform is now strong on correctness and operations. The next strategic unl
 
 ---
 
-## Recommended Next Roadmap Slice (Post RC-prep lanes)
+## Recommended Next Roadmap Slice (Post v0.3.5 promotion)
 
-1. **External audit execution:** run immutable-target audit on `v0.3.5-rc2`, collect findings, close deltas.
-2. **Codex real-work tuning loop:** continue production dogfooding and adjust thresholds/prompts only from measured regressions.
-3. **SLO trend intelligence:** compare latest canary against historical baseline for relative regressions, not only static thresholds.
-4. **Gate observability dashboard:** unify release checks, canary trends, and audit preflight history into one operator view.
+1. **Codex real-work tuning loop:** continue production dogfooding and adjust thresholds/prompts only from measured regressions.
+2. **SLO trend intelligence:** compare latest canary against historical baseline for relative regressions, not only static thresholds.
+3. **Gate observability dashboard:** unify release checks, canary trends, and audit preflight history into one operator view.
+4. **Cross-platform hostile soak testing:** extend destructive coverage beyond darwin artifact path into linux/windows + longer contention windows.
 
 ---
 
