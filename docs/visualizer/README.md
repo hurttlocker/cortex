@@ -15,14 +15,20 @@ The exporter builds **one canonical graph/read-model** and then adapts it for Ob
 - Canonical: `data/latest.json` (Cortex visualizer)
 - Adapter: `data/obsidian-graph.json` (Obsidian graph-friendly)
 
-Optional: it can also write markdown files with wikilinks for vault graph browsing.
+Optional: it can also write a **single visual dashboard markdown** (with Mermaid diagrams) into your Obsidian vault.
 
 ## Generate data
 ```bash
+# Auto-detect active Obsidian vault, write dashboard to <vault>/_cortex_visualizer/
+python3 scripts/visualizer_export.py \
+  --output docs/visualizer/data/latest.json \
+  --obsidian-output docs/visualizer/data/obsidian-graph.json
+
+# Optional manual override
 python3 scripts/visualizer_export.py \
   --output docs/visualizer/data/latest.json \
   --obsidian-output docs/visualizer/data/obsidian-graph.json \
-  --obsidian-vault-dir docs/visualizer/data/obsidian-vault
+  --obsidian-vault-dir ~/path/to/vault/_cortex_visualizer
 ```
 
 Data sources currently used:
@@ -41,7 +47,7 @@ python3 scripts/visualizer_api.py --bootstrap --port 8787
 # open http://127.0.0.1:8787/prototype-v1.html
 ```
 
-From the UI, click **Open in Obsidian** to launch desktop Obsidian at the graph index note.
+From the UI, click **Open in Obsidian** to launch desktop Obsidian at the visual dashboard note.
 
 API routes:
 - `GET /api/v1/canonical`
@@ -54,11 +60,13 @@ API routes:
 ```bash
 python3 scripts/visualizer_open_obsidian.py
 ```
-This refreshes exports and opens Obsidian desktop to:
-`docs/visualizer/data/obsidian-vault/index.md`
+This refreshes exports, auto-detects your active vault, and opens Obsidian desktop to:
+`<active-vault>/_cortex_visualizer/cortex-visualizer-dashboard.md`
 
 ## Notes
 - Black/white baseline for shadcn alignment.
 - Provenance graph is a **focused clickable bounded subgraph**, not a full global graph render.
+- Obsidian export defaults to a **single dashboard file** with Mermaid graph + pie chart + node directory.
+- Dashboard now includes a **Memory Radar** section (recent memories, focus memory pack, timeline, stale/conflict watchlists).
 - Default graph bounds are enforced in contract (`max_hops`, `max_nodes`).
 - This is prototype-phase: producer path can move from script export to endpoint/read-model service later.

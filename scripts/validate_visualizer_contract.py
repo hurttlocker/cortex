@@ -26,7 +26,7 @@ def validate_canonical(path: pathlib.Path) -> None:
     require(data, "data", "canonical root")
 
     d = data["data"]
-    for section in ["overview", "ops", "quality", "reason", "retrieval", "graph", "stats"]:
+    for section in ["overview", "ops", "quality", "reason", "retrieval", "graph", "memory", "stats"]:
         require(d, section, "canonical data")
 
     ops = d["ops"]
@@ -53,6 +53,44 @@ def validate_canonical(path: pathlib.Path) -> None:
             for link_key in ["label", "href"]:
                 require(link, link_key, f"{where}.evidence_links[{j}]")
 
+    quality = d["quality"]
+    for k in [
+        "formula_version",
+        "score",
+        "score_status",
+        "delta_24h",
+        "trend_24h",
+        "factors",
+        "factors_v2",
+        "top_drivers",
+        "actions",
+        "reproducibility",
+    ]:
+        require(quality, k, "quality")
+
+    if quality.get("score_status") not in allowed:
+        fail("quality.score_status not in PASS|WARN|FAIL|NO_DATA")
+
+    if not isinstance(quality.get("factors_v2"), list):
+        fail("quality.factors_v2 must be an array")
+
+    memory = d["memory"]
+    for k in [
+        "focus_query",
+        "recent_total",
+        "recent_memories",
+        "focus_memories",
+        "class_distribution",
+        "source_distribution",
+        "timeline",
+        "health",
+    ]:
+        require(memory, k, "memory")
+
+    health = memory.get("health", {})
+    for k in ["stale_count", "conflict_count", "alerts", "stale_examples", "conflict_examples"]:
+        require(health, k, "memory.health")
+
     graph = d["graph"]
     for k in ["focus", "bounds", "nodes", "edges"]:
         require(graph, k, "graph")
@@ -69,23 +107,48 @@ def validate_obsidian(path: pathlib.Path) -> None:
         require(data, k, "obsidian root")
 
     graph = data["graph"]
-    for k in ["focus", "bounds", "nodes", "edges", "vault_dir", "index_path", "obsidian_index_uri"]:
+    for k in [
+        "focus",
+        "bounds",
+        "nodes",
+        "edges",
+        "vault_dir",
+        "index_path",
+        "obsidian_index_uri",
+        "dashboard_file",
+        "dashboard_path",
+        "obsidian_dashboard_uri",
+    ]:
         require(graph, k, "obsidian graph")
 
+    for uri_key in ["obsidian_index_uri", "obsidian_dashboard_uri"]:
+        uri = str(graph.get(uri_key, ""))
+        if uri and not uri.startswith("obsidian://open?path="):
+            fail(f"obsidian graph {uri_key} must start with obsidian://open?path=")
+
     node_ids = set()
-    for idx, n in enumerate(graph.get("nodes", [])):
+    for idx, node in enumerate(graph.get("nodes", [])):
         where = f"obsidian.graph.nodes[{idx}]"
-        for k in ["id", "title", "type", "timestamp", "source_ref", "links", "note_file", "note_path", "obsidian_uri"]:
-            require(n, k, where)
-        node_ids.add(n["id"])
+        for k in [
+            "id",
+            "title",
+            "type",
+            "confidence",
+            "timestamp",
+            "source_ref",
+            "links",
+            "note_file",
+            "note_path",
+            "obsidian_uri",
+        ]:
+            require(node, k, where)
 
-    for idx, e in enumerate(graph.get("edges", [])):
-        where = f"obsidian.graph.edges[{idx}]"
-        for k in ["id", "from", "to", "kind"]:
-            require(e, k, where)
+        if node.get("obsidian_uri") and not str(node.get("obsidian_uri")).startswith("obsidian://open?path="):
+            fail(f"{where}.obsidian_uri must start with obsidian://open?path=")
+        node_ids.add(node.get("id"))
 
-    for idx, n in enumerate(graph.get("nodes", [])):
-        for target in n.get("links", []):
+    for idx, node in enumerate(graph.get("nodes", [])):
+        for target in node.get("links", []):
             if target not in node_ids:
                 fail(f"obsidian.graph.nodes[{idx}] link target missing node `{target}`")
 

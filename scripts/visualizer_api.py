@@ -31,6 +31,12 @@ def run_export(exporter: pathlib.Path, args: argparse.Namespace) -> None:
     ]
     if args.obsidian_vault_dir:
         cmd.extend(["--obsidian-vault-dir", str(args.obsidian_vault_dir)])
+    if args.obsidian_auto_subdir:
+        cmd.extend(["--obsidian-auto-subdir", str(args.obsidian_auto_subdir)])
+    if args.obsidian_dashboard_file:
+        cmd.extend(["--obsidian-dashboard-file", str(args.obsidian_dashboard_file)])
+    if args.no_obsidian_auto_vault:
+        cmd.append("--no-obsidian-auto-vault")
     if args.cortex_bin:
         cmd.extend(["--cortex-bin", str(args.cortex_bin)])
     subprocess.run(cmd, check=False)
@@ -377,7 +383,10 @@ def main() -> None:
     parser.add_argument("--canonical", type=pathlib.Path, default=pathlib.Path("docs/visualizer/data/latest.json"))
     parser.add_argument("--obsidian", type=pathlib.Path, default=pathlib.Path("docs/visualizer/data/obsidian-graph.json"))
     parser.add_argument("--telemetry", type=pathlib.Path, default=pathlib.Path.home() / ".cortex/reason-telemetry.jsonl")
-    parser.add_argument("--obsidian-vault-dir", type=pathlib.Path, default=pathlib.Path("docs/visualizer/data/obsidian-vault"))
+    parser.add_argument("--obsidian-vault-dir", type=pathlib.Path, default=None)
+    parser.add_argument("--obsidian-auto-subdir", type=str, default="_cortex_visualizer")
+    parser.add_argument("--obsidian-dashboard-file", type=str, default="cortex-visualizer-dashboard.md")
+    parser.add_argument("--no-obsidian-auto-vault", action="store_true")
     parser.add_argument("--cortex-bin", type=pathlib.Path, default=pathlib.Path.home() / "bin/cortex")
     parser.add_argument("--exporter", type=pathlib.Path, default=pathlib.Path("scripts/visualizer_export.py"))
     parser.add_argument("--bootstrap", action="store_true", help="generate snapshots on startup")

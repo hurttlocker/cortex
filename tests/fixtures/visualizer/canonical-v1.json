@@ -1,17 +1,17 @@
 {
   "schema_version": "v1",
-  "generated_at": "2026-02-20T16:06:12Z",
+  "generated_at": "2026-02-20T18:11:51Z",
   "window": {
     "from": "2026-02-20T04:24:41Z",
-    "to": "2026-02-20T10:24:53Z",
+    "to": "2026-02-20T16:24:58Z",
     "tz": "UTC"
   },
   "data": {
     "overview": {
       "release_readiness": "WARN",
-      "memory_quality_score": 80,
-      "reason_p95_latency_s": 112.7,
-      "facts_24h_growth": 1257368
+      "memory_quality_score": 84,
+      "reason_p95_latency_s": 121.9,
+      "facts_24h_growth": 1238401
     },
     "ops": {
       "overall_status": "WARN",
@@ -75,42 +75,195 @@
         {
           "ts": "2026-02-20T10:24:53Z",
           "score": 30
+        },
+        {
+          "ts": "2026-02-20T16:24:58Z",
+          "score": 30
         }
       ],
       "events": [
         {
-          "ts": "2026-02-20T16:06:12Z",
+          "ts": "2026-02-20T18:11:51Z",
           "severity": "warn",
           "message": "db_size_notice: storage is above 1.0GB; monitor growth weekly"
         },
         {
-          "ts": "2026-02-20T16:06:12Z",
+          "ts": "2026-02-20T18:11:51Z",
           "severity": "warn",
           "message": "fact_growth_spike: 24h fact growth is unusually high"
         },
         {
-          "ts": "2026-02-20T16:06:12Z",
+          "ts": "2026-02-20T18:11:51Z",
           "severity": "warn",
           "message": "memory_growth_spike: 24h memory growth is unusually high"
         }
       ]
     },
     "quality": {
-      "score": 80,
-      "delta_24h": -4,
+      "formula_version": "mqe-v1",
+      "score": 84,
+      "score_status": "PASS",
+      "delta_24h": -0.9,
+      "trend_24h": [
+        {
+          "ts": "2026-02-20T04:24:41Z",
+          "score": 72.2
+        },
+        {
+          "ts": "2026-02-20T10:24:53Z",
+          "score": 71.9
+        },
+        {
+          "ts": "2026-02-20T16:24:58Z",
+          "score": 71.3
+        }
+      ],
       "factors": {
-        "conflict_density": 0.22,
-        "stale_pressure": 0.18,
-        "confidence_health": 0.867,
-        "extraction_yield": 0.74
+        "conflict_density": 0.057,
+        "stale_pressure": 0.0,
+        "confidence_health": 0.919,
+        "extraction_yield": 0.95
       },
+      "factors_v2": [
+        {
+          "key": "stale_ratio",
+          "label": "Stale Ratio",
+          "definition": "Share of records in freshness.older over total freshness buckets.",
+          "source": "stats.freshness.older / (today + this_week + this_month + older)",
+          "direction": "penalty",
+          "weight": 0.22,
+          "value": 0.0,
+          "remediation": "Run stale-fact cleanup and reinforce active facts used in current workflows.",
+          "quality_value": 1.0,
+          "status": "PASS",
+          "weighted_score": 22.0
+        },
+        {
+          "key": "conflict_density",
+          "label": "Conflict Density (proxy)",
+          "definition": "Proxy derived from low/medium confidence mix plus explicit conflict alerts.",
+          "source": "stats.confidence_distribution + stats.alerts",
+          "direction": "penalty",
+          "weight": 0.2,
+          "value": 0.0569,
+          "remediation": "Review conflict clusters and add supersession/tombstones for contradictory facts.",
+          "quality_value": 0.9431,
+          "status": "PASS",
+          "weighted_score": 18.86
+        },
+        {
+          "key": "confidence_health",
+          "label": "Confidence Distribution Health",
+          "definition": "High-confidence share plus half-weighted medium-confidence share.",
+          "source": "stats.confidence_distribution.high/medium/total",
+          "direction": "bonus",
+          "weight": 0.24,
+          "value": 0.9186,
+          "remediation": "Improve extraction quality on noisy sources and reinforce high-value facts.",
+          "quality_value": 0.9186,
+          "status": "PASS",
+          "weighted_score": 22.05
+        },
+        {
+          "key": "extraction_yield",
+          "label": "Extraction Yield Health",
+          "definition": "Health band based on facts generated per memory over the last 24h.",
+          "source": "stats.growth.facts_24h / stats.growth.memories_24h",
+          "direction": "bonus",
+          "weight": 0.18,
+          "value": 0.95,
+          "remediation": "Tune extraction prompts/chunking to maintain high-signal yield without over-generation.",
+          "quality_value": 0.95,
+          "status": "PASS",
+          "weighted_score": 17.1
+        },
+        {
+          "key": "duplication_noise",
+          "label": "Duplication / Noise Pressure",
+          "definition": "KV fact dominance plus growth-spike penalties to flag likely ingestion noise.",
+          "source": "stats.facts_by_type.kv / stats.facts + stats.alerts",
+          "direction": "penalty",
+          "weight": 0.16,
+          "value": 0.7405,
+          "remediation": "Tighten low-signal ingestion filters and dedupe thresholds for repetitive captures.",
+          "quality_value": 0.2595,
+          "status": "FAIL",
+          "weighted_score": 4.15
+        }
+      ],
+      "top_drivers": [
+        {
+          "key": "duplication_noise",
+          "label": "Duplication / Noise Pressure",
+          "status": "FAIL",
+          "impact_points": 11.85,
+          "why": "KV fact dominance plus growth-spike penalties to flag likely ingestion noise.",
+          "remediation": "Tighten low-signal ingestion filters and dedupe thresholds for repetitive captures."
+        }
+      ],
       "actions": [
-        "tighten low-signal ingestion filters for high-volume sources",
-        "run optimize + growth guardrails, then verify canary trend"
-      ]
+        "Tighten low-signal ingestion filters and dedupe thresholds for repetitive captures."
+      ],
+      "reproducibility": {
+        "formula": "score = round(sum(weight_i * quality_i) / sum(weight_i) * 100); quality_i = metric_i for bonus factors, (1 - metric_i) for penalty factors",
+        "inputs": {
+          "stats.confidence_distribution": {
+            "high": 2403124,
+            "medium": 466976,
+            "low": 0,
+            "total": 2870100
+          },
+          "stats.freshness": {
+            "today": 617,
+            "this_week": 1967,
+            "this_month": 0,
+            "older": 0
+          },
+          "stats.growth": {
+            "memories_24h": 877,
+            "memories_7d": 2584,
+            "facts_24h": 1238401,
+            "facts_7d": 2870100
+          },
+          "stats.facts_by_type": {
+            "decision": 1058,
+            "identity": 32952,
+            "kv": 2672299,
+            "location": 867,
+            "preference": 2372,
+            "relationship": 129,
+            "state": 10668,
+            "temporal": 149755
+          },
+          "stats.alerts": [
+            "db_size_notice: storage is above 1.0GB; monitor growth weekly",
+            "fact_growth_spike: 24h fact growth is unusually high",
+            "memory_growth_spike: 24h memory growth is unusually high"
+          ],
+          "derived": {
+            "facts_per_memory_24h": 1412.088,
+            "kv_ratio": 0.9311,
+            "confidence_ratios": {
+              "high": 0.8373,
+              "medium": 0.1627,
+              "low": 0.0
+            }
+          }
+        }
+      }
     },
     "reason": {
       "runs": [
+        {
+          "run_id": "6:24:58Z",
+          "mode": "recursive",
+          "model": "google/gemini-3-flash-preview",
+          "provider": "openrouter",
+          "latency_ms": 121872,
+          "tokens_total": 4611,
+          "estimated_cost_usd": 0.00092,
+          "status": "ok"
+        },
         {
           "run_id": "0:24:53Z",
           "mode": "recursive",
@@ -132,8 +285,8 @@
           "status": "ok"
         }
       ],
-      "p95_latency_ms": 112683,
-      "cost_24h_usd": 0.0018
+      "p95_latency_ms": 121872,
+      "cost_24h_usd": 0.0028
     },
     "retrieval": {
       "query": "release gate regressions this week",
@@ -188,7 +341,7 @@
           "type": "fact",
           "weight": 1.0,
           "confidence": 0.91,
-          "timestamp": "2026-02-20T16:06:12Z",
+          "timestamp": "2026-02-20T18:11:51Z",
           "source_ref": "docs/ops-db-growth-guardrails.md",
           "x": 120,
           "y": 95
@@ -199,7 +352,7 @@
           "type": "source",
           "weight": 0.82,
           "confidence": 0.88,
-          "timestamp": "2026-02-20T16:06:12Z",
+          "timestamp": "2026-02-20T18:11:51Z",
           "source_ref": "docs/ops-db-growth-guardrails.md",
           "x": 360,
           "y": 65
@@ -210,7 +363,7 @@
           "type": "artifact",
           "weight": 0.77,
           "confidence": 0.84,
-          "timestamp": "2026-02-20T16:06:12Z",
+          "timestamp": "2026-02-20T18:11:51Z",
           "source_ref": "docs/releases/v0.3.4.md",
           "x": 360,
           "y": 145
@@ -221,7 +374,7 @@
           "type": "artifact",
           "weight": 0.7,
           "confidence": 0.81,
-          "timestamp": "2026-02-20T16:06:12Z",
+          "timestamp": "2026-02-20T18:11:51Z",
           "source_ref": "docs/CORTEX_DEEP_DIVE.md",
           "x": 560,
           "y": 105
@@ -234,7 +387,7 @@
           "to": "src_ops_guardrails",
           "kind": "sourced_from",
           "weight": 1.0,
-          "timestamp": "2026-02-20T16:06:12Z",
+          "timestamp": "2026-02-20T18:11:51Z",
           "source_ref": "docs/ops-db-growth-guardrails.md"
         },
         {
@@ -243,7 +396,7 @@
           "to": "artifact_release_summary",
           "kind": "influenced",
           "weight": 0.78,
-          "timestamp": "2026-02-20T16:06:12Z",
+          "timestamp": "2026-02-20T18:11:51Z",
           "source_ref": "docs/releases/v0.3.4.md"
         },
         {
@@ -252,38 +405,321 @@
           "to": "artifact_canary_card",
           "kind": "influenced",
           "weight": 0.74,
-          "timestamp": "2026-02-20T16:06:12Z",
+          "timestamp": "2026-02-20T18:11:51Z",
           "source_ref": "docs/CORTEX_DEEP_DIVE.md"
         }
       ]
     },
+    "memory": {
+      "focus_query": "canary regression threshold exceeded",
+      "recent_memories": [
+        {
+          "id": 2592,
+          "imported_at": "2026-02-20T18:05:30.892291Z",
+          "class": "uncategorized",
+          "project": "",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-VYBeR0/auto-capture.md",
+          "source_name": "auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T18:05:30.870Z > Current repo state",
+          "channel": "",
+          "snippet": "Open issues are now only: - #104 (visualizer lane) - #99 (visualizer epic) If you want, I\u2019ll now move directly into **v0.3.5-rc1 prep** (non-viz release packaging/docs/checks) so we can cut next version fast once you sa\u2026"
+        },
+        {
+          "id": 2591,
+          "imported_at": "2026-02-20T18:05:30.892023Z",
+          "class": "uncategorized",
+          "project": "",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-VYBeR0/auto-capture.md",
+          "source_name": "auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T18:05:30.870Z > What this adds",
+          "channel": "",
+          "snippet": "- New deterministic end-to-end runtime smoke: - `scripts/connectivity_smoke.sh` - validates: `import --extract \u2192 stats \u2192 search \u2192 list --facts \u2192 optimize --check-only` - CI now runs this gate on PR/push - `scripts/relea\u2026"
+        },
+        {
+          "id": 2590,
+          "imported_at": "2026-02-20T18:05:30.891742Z",
+          "class": "uncategorized",
+          "project": "",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-VYBeR0/auto-capture.md",
+          "source_name": "auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T18:05:30.870Z > Just shipped (non-viz)",
+          "channel": "",
+          "snippet": "- \u2705 Opened + closed **#117** (core connectivity gate) - \u2705 Merged **PR #118**: https://github.com/hurttlocker/cortex/pull/118 - \u2705 Merge commit: `21a39fa`"
+        },
+        {
+          "id": 2589,
+          "imported_at": "2026-02-20T18:05:30.890936Z",
+          "class": "uncategorized",
+          "project": "",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-VYBeR0/auto-capture.md",
+          "source_name": "auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T18:05:30.870Z > Assistant",
+          "channel": "",
+          "snippet": "[[reply_to_current]] Perfect \u2014 I stayed **completely out of visualization** and kept pushing core Cortex."
+        },
+        {
+          "id": 2588,
+          "imported_at": "2026-02-20T17:55:00.707438Z",
+          "class": "uncategorized",
+          "project": "",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-q7CFpn/auto-capture.md",
+          "source_name": "auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T17:55:00.648Z > For even better UX (optional plugin-dependent)",
+          "channel": "",
+          "snippet": "- **Dataview tables** (interactive querying inside Obsidian) - **Advanced URI plugin** (deep-link to exact heading/block, not just file) - **Canvas auto-map** (if you want node cards visually arranged) If you want, I\u2019ll\u2026"
+        },
+        {
+          "id": 2587,
+          "imported_at": "2026-02-20T17:55:00.693104Z",
+          "class": "decision",
+          "project": "",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-q7CFpn/auto-capture.md",
+          "source_name": "auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T17:55:00.648Z > What we can add next (high value)",
+          "channel": "",
+          "snippet": "1. **Recent Memories panel** - Last N memories with: timestamp, confidence, source, type. 2. **Focus-node Memory Pack** - For the selected graph focus, show top connected memory snippets + provenance. 3. **Memory Timeli\u2026"
+        },
+        {
+          "id": 2586,
+          "imported_at": "2026-02-20T17:55:00.692294Z",
+          "class": "uncategorized",
+          "project": "",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-q7CFpn/auto-capture.md",
+          "source_name": "auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T17:55:00.648Z > Assistant",
+          "channel": "",
+          "snippet": "[[reply_to_current]] 100% yes \u2014 we can absolutely show memories here, and make it way more visual. Right now we\u2019re showing graph + ops summary. Next layer can be **\u201cmemory intelligence dashboard\u201d** inside that same sing\u2026"
+        },
+        {
+          "id": 2585,
+          "imported_at": "2026-02-20T17:31:20.102809Z",
+          "class": "status",
+          "project": "",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-rwJNaX/auto-capture.md",
+          "source_name": "auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T17:31:20.083Z > Assistant",
+          "channel": "",
+          "snippet": "[[reply_to_current]] Not fully yet. - \u2705 **#102 is done** (merged, issue closed) - \ud83d\udea7 **#104 is in progress** (I started the branch) - \ud83d\udccc **#99** epic tracker is still open until #104 lands I\u2019ll ping you the moment #104 is\u2026"
+        },
+        {
+          "id": 2584,
+          "imported_at": "2026-02-20T17:31:01.902579Z",
+          "class": "uncategorized",
+          "project": "",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-JN7Uf3/auto-capture.md",
+          "source_name": "auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T17:31:01.854Z > \u2705 Tested on your machine",
+          "channel": "",
+          "snippet": "It now exports/opened successfully to: `/Users/marquisehurtt/clawd/_cortex_visualizer/cortex-visualizer-dashboard.md` And opens via Obsidian URI correctly. --- If you want, next I can tune the dashboard visuals further\u2026"
+        },
+        {
+          "id": 2583,
+          "imported_at": "2026-02-20T17:31:01.902264Z",
+          "class": "status",
+          "project": "",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-JN7Uf3/auto-capture.md",
+          "source_name": "auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T17:31:01.854Z > \u2705 What I changed (live on your `feat/114-obsidian-desktop-launch` branch)",
+          "channel": "",
+          "snippet": "1. **Auto vault targeting** - `visualizer_export.py` now auto-detects the currently active Obsidian vault from: - `~/Library/Application Support/obsidian/obsidian.json` - Default export target becomes: - `<active-vault>\u2026"
+        }
+      ],
+      "recent_total": 25,
+      "focus_memories": [
+        {
+          "memory_id": 2486,
+          "class": "decision",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-y9YIbS/auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T15:43:32.468Z > What lane 8 *is* (and why it matters) > 1) New budget guard",
+          "imported_at": "2026-02-20T15:43:32.489565Z",
+          "score": 1.0518580183370048,
+          "snippet": "- Added `scripts/slo_budget_guard.py` - It reads: - `slo-canary.json` (snapshot status + timing) - `slo-trend.json` (regression status vs prior run) - Produces: - `PASS / WARN / FAIL` decision - JSON + markdown artifact\u2026"
+        },
+        {
+          "memory_id": 2233,
+          "class": "rule",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-Etz3eP/auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T03:27:42.423Z > Shipped",
+          "imported_at": "2026-02-20T03:27:42.446808Z",
+          "score": 1.017973517154628,
+          "snippet": "- Added telemetry guardrails to `codex-rollout-report`: - one-shot p95 latency warning threshold (default `20000ms`) - recursive known-cost completeness warning threshold (default `0.80`) - Added exit-mode support: - `-\u2026"
+        },
+        {
+          "memory_id": 2429,
+          "class": "uncategorized",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-hd3cQX/auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T14:58:53.468Z > Verified live",
+          "imported_at": "2026-02-20T14:58:53.490723Z",
+          "score": 0.9016618877863855,
+          "snippet": "- Triggered canary manually after fix - Run **passed end-to-end** with artifact upload. If you want, I\u2019ll start **lane 6** now: make canary enforce configurable timing thresholds (warn/fail bands) so it becomes a true r\u2026"
+        },
+        {
+          "memory_id": 2449,
+          "class": "status",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-4kx7bI/auto-capture.md",
+          "source_section": "Roadmap status (where we are now) > Current repo state",
+          "imported_at": "2026-02-20T15:05:47.59235Z",
+          "score": 0.885547725591791,
+          "snippet": "- No open issues right now (I checked live issue list) - Main is at: `9ab5d04` (latest merge) --- If you want, I\u2019ll draft **Lane 7** immediately as: **\u201cSLO trend comparator\u201d** (compare latest canary artifact vs prior ru\u2026"
+        },
+        {
+          "memory_id": 2473,
+          "class": "uncategorized",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-vslAwQ/auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T15:26:38.180Z > Current repo posture",
+          "imported_at": "2026-02-20T15:26:38.2029Z",
+          "score": 0.8797045505661439,
+          "snippet": "- `main` at `674463b` - Open issues: **none** If you want, I\u2019ll start the next lane now: **SLO trend comparator** (compare latest canary artifact vs prior runs and flag regressions by delta, not just static thresholds).\u2026"
+        },
+        {
+          "memory_id": 2446,
+          "class": "uncategorized",
+          "source_file": "/var/folders/tm/37kzq38d7z38h2bsl73xpcm40000gn/T/cortex-capture-4kx7bI/auto-capture.md",
+          "source_section": "Conversation Capture \u2014 2026-02-20T15:05:47.571Z > \u2705 Canary workflow now gates on thresholds",
+          "imported_at": "2026-02-20T15:05:47.591391Z",
+          "score": 0.8097004880272224,
+          "snippet": "- `.github/workflows/slo-canary.yml` updated with explicit warn/fail bands - I ran it live after merge: **pass**"
+        }
+      ],
+      "class_distribution": [
+        {
+          "label": "uncategorized",
+          "count": 17
+        },
+        {
+          "label": "status",
+          "count": 6
+        },
+        {
+          "label": "decision",
+          "count": 2
+        }
+      ],
+      "source_distribution": [
+        {
+          "label": "auto-capture.md",
+          "count": 25
+        }
+      ],
+      "timeline": [
+        {
+          "id": 2583,
+          "ts": "2026-02-20T17:31:01.902264Z",
+          "label": "02-20 17:31",
+          "class": "status",
+          "headline": "1. **Auto vault targeting** - `visualizer_export.py` now auto-detects t\u2026"
+        },
+        {
+          "id": 2584,
+          "ts": "2026-02-20T17:31:01.902579Z",
+          "label": "02-20 17:31",
+          "class": "uncategorized",
+          "headline": "It now exports/opened successfully to: `/Users/marquisehurtt/clawd/_cor\u2026"
+        },
+        {
+          "id": 2585,
+          "ts": "2026-02-20T17:31:20.102809Z",
+          "label": "02-20 17:31",
+          "class": "status",
+          "headline": "[[reply_to_current]] Not fully yet. - \u2705 **#102 is done** (merged, issue\u2026"
+        },
+        {
+          "id": 2586,
+          "ts": "2026-02-20T17:55:00.692294Z",
+          "label": "02-20 17:55",
+          "class": "uncategorized",
+          "headline": "[[reply_to_current]] 100% yes \u2014 we can absolutely show memories here, a\u2026"
+        },
+        {
+          "id": 2587,
+          "ts": "2026-02-20T17:55:00.693104Z",
+          "label": "02-20 17:55",
+          "class": "decision",
+          "headline": "1. **Recent Memories panel** - Last N memories with: timestamp, confide\u2026"
+        },
+        {
+          "id": 2588,
+          "ts": "2026-02-20T17:55:00.707438Z",
+          "label": "02-20 17:55",
+          "class": "uncategorized",
+          "headline": "- **Dataview tables** (interactive querying inside Obsidian) - **Advanc\u2026"
+        },
+        {
+          "id": 2589,
+          "ts": "2026-02-20T18:05:30.890936Z",
+          "label": "02-20 18:05",
+          "class": "uncategorized",
+          "headline": "[[reply_to_current]] Perfect \u2014 I stayed **completely out of visualizati\u2026"
+        }
+      ],
+      "health": {
+        "stale_count": 0,
+        "conflict_count": 221,
+        "alerts": [
+          "221 potential fact conflicts detected"
+        ],
+        "stale_examples": [],
+        "conflict_examples": [
+          {
+            "winner_id": 1007108,
+            "loser_id": 1007104,
+            "reason": "attribute: [messageid=588] vs [messageid=585]",
+            "subject": "Conversation Summary"
+          },
+          {
+            "winner_id": 1007108,
+            "loser_id": 1007100,
+            "reason": "attribute: [messageid=588] vs [messageid=591]",
+            "subject": "Conversation Summary"
+          },
+          {
+            "winner_id": 1007108,
+            "loser_id": 1007098,
+            "reason": "attribute: [messageid=588] vs [messageid=590]",
+            "subject": "Conversation Summary"
+          },
+          {
+            "winner_id": 1007108,
+            "loser_id": 1002476,
+            "reason": "attribute: [messageid=588] vs [messageid=582]",
+            "subject": "Conversation Summary"
+          },
+          {
+            "winner_id": 1007108,
+            "loser_id": 1002443,
+            "reason": "attribute: [messageid=588] vs [messageid=585]",
+            "subject": "Conversation Summary"
+          }
+        ]
+      }
+    },
     "stats": {
-      "memories": 2520,
-      "facts": 2796554,
-      "sources": 691,
-      "storage_bytes": 1530855424,
-      "avg_confidence": 0.8673551663940693,
+      "memories": 2584,
+      "facts": 2870100,
+      "sources": 714,
+      "storage_bytes": 1570611200,
+      "avg_confidence": 0.8673400299641127,
       "facts_by_type": {
-        "decision": 851,
-        "identity": 31986,
-        "kv": 2606463,
-        "location": 752,
-        "preference": 2008,
-        "relationship": 106,
-        "state": 8879,
-        "temporal": 145509
+        "decision": 1058,
+        "identity": 32952,
+        "kv": 2672299,
+        "location": 867,
+        "preference": 2372,
+        "relationship": 129,
+        "state": 10668,
+        "temporal": 149755
       },
       "freshness": {
-        "today": 553,
+        "today": 617,
         "this_week": 1967,
         "this_month": 0,
         "older": 0
       },
       "growth": {
-        "memories_24h": 864,
-        "memories_7d": 2520,
-        "facts_24h": 1257368,
-        "facts_7d": 2796554
+        "memories_24h": 877,
+        "memories_7d": 2584,
+        "facts_24h": 1238401,
+        "facts_7d": 2870100
       },
       "alerts": [
         "db_size_notice: storage is above 1.0GB; monitor growth weekly",
@@ -291,10 +727,10 @@
         "memory_growth_spike: 24h memory growth is unusually high"
       ],
       "confidence_distribution": {
-        "high": 2341515,
-        "medium": 455039,
+        "high": 2403124,
+        "medium": 466976,
         "low": 0,
-        "total": 2796554
+        "total": 2870100
       },
       "date_range": "2026-02-17 \u2192 2026-02-20"
     }
