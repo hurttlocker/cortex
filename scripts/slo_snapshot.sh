@@ -35,16 +35,7 @@ PY
 }
 
 DB_PATH=""
-if [[ -n "${CORTEX_BIN:-}" ]]; then
-  CORTEX_BIN="$CORTEX_BIN"
-elif command -v cortex >/dev/null 2>&1; then
-  CORTEX_BIN="cortex"
-elif [[ -x "$HOME/bin/cortex" ]]; then
-  CORTEX_BIN="$HOME/bin/cortex"
-else
-  echo "Could not find cortex binary. Set --cortex-bin or CORTEX_BIN." >&2
-  exit 1
-fi
+CORTEX_BIN="${CORTEX_BIN:-}"
 QUERY="memory"
 MODE="keyword"
 EMBED=""
@@ -101,6 +92,30 @@ fi
 if [[ -z "$OUTPUT_PATH" ]]; then
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   OUTPUT_PATH="slo-snapshot-${stamp}.json"
+fi
+
+# Resolve cortex binary AFTER args parsing so --cortex-bin takes effect.
+if [[ -z "$CORTEX_BIN" ]]; then
+  if command -v cortex >/dev/null 2>&1; then
+    CORTEX_BIN="cortex"
+  elif [[ -x "$HOME/bin/cortex" ]]; then
+    CORTEX_BIN="$HOME/bin/cortex"
+  else
+    echo "Could not find cortex binary. Set --cortex-bin or CORTEX_BIN." >&2
+    exit 1
+  fi
+fi
+
+if [[ "$CORTEX_BIN" == */* ]]; then
+  if [[ ! -x "$CORTEX_BIN" ]]; then
+    echo "Cortex binary path is not executable: $CORTEX_BIN" >&2
+    exit 1
+  fi
+else
+  if ! command -v "$CORTEX_BIN" >/dev/null 2>&1; then
+    echo "Cortex command not found in PATH: $CORTEX_BIN" >&2
+    exit 1
+  fi
 fi
 
 steps_file="$(mktemp)"
