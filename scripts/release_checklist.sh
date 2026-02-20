@@ -19,7 +19,8 @@ Checks:
 2) CHANGELOG contains a matching section: ## [<version>]
 3) docs/releases/v<version>.md exists
 4) go/no-go doc structural guard passes (offline mode)
-5) (optional) latest SLO Canary workflow run status is success
+5) deterministic runtime connectivity smoke passes
+6) (optional) latest SLO Canary workflow run status is success
 EOF
 }
 
@@ -79,6 +80,7 @@ if ! rg -q "Tag:\s*\`$TAG\`" "$RELEASE_NOTES"; then
 fi
 
 scripts/ci_release_guard.sh --offline
+scripts/connectivity_smoke.sh
 
 if [[ "$REQUIRE_LATEST_SLO_PASS" -eq 1 ]]; then
   if [[ -z "$REPO" ]]; then

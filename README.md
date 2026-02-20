@@ -736,6 +736,7 @@ Shipped on `main`:
 - **Lane 4:** tag-release checklist enforcement before publish (`scripts/release_checklist.sh`)
 - **Lane 5:** scheduled SLO canary workflow with artifact uploads
 - **Lane 6:** thresholded canary warn/fail bands (`PASS|WARN|FAIL`)
+- **Lane 7:** deterministic runtime connectivity smoke gate (`scripts/connectivity_smoke.sh`)
 
 ### 🔭 Phase 5 — Next Priorities
 - SLO trend comparison across canary history (relative regression detection)
@@ -761,6 +762,7 @@ git clone https://github.com/hurttlocker/cortex.git
 cd cortex
 go build ./cmd/cortex/
 go test ./...
+scripts/connectivity_smoke.sh   # end-to-end runtime gate (import→extract→search→optimize)
 ```
 
 - 📖 Read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines

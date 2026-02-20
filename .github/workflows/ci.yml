@@ -31,3 +31,6 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: Connectivity smoke (runtime path)
+        run: scripts/connectivity_smoke.sh
