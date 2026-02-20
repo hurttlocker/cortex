@@ -1,0 +1,228 @@
+{
+  "schema_version": "v1",
+  "generated_at": "2026-02-20T15:46:21Z",
+  "data": {
+    "overview": {
+      "release_readiness": "WARN",
+      "memory_quality_score": 80,
+      "reason_p95_latency_s": 112.7,
+      "facts_24h_growth": 1281502
+    },
+    "ops": {
+      "overall_status": "WARN",
+      "gates": [
+        {
+          "key": "ci",
+          "label": "CI Build/Test",
+          "status": "PASS",
+          "reason": "latest branch checks healthy"
+        },
+        {
+          "key": "canary",
+          "label": "Canary Trend",
+          "status": "WARN",
+          "reason": "db_size_notice: storage is above 1.0GB; monitor growth weekly"
+        },
+        {
+          "key": "release",
+          "label": "Release Checklist",
+          "status": "PASS",
+          "reason": "checklist gate available"
+        }
+      ],
+      "trend": [
+        {
+          "ts": "2026-02-20T04:24:41Z",
+          "score": 30
+        },
+        {
+          "ts": "2026-02-20T10:24:53Z",
+          "score": 30
+        }
+      ],
+      "events": [
+        {
+          "ts": "2026-02-20T15:46:21Z",
+          "severity": "warn",
+          "message": "db_size_notice: storage is above 1.0GB; monitor growth weekly"
+        },
+        {
+          "ts": "2026-02-20T15:46:21Z",
+          "severity": "warn",
+          "message": "fact_growth_spike: 24h fact growth is unusually high"
+        },
+        {
+          "ts": "2026-02-20T15:46:21Z",
+          "severity": "warn",
+          "message": "memory_growth_spike: 24h memory growth is unusually high"
+        }
+      ]
+    },
+    "quality": {
+      "score": 80,
+      "delta_24h": -4,
+      "factors": {
+        "conflict_density": 0.22,
+        "stale_pressure": 0.18,
+        "confidence_health": 0.867,
+        "extraction_yield": 0.74
+      },
+      "actions": [
+        "tighten low-signal ingestion filters for high-volume sources",
+        "run optimize + growth guardrails, then verify canary trend"
+      ]
+    },
+    "reason": {
+      "runs": [
+        {
+          "run_id": "0:24:53Z",
+          "mode": "recursive",
+          "latency_ms": 112683,
+          "tokens_total": 4599,
+          "estimated_cost_usd": 0.000918,
+          "status": "ok"
+        },
+        {
+          "run_id": "4:24:41Z",
+          "mode": "recursive",
+          "latency_ms": 106358,
+          "tokens_total": 4611,
+          "estimated_cost_usd": 0.00092,
+          "status": "ok"
+        }
+      ],
+      "p95_latency_ms": 112683,
+      "cost_24h_usd": 0.0018
+    },
+    "retrieval": {
+      "query": "release gate regressions this week",
+      "results": {
+        "bm25": [
+          {
+            "rank": 1,
+            "title": "docs/ops-db-growth-guardrails.md",
+            "score": 0.87
+          },
+          {
+            "rank": 2,
+            "title": "docs/releases/v0.3.4.md",
+            "score": 0.82
+          },
+          {
+            "rank": 3,
+            "title": "README.md",
+            "score": 0.71
+          }
+        ],
+        "hybrid": [
+          {
+            "rank": 1,
+            "title": "docs/CORTEX_DEEP_DIVE.md",
+            "score": 0.92
+          },
+          {
+            "rank": 2,
+            "title": "docs/releases/v0.3.4.md",
+            "score": 0.88
+          },
+          {
+            "rank": 3,
+            "title": "memory/2026-02-19.md",
+            "score": 0.81
+          }
+        ]
+      }
+    },
+    "graph": {
+      "focus": "fact_1",
+      "nodes": [
+        {
+          "id": "fact_1",
+          "label": "canary regression threshold exceeded",
+          "type": "fact",
+          "x": 120,
+          "y": 95
+        },
+        {
+          "id": "src_1",
+          "label": "ops-db-growth-guardrails.md",
+          "type": "source",
+          "x": 360,
+          "y": 65
+        },
+        {
+          "id": "out_1",
+          "label": "release summary",
+          "type": "artifact",
+          "x": 360,
+          "y": 145
+        },
+        {
+          "id": "out_2",
+          "label": "canary status card",
+          "type": "artifact",
+          "x": 560,
+          "y": 105
+        }
+      ],
+      "edges": [
+        {
+          "from": "fact_1",
+          "to": "src_1",
+          "kind": "sourced_from"
+        },
+        {
+          "from": "fact_1",
+          "to": "out_1",
+          "kind": "influenced"
+        },
+        {
+          "from": "fact_1",
+          "to": "out_2",
+          "kind": "influenced"
+        }
+      ]
+    },
+    "stats": {
+      "memories": 2481,
+      "facts": 2743342,
+      "sources": 675,
+      "storage_bytes": 1502257152,
+      "avg_confidence": 0.8673742537386882,
+      "facts_by_type": {
+        "decision": 707,
+        "identity": 31324,
+        "kv": 2559108,
+        "location": 664,
+        "preference": 1752,
+        "relationship": 90,
+        "state": 7524,
+        "temporal": 142173
+      },
+      "freshness": {
+        "today": 514,
+        "this_week": 1967,
+        "this_month": 0,
+        "older": 0
+      },
+      "growth": {
+        "memories_24h": 865,
+        "memories_7d": 2481,
+        "facts_24h": 1281502,
+        "facts_7d": 2743342
+      },
+      "alerts": [
+        "db_size_notice: storage is above 1.0GB; monitor growth weekly",
+        "fact_growth_spike: 24h fact growth is unusually high",
+        "memory_growth_spike: 24h memory growth is unusually high"
+      ],
+      "confidence_distribution": {
+        "high": 2297042,
+        "medium": 446300,
+        "low": 0,
+        "total": 2743342
+      },
+      "date_range": "2026-02-17 \u2192 2026-02-20"
+    }
+  }
+}
