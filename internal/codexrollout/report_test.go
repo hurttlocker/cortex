@@ -139,6 +139,52 @@ func TestExecuteWithOptions_StrictModeNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestExecuteWithOptions_StrictModeFailsOnZeroRuns(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "missing.jsonl")
+
+	res, err := ExecuteWithOptions(Options{
+		FilePath: path,
+		Guardrails: GuardrailConfig{
+			OneShotP95WarnMS:           20000,
+			RecursiveKnownCostMinShare: 0.8,
+			WarnOnly:                   false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteWithOptions: %v", err)
+	}
+	if res.ExitCode != 2 {
+		t.Fatalf("expected strict mode exit code 2 when no runs are parsed, got %d", res.ExitCode)
+	}
+	if !strings.Contains(strings.Join(res.Warnings, "\n"), "no valid telemetry runs") {
+		t.Fatalf("expected zero-run warning, got: %v", res.Warnings)
+	}
+}
+
+func TestExecuteWithOptions_WarnOnlyZeroRunsStillExitZero(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "missing.jsonl")
+
+	res, err := ExecuteWithOptions(Options{
+		FilePath: path,
+		Guardrails: GuardrailConfig{
+			OneShotP95WarnMS:           20000,
+			RecursiveKnownCostMinShare: 0.8,
+			WarnOnly:                   true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteWithOptions: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("expected warn-only mode exit code 0, got %d", res.ExitCode)
+	}
+	if !strings.Contains(strings.Join(res.Warnings, "\n"), "no valid telemetry runs") {
+		t.Fatalf("expected zero-run warning, got: %v", res.Warnings)
+	}
+}
+
 func TestParseArgs_FlagParsing(t *testing.T) {
 	opts, err := ParseArgs([]string{"--file", "/tmp/x.jsonl", "--one-shot-p95-warn-ms", "15000", "--recursive-known-cost-min-share", "0.9", "--warn-only=false"})
 	if err != nil {

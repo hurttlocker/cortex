@@ -795,6 +795,67 @@ func TestEngine_ImportDir_Progress(t *testing.T) {
 	}
 }
 
+func TestEngine_ImportFile_SymlinkedDirectoryRejected(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	e := NewEngine(s)
+
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "target")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+
+	linkPath := filepath.Join(tmpDir, "dir-link")
+	if err := os.Symlink(targetDir, linkPath); err != nil {
+		t.Skipf("symlink not supported in this environment: %v", err)
+	}
+
+	_, err := e.ImportFile(ctx, linkPath, ImportOptions{Recursive: true})
+	if err == nil {
+		t.Fatal("expected symlinked directory import to fail")
+	}
+	if !strings.Contains(err.Error(), "symlinked directory") {
+		t.Fatalf("expected symlinked directory error, got: %v", err)
+	}
+}
+
+func TestEngine_ImportDir_ReportsUnreadableSubdirError(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	e := NewEngine(s)
+
+	tmpDir := t.TempDir()
+	readable := filepath.Join(tmpDir, "visible.md")
+	if err := os.WriteFile(readable, []byte("# Visible\nThis file should import successfully."), 0o644); err != nil {
+		t.Fatalf("write visible file: %v", err)
+	}
+
+	lockedDir := filepath.Join(tmpDir, "locked")
+	if err := os.MkdirAll(lockedDir, 0o755); err != nil {
+		t.Fatalf("mkdir locked dir: %v", err)
+	}
+	lockedFile := filepath.Join(lockedDir, "secret.md")
+	if err := os.WriteFile(lockedFile, []byte("# Secret\nThis should trigger a walk error."), 0o644); err != nil {
+		t.Fatalf("write locked file: %v", err)
+	}
+	if err := os.Chmod(lockedDir, 0o000); err != nil {
+		t.Fatalf("chmod locked dir: %v", err)
+	}
+	defer os.Chmod(lockedDir, 0o755)
+
+	result, err := e.ImportDir(ctx, tmpDir, ImportOptions{Recursive: true})
+	if err != nil {
+		t.Fatalf("ImportDir returned unexpected error: %v", err)
+	}
+	if len(result.Errors) == 0 {
+		t.Fatalf("expected walk/import errors for unreadable subdirectory")
+	}
+	if result.FilesImported == 0 {
+		t.Fatalf("expected readable files to still import")
+	}
+}
+
 // ==================== Provenance Tests ====================
 
 func TestProvenance_SourceFile(t *testing.T) {

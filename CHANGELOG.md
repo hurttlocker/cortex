@@ -20,6 +20,13 @@ All notable changes to this project will be documented in this file.
 - RC smoke now includes runtime connectivity validation.
 - Visualizer closure includes retrieval-debug deltas/reasons across bm25+semantic+hybrid and bounded provenance contract enforcement.
 
+### Fixed
+- Importer now rejects symlinked directory recursion paths (prevents symlink-loop stack overflow crashes).
+- Recursive directory imports now surface unreadable walk paths as explicit import errors (no silent partial-success).
+- `codex-rollout-report --warn-only=false` now fails when zero valid telemetry runs are parsed.
+- `CORTEX_DB=~/...` and `--db ~/...` now expand `~` to user home before DB open.
+- `cortex search --limit` now validates bounds (`1..1000`) instead of silently coercing invalid values.
+
 ## [0.3.4] - 2026-02-20
 
 ### Added

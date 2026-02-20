@@ -118,6 +118,30 @@ func TestGetDBPath_Default(t *testing.T) {
 	}
 }
 
+func TestGetDBPath_ExpandsTildeFromEnv(t *testing.T) {
+	globalDBPath = ""
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CORTEX_DB", "~/tmp/cortex.db")
+
+	want := filepath.Join(home, "tmp", "cortex.db")
+	if got := getDBPath(); got != want {
+		t.Errorf("getDBPath() = %q, want %q", got, want)
+	}
+}
+
+func TestGetDBPath_ExpandsTildeFromFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	globalDBPath = "~/tmp/cortex-flag.db"
+	t.Cleanup(func() { globalDBPath = "" })
+
+	want := filepath.Join(home, "tmp", "cortex-flag.db")
+	if got := getDBPath(); got != want {
+		t.Errorf("getDBPath() = %q, want %q", got, want)
+	}
+}
+
 // ==================== formatBytes ====================
 
 func TestFormatBytes(t *testing.T) {
@@ -495,6 +519,24 @@ func TestRunSearch_ExplainFlagAccepted(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "unknown flag") {
 		t.Fatalf("--explain should be accepted, got: %v", err)
+	}
+}
+
+func TestRunSearch_InvalidLimitRejected(t *testing.T) {
+	err := runSearch([]string{"hello", "--limit", "-5"})
+	if err == nil {
+		t.Fatal("expected limit validation error")
+	}
+	if !strings.Contains(err.Error(), "--limit must be between 1 and 1000") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	err = runSearch([]string{"hello", "--limit", "1001"})
+	if err == nil {
+		t.Fatal("expected limit validation error")
+	}
+	if !strings.Contains(err.Error(), "--limit must be between 1 and 1000") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

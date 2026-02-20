@@ -108,6 +108,9 @@ func ExecuteWithOptions(opts Options) (*Result, error) {
 
 	r := BuildReport(events, skipped)
 	warnings := EvaluateGuardrails(r, opts.Guardrails)
+	if r.TotalRuns == 0 {
+		warnings = append(warnings, "no valid telemetry runs parsed")
+	}
 	output := RenderReport(opts.FilePath, r, warnings, opts.Guardrails)
 
 	exitCode := 0

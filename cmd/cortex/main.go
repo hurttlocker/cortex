@@ -202,10 +202,10 @@ func parseGlobalFlags(args []string) []string {
 // --db flag > CORTEX_DB env var > default path
 func getDBPath() string {
 	if globalDBPath != "" {
-		return globalDBPath
+		return expandUserPath(globalDBPath)
 	}
 	if envPath := os.Getenv("CORTEX_DB"); envPath != "" {
-		return envPath
+		return expandUserPath(envPath)
 	}
 	return "" // Let store.NewStore use its default
 }
@@ -594,6 +594,9 @@ func runSearch(args []string) error {
 	query := strings.Join(queryParts, " ")
 	if query == "" {
 		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+	}
+	if limit < 1 || limit > 1000 {
+		return fmt.Errorf("--limit must be between 1 and 1000")
 	}
 
 	searchMode, err := search.ParseMode(mode)
