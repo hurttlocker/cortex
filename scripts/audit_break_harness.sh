@@ -15,7 +15,8 @@ What it verifies (deterministic):
 2) Missing import path fails cleanly (non-zero, no crash)
 3) Symlink-loop directory import fails cleanly (no stack overflow)
 4) Unreadable recursive subtree is surfaced as an explicit error (no silent partial success)
-5) Targeted concurrency/recovery regression tests pass:
+5) Traversal-style visualizer export output paths are rejected by default
+6) Targeted concurrency/recovery regression tests pass:
    - concurrent identical imports
    - malformed/zero PID embed lock reclaim
    - stale migration claim reclaim
@@ -58,7 +59,7 @@ trap cleanup EXIT
 
 if [[ -z "$CORTEX_BIN" ]]; then
   BUILT_BIN="$(mktemp -t cortex-break-bin.XXXXXX)"
-  echo "==> [1/6] build runtime binary"
+  echo "==> [1/7] build runtime binary"
   go build -o "$BUILT_BIN" ./cmd/cortex
   CORTEX_BIN="$BUILT_BIN"
 else
@@ -66,10 +67,10 @@ else
     echo "ERROR: --cortex-bin not executable: $CORTEX_BIN" >&2
     exit 1
   fi
-  echo "==> [1/6] use provided binary: $CORTEX_BIN"
+  echo "==> [1/7] use provided binary: $CORTEX_BIN"
 fi
 
-echo "==> [2/6] missing telemetry handling (warn-only + strict)"
+echo "==> [2/7] missing telemetry handling (warn-only + strict)"
 MISSING_TELEMETRY="$TMP_DIR/does-not-exist.jsonl"
 ROLL_LOG="$TMP_DIR/rollout_missing.log"
 "$CORTEX_BIN" codex-rollout-report --file "$MISSING_TELEMETRY" >"$ROLL_LOG" 2>&1
@@ -95,7 +96,7 @@ if ! rg -qi "no valid telemetry runs" "$STRICT_LOG"; then
   exit 1
 fi
 
-echo "==> [3/6] missing import path should fail cleanly"
+echo "==> [3/7] missing import path should fail cleanly"
 MISSING_IMPORT="$TMP_DIR/missing-input.md"
 IMPORT_LOG="$TMP_DIR/import_missing.log"
 set +e
@@ -113,7 +114,7 @@ if ! rg -qi "no such file|cannot|error" "$IMPORT_LOG"; then
   exit 1
 fi
 
-echo "==> [4/6] symlink-loop import should fail cleanly"
+echo "==> [4/7] symlink-loop import should fail cleanly"
 LOOP_DIR="$TMP_DIR/loopdir"
 mkdir -p "$LOOP_DIR/sub"
 if ln -s "$LOOP_DIR" "$LOOP_DIR/sub/back" 2>/dev/null; then
@@ -136,7 +137,7 @@ else
   echo "  (symlink creation unavailable in this environment; skipping symlink-loop check)"
 fi
 
-echo "==> [5/6] unreadable subtree should surface explicit import errors"
+echo "==> [5/7] unreadable subtree should surface explicit import errors"
 PARTIAL_DIR="$TMP_DIR/partial"
 mkdir -p "$PARTIAL_DIR/secret"
 cat > "$PARTIAL_DIR/ok.md" <<'EOF'
@@ -165,7 +166,26 @@ if ! rg -qi "walk error|permission denied|error" "$PARTIAL_LOG"; then
   exit 1
 fi
 
-echo "==> [6/6] targeted regression tests"
+echo "==> [6/7] visualizer export path traversal should be rejected"
+VIS_LOG="$TMP_DIR/visualizer_traversal.log"
+set +e
+python3 scripts/visualizer_export.py \
+  --output ../cortex-break-harness-escape.json \
+  --obsidian-output docs/visualizer/data/obsidian-graph.json >"$VIS_LOG" 2>&1
+vis_rc=$?
+set -e
+if [[ $vis_rc -eq 0 ]]; then
+  echo "ERROR: expected visualizer_export traversal-style output path to be rejected" >&2
+  cat "$VIS_LOG" >&2
+  exit 1
+fi
+if ! rg -qi "outside workspace root|allow-outside-workdir" "$VIS_LOG"; then
+  echo "ERROR: expected workspace-boundary error text from visualizer_export" >&2
+  cat "$VIS_LOG" >&2
+  exit 1
+fi
+
+echo "==> [7/7] targeted regression tests"
 go test ./internal/ingest -run TestProcessMemory_ConcurrentIdenticalImports_NoUniqueErrors -v
 go test ./cmd/cortex -run 'TestAcquireEmbedRunLock_Reclaims(MalformedPIDLock|ZeroPIDLock)' -v
 go test ./internal/store -run 'Test(ClaimMetaMigration_ReclaimsDeadPID|MigrateFTSMultiColumn_RecoverStaleInProgressMarker)' -v

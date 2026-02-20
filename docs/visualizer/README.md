@@ -25,6 +25,10 @@ python3 scripts/visualizer_export.py \
   --obsidian-vault-dir docs/visualizer/data/obsidian-vault
 ```
 
+Safety note:
+- Output paths are workspace-bound by default (prevents `../` traversal-style writes).
+- If you intentionally need output outside the repo, pass `--allow-outside-workdir`.
+
 Data sources currently used:
 - `cortex stats --json`
 - `~/.cortex/reason-telemetry.jsonl`

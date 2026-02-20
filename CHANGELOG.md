@@ -26,6 +26,7 @@ All notable changes to this project will be documented in this file.
 - `codex-rollout-report --warn-only=false` now fails when zero valid telemetry runs are parsed.
 - `CORTEX_DB=~/...` and `--db ~/...` now expand `~` to user home before DB open.
 - `cortex search --limit` now validates bounds (`1..1000`) instead of silently coercing invalid values.
+- `visualizer_export.py` now rejects output paths outside workspace root by default (prevents traversal-style `../` writes unless explicitly overridden).
 
 ## [0.3.4] - 2026-02-20
 
