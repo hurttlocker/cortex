@@ -6,10 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 - Deterministic runtime connectivity smoke gate: `scripts/connectivity_smoke.sh` (import → extract → stats → search → list facts → optimize integrity).
+- One-command external audit preflight pack generator: `scripts/audit_preflight.sh --tag ...` (writes markdown summary + per-step logs under `docs/audits/`).
 
 ### Changed
 - CI now runs the connectivity smoke gate on every PR/push.
 - `scripts/release_checklist.sh` now requires the same connectivity smoke gate before release publish checks pass.
+- `scripts/audit_rc_smoke.sh` now includes the runtime connectivity smoke as part of its RC validation flow.
 
 ## [0.3.4] - 2026-02-20
 

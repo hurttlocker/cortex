@@ -737,6 +737,7 @@ Shipped on `main`:
 - **Lane 5:** scheduled SLO canary workflow with artifact uploads
 - **Lane 6:** thresholded canary warn/fail bands (`PASS|WARN|FAIL`)
 - **Lane 7:** deterministic runtime connectivity smoke gate (`scripts/connectivity_smoke.sh`)
+- **Lane 8:** one-command external audit preflight artifact (`scripts/audit_preflight.sh`)
 
 ### 🔭 Phase 5 — Next Priorities
 - SLO trend comparison across canary history (relative regression detection)
@@ -763,6 +764,7 @@ cd cortex
 go build ./cmd/cortex/
 go test ./...
 scripts/connectivity_smoke.sh   # end-to-end runtime gate (import→extract→search→optimize)
+scripts/audit_preflight.sh --tag v0.3.4   # generate audit-ready markdown + logs
 ```
 
 - 📖 Read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines

@@ -28,7 +28,10 @@ if ! grep -q "Usage of codex-rollout-report" <<<"$help_output"; then
   exit 1
 fi
 
-echo "==> [5/5] strict-mode fixture check"
+echo "==> [5/6] runtime connectivity smoke"
+scripts/connectivity_smoke.sh --cortex-bin "$runtime_bin"
+
+echo "==> [6/6] strict-mode fixture check"
 cat > "$telemetry_file" <<'EOF'
 {"mode":"one-shot","provider":"openrouter","model":"openai-codex/gpt-5.2","wall_ms":25000,"cost_known":true,"cost_usd":0.001}
 {"mode":"recursive","provider":"openrouter","model":"google/gemini-2.5-flash","wall_ms":30000,"cost_known":false}
