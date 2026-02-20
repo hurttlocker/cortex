@@ -6,6 +6,14 @@ All notable changes to this project will be documented in this file.
 
 - No unreleased entries yet.
 
+## [0.3.5-rc2] - 2026-02-20
+
+### Fixed
+- Release checklist guard no longer hard-depends on `rg`; now uses `grep` fallback when `rg` is unavailable (fixes release-runner portability).
+
+### Added
+- v0.3.5-rc2 audit handoff docs (`go-no-go`, auditor command pack, release notes).
+
 ## [0.3.5-rc1] - 2026-02-20
 
 ### Added
