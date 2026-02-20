@@ -77,11 +77,51 @@ func TestLoadTelemetry_ParsesJSONLAndSkipsMalformed(t *testing.T) {
 		t.Fatalf("unexpected mode normalization: %+v", events)
 	}
 
-	out := renderReport(path, buildReport(events, skipped))
+	r := buildReport(events, skipped)
+	cfg := guardrailConfig{OneShotP95WarnMS: 20000, RecursiveKnownCostMinShare: 0.8, WarnOnly: true}
+	out := renderReport(path, r, evaluateGuardrails(r, cfg), cfg)
 	if !strings.Contains(out, "By mode (one-shot vs recursive)") {
 		t.Fatalf("missing mode section: %s", out)
 	}
 	if !strings.Contains(out, "openrouter/openai-codex/gpt-5.2") {
 		t.Fatalf("missing provider/model mix: %s", out)
+	}
+}
+
+func TestEvaluateGuardrails_ThresholdWarnings(t *testing.T) {
+	events := []telemetryEvent{
+		{Mode: "one-shot", Provider: "openrouter", Model: "openai-codex/gpt-5.2", WallMS: 1000, CostKnown: true, CostUSD: 0.001},
+		{Mode: "one-shot", Provider: "openrouter", Model: "openai-codex/gpt-5.2", WallMS: 21000, CostKnown: true, CostUSD: 0.002},
+		{Mode: "recursive", Provider: "openrouter", Model: "google/gemini-2.5-flash", WallMS: 30000, CostKnown: true, CostUSD: 0.004},
+		{Mode: "recursive", Provider: "openrouter", Model: "google/gemini-2.5-flash", WallMS: 31000, CostKnown: false},
+	}
+
+	r := buildReport(events, 0)
+	cfg := guardrailConfig{OneShotP95WarnMS: 20000, RecursiveKnownCostMinShare: 0.8, WarnOnly: false}
+	warnings := evaluateGuardrails(r, cfg)
+	if len(warnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %d (%v)", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "one-shot p95 latency") {
+		t.Fatalf("missing one-shot warning: %v", warnings)
+	}
+	if !strings.Contains(warnings[1], "recursive known-cost completeness") {
+		t.Fatalf("missing recursive cost completeness warning: %v", warnings)
+	}
+}
+
+func TestEvaluateGuardrails_Pass(t *testing.T) {
+	events := []telemetryEvent{
+		{Mode: "one-shot", Provider: "openrouter", Model: "openai-codex/gpt-5.2", WallMS: 5000, CostKnown: true, CostUSD: 0.001},
+		{Mode: "one-shot", Provider: "openrouter", Model: "openai-codex/gpt-5.2", WallMS: 7000, CostKnown: true, CostUSD: 0.002},
+		{Mode: "recursive", Provider: "openrouter", Model: "google/gemini-2.5-flash", WallMS: 35000, CostKnown: true, CostUSD: 0.004},
+		{Mode: "recursive", Provider: "openrouter", Model: "google/gemini-2.5-flash", WallMS: 36000, CostKnown: true, CostUSD: 0.004},
+	}
+
+	r := buildReport(events, 0)
+	cfg := guardrailConfig{OneShotP95WarnMS: 20000, RecursiveKnownCostMinShare: 0.8, WarnOnly: false}
+	warnings := evaluateGuardrails(r, cfg)
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
 	}
 }

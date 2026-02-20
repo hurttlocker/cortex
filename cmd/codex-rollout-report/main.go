@@ -38,12 +38,30 @@ type report struct {
 	OverallModelMx map[string]int
 }
 
+type guardrailConfig struct {
+	OneShotP95WarnMS           int64
+	RecursiveKnownCostMinShare float64
+	WarnOnly                   bool
+}
+
 func main() {
 	home, _ := os.UserHomeDir()
 	defaultPath := filepath.Join(home, ".cortex", "reason-telemetry.jsonl")
 
 	filePath := flag.String("file", defaultPath, "path to reason telemetry jsonl")
+	oneShotP95WarnMS := flag.Int64("one-shot-p95-warn-ms", 20_000, "warn when one-shot p95 latency exceeds this threshold (ms)")
+	recursiveKnownCostMinShare := flag.Float64("recursive-known-cost-min-share", 0.80, "warn when recursive known-cost share drops below this ratio (0-1)")
+	warnOnly := flag.Bool("warn-only", true, "when true, emit warnings but always exit 0; set false for CI/cron non-zero exit on warnings")
 	flag.Parse()
+
+	if *recursiveKnownCostMinShare < 0 || *recursiveKnownCostMinShare > 1 {
+		fmt.Fprintln(os.Stderr, "Error: --recursive-known-cost-min-share must be between 0 and 1")
+		os.Exit(1)
+	}
+	if *oneShotP95WarnMS < 0 {
+		fmt.Fprintln(os.Stderr, "Error: --one-shot-p95-warn-ms must be >= 0")
+		os.Exit(1)
+	}
 
 	events, skipped, err := loadTelemetry(*filePath)
 	if err != nil {
@@ -51,8 +69,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	cfg := guardrailConfig{
+		OneShotP95WarnMS:           *oneShotP95WarnMS,
+		RecursiveKnownCostMinShare: *recursiveKnownCostMinShare,
+		WarnOnly:                   *warnOnly,
+	}
+
 	r := buildReport(events, skipped)
-	fmt.Println(renderReport(*filePath, r))
+	warnings := evaluateGuardrails(r, cfg)
+	fmt.Println(renderReport(*filePath, r, warnings, cfg))
+	if len(warnings) > 0 && !cfg.WarnOnly {
+		os.Exit(2)
+	}
 }
 
 func loadTelemetry(path string) ([]telemetryEvent, int, error) {
@@ -183,7 +211,35 @@ func percentileInt64(sorted []int64, p float64) int64 {
 	return sorted[idx]
 }
 
-func renderReport(path string, r report) string {
+func evaluateGuardrails(r report, cfg guardrailConfig) []string {
+	warnings := []string{}
+
+	oneShot, ok := findModeReport(r, "one-shot")
+	if ok && oneShot.Runs > 0 && oneShot.P95MS > cfg.OneShotP95WarnMS {
+		warnings = append(warnings, fmt.Sprintf("one-shot p95 latency %dms exceeds threshold %dms", oneShot.P95MS, cfg.OneShotP95WarnMS))
+	}
+
+	recursive, ok := findModeReport(r, "recursive")
+	if ok && recursive.Runs > 0 {
+		share := float64(recursive.CostKnownRuns) / float64(recursive.Runs)
+		if share < cfg.RecursiveKnownCostMinShare {
+			warnings = append(warnings, fmt.Sprintf("recursive known-cost completeness %.1f%% below threshold %.1f%%", share*100, cfg.RecursiveKnownCostMinShare*100))
+		}
+	}
+
+	return warnings
+}
+
+func findModeReport(r report, mode string) (modeReport, bool) {
+	for _, mr := range r.ModeReports {
+		if mr.Mode == mode {
+			return mr, true
+		}
+	}
+	return modeReport{}, false
+}
+
+func renderReport(path string, r report, warnings []string, cfg guardrailConfig) string {
 	var b strings.Builder
 	b.WriteString("Cortex Codex rollout report\n")
 	b.WriteString(fmt.Sprintf("Telemetry file: %s\n", path))
@@ -191,7 +247,14 @@ func renderReport(path string, r report) string {
 	if r.SkippedLines > 0 {
 		b.WriteString(fmt.Sprintf(" (skipped malformed lines: %d)", r.SkippedLines))
 	}
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("Guardrails: one-shot p95 <= %dms, recursive known-cost share >= %.0f%%\n", cfg.OneShotP95WarnMS, cfg.RecursiveKnownCostMinShare*100))
+	if cfg.WarnOnly {
+		b.WriteString("Exit mode: warn-only (always 0)\n")
+	} else {
+		b.WriteString("Exit mode: strict (non-zero on guardrail warnings)\n")
+	}
+	b.WriteString("\n")
 
 	b.WriteString("By mode (one-shot vs recursive)\n")
 	b.WriteString("mode       runs  p50(ms)  p95(ms)  est_cost_usd  cost_runs\n")
@@ -204,6 +267,15 @@ func renderReport(path string, r report) string {
 			mr.EstimatedCost,
 			mr.CostKnownRuns,
 		))
+	}
+
+	b.WriteString("\nGuardrail status\n")
+	if len(warnings) == 0 {
+		b.WriteString("- OK: all configured guardrails passed\n")
+	} else {
+		for _, w := range warnings {
+			b.WriteString("- WARN: " + w + "\n")
+		}
 	}
 
 	b.WriteString("\nProvider/model mix (overall)\n")

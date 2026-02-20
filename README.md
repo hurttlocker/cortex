@@ -469,6 +469,32 @@ scripts/codex_rollout_report.sh
 go run ./cmd/codex-rollout-report --file ~/.cortex/reason-telemetry.jsonl
 ```
 
+Quality gates (optional, for CI/cron guardrails):
+
+- **one-shot p95 latency warning threshold:** default `20000ms` (20s)
+- **recursive known-cost completeness threshold:** default `0.80` (80%)
+
+Recommended defaults:
+- Keep default thresholds for first rollout wave.
+- If you need tighter SLOs, lower one-shot p95 threshold (e.g. `15000`).
+- For billing visibility audits, increase recursive completeness threshold (e.g. `0.90`).
+
+Examples:
+
+```bash
+# Warn-only (default): prints warnings, exits 0
+scripts/codex_rollout_report.sh --warn-only
+
+# Strict CI/cron mode: non-zero exit on guardrail warnings
+scripts/codex_rollout_report.sh --warn-only=false
+
+# Custom thresholds
+scripts/codex_rollout_report.sh \
+  --one-shot-p95-warn-ms 15000 \
+  --recursive-known-cost-min-share 0.90 \
+  --warn-only=false
+```
+
 ### 📊 Benchmark Command — Test Any Model
 
 ```bash
