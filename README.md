@@ -532,6 +532,8 @@ cortex search "deployment policy" --include-superseded
 
 No more black-box memory. No more hoping the agent remembers correctly.
 
+For ops posture at scale, see the DB growth runbook: [`docs/ops-db-growth-guardrails.md`](docs/ops-db-growth-guardrails.md).
+
 ### 📤 Export & Portability — Your Memory Is Yours
 
 ```bash
