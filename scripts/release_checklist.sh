@@ -28,6 +28,17 @@ TAG="${GITHUB_REF_NAME:-}"
 REPO="${GITHUB_REPOSITORY:-}"
 REQUIRE_LATEST_SLO_PASS=0
 
+has_pattern() {
+  local pattern="$1"
+  local file="$2"
+
+  if command -v rg >/dev/null 2>&1; then
+    rg -q "$pattern" "$file"
+  else
+    grep -Eq "$pattern" "$file"
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tag)
@@ -64,7 +75,7 @@ if [[ ! -f "$CHANGELOG" ]]; then
   exit 1
 fi
 
-if ! rg -q "^## \[${VERSION//./\.}\]" "$CHANGELOG"; then
+if ! has_pattern "^## \[${VERSION//./\.}\]" "$CHANGELOG"; then
   echo "ERROR: $CHANGELOG missing section for version [$VERSION]" >&2
   exit 1
 fi
@@ -74,7 +85,7 @@ if [[ ! -f "$RELEASE_NOTES" ]]; then
   exit 1
 fi
 
-if ! rg -q "Tag:\s*\`$TAG\`" "$RELEASE_NOTES"; then
+if ! has_pattern "Tag:\s*\`$TAG\`" "$RELEASE_NOTES"; then
   echo "ERROR: $RELEASE_NOTES missing exact tag line 'Tag: `$TAG`'" >&2
   exit 1
 fi
