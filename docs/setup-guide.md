@@ -226,7 +226,7 @@ cortex bench --recursive --max-iterations 8 --max-depth 1 --output recursive.md
 |---|---|
 | After important conversations | Import daily log or key decisions |
 | Before answering recall questions | Search Cortex first |
-| Weekly | Run `cortex stats` + `cortex stale 7` |
+| Weekly | Run `cortex stats` + `cortex stale 7` (and `cortex optimize --check-only` on larger DBs) |
 | After corrections/learnings | Store the lesson immediately |
 
 ## 8. OpenClaw Plugin (Optional)

@@ -123,6 +123,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "optimize":
+		if err := runOptimize(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "projects":
 		if err := runProjects(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1661,6 +1666,166 @@ func runReimport(args []string) error {
 	fmt.Println()
 	fmt.Print(ingest.FormatImportResult(totalResult))
 	fmt.Println("\n✅ Reimport complete!")
+	return nil
+}
+
+func runOptimize(args []string) error {
+	jsonOutput := false
+	checkOnly := false
+	vacuumOnly := false
+	analyzeOnly := false
+
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		case "--check-only":
+			checkOnly = true
+		case "--vacuum-only":
+			vacuumOnly = true
+		case "--analyze-only":
+			analyzeOnly = true
+		case "--help", "-h":
+			fmt.Println(`cortex optimize — Manual DB maintenance (integrity, vacuum, analyze)
+
+Usage:
+  cortex optimize
+  cortex optimize --check-only
+  cortex optimize --vacuum-only
+  cortex optimize --analyze-only
+
+Flags:
+  --check-only       Run PRAGMA integrity_check only
+  --vacuum-only      Run VACUUM only
+  --analyze-only     Run ANALYZE only
+  --json             Output JSON
+  -h, --help         Show this help
+
+Notes:
+  - Run during low-traffic windows.
+  - Not allowed in --read-only mode.`)
+			return nil
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return fmt.Errorf("unknown flag: %s\nUsage: cortex optimize [--check-only|--vacuum-only|--analyze-only] [--json]", arg)
+			}
+			return fmt.Errorf("unexpected argument: %s", arg)
+		}
+	}
+
+	modeFlags := boolToInt(checkOnly) + boolToInt(vacuumOnly) + boolToInt(analyzeOnly)
+	if modeFlags > 1 {
+		return fmt.Errorf("choose only one mode flag: --check-only, --vacuum-only, or --analyze-only")
+	}
+	if globalReadOnly {
+		return fmt.Errorf("optimize is not available in --read-only mode")
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ss, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("optimize requires SQLiteStore backend")
+	}
+
+	ctx := context.Background()
+	started := time.Now()
+
+	dbPath := getDBPath()
+	if dbPath == "" {
+		dbPath = store.DefaultDBPath
+	}
+	dbPath = expandUserPath(dbPath)
+
+	sizeBefore := int64(0)
+	if dbPath != ":memory:" {
+		if info, err := os.Stat(dbPath); err == nil {
+			sizeBefore = info.Size()
+		}
+	}
+
+	integrityResult := "skipped"
+	runVacuum := !checkOnly && !analyzeOnly
+	runAnalyze := !checkOnly && !vacuumOnly
+	if checkOnly {
+		runVacuum = false
+		runAnalyze = false
+	}
+
+	if checkOnly || (!vacuumOnly && !analyzeOnly) {
+		if err := ss.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&integrityResult); err != nil {
+			return fmt.Errorf("integrity_check failed: %w", err)
+		}
+	}
+
+	if runVacuum {
+		if err := s.Vacuum(ctx); err != nil {
+			return fmt.Errorf("vacuum failed: %w", err)
+		}
+	}
+
+	if runAnalyze {
+		if _, err := ss.ExecContext(ctx, "ANALYZE"); err != nil {
+			return fmt.Errorf("analyze failed: %w", err)
+		}
+	}
+
+	sizeAfter := sizeBefore
+	if dbPath != ":memory:" {
+		if info, err := os.Stat(dbPath); err == nil {
+			sizeAfter = info.Size()
+		}
+	}
+
+	report := struct {
+		DBPath          string `json:"db_path"`
+		IntegrityCheck  string `json:"integrity_check"`
+		VacuumRan       bool   `json:"vacuum_ran"`
+		AnalyzeRan      bool   `json:"analyze_ran"`
+		SizeBeforeBytes int64  `json:"size_before_bytes"`
+		SizeAfterBytes  int64  `json:"size_after_bytes"`
+		SizeDeltaBytes  int64  `json:"size_delta_bytes"`
+		DurationMs      int64  `json:"duration_ms"`
+	}{
+		DBPath:          dbPath,
+		IntegrityCheck:  integrityResult,
+		VacuumRan:       runVacuum,
+		AnalyzeRan:      runAnalyze,
+		SizeBeforeBytes: sizeBefore,
+		SizeAfterBytes:  sizeAfter,
+		SizeDeltaBytes:  sizeAfter - sizeBefore,
+		DurationMs:      time.Since(started).Milliseconds(),
+	}
+
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+
+	mode := "full"
+	switch {
+	case checkOnly:
+		mode = "check-only"
+	case vacuumOnly:
+		mode = "vacuum-only"
+	case analyzeOnly:
+		mode = "analyze-only"
+	}
+
+	fmt.Printf("Optimize complete (%s):\n", mode)
+	fmt.Printf("  DB: %s\n", report.DBPath)
+	fmt.Printf("  integrity_check: %s\n", report.IntegrityCheck)
+	fmt.Printf("  vacuum: %t\n", report.VacuumRan)
+	fmt.Printf("  analyze: %t\n", report.AnalyzeRan)
+	if report.SizeBeforeBytes > 0 || report.SizeAfterBytes > 0 {
+		fmt.Printf("  size: %s -> %s (%+d bytes)\n", formatBytes(report.SizeBeforeBytes), formatBytes(report.SizeAfterBytes), report.SizeDeltaBytes)
+	}
+	fmt.Printf("  duration: %dms\n", report.DurationMs)
 	return nil
 }
 
@@ -4089,6 +4254,7 @@ Commands:
   stale               Find outdated memory entries
   conflicts           Detect contradictory facts
   cleanup             Remove garbage memories and headless facts
+  optimize            Manual DB maintenance (integrity check, VACUUM, ANALYZE)
   reason <query>      LLM reasoning over memories (search → prompt → analyze)
   bench               Benchmark LLM models for reason (speed, cost, quality)
   codex-rollout-report Summarize reason telemetry + optional rollout guardrails
@@ -4162,6 +4328,12 @@ Stale/Conflict Flags:
   --include-superseded Include superseded facts in stale/conflict views
   --verbose, -v       Show full conflict/resolution details (skip compact output)
 
+Optimize Flags:
+  --check-only        Run PRAGMA integrity_check only
+  --vacuum-only       Run VACUUM only
+  --analyze-only      Run ANALYZE only
+  --json              Output report as JSON
+
 Reimport Flags:
   -r, --recursive     Recursively import from directories
   --extract           Extract facts from imported memories
@@ -4214,6 +4386,8 @@ Examples:
   cortex list --facts --type kv
   cortex export --format markdown --output memories.md
   cortex --db ~/my-cortex.db list --source ~/notes.md
+  cortex optimize --check-only
+  cortex optimize --json
   cortex embed ollama/nomic-embed-text --batch-size 10
   cortex embed ollama/nomic-embed-text --watch --interval 30m --batch-size 10
   cortex supersede 101 --by 204 --reason "policy updated"
