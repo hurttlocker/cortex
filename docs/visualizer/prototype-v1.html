@@ -88,9 +88,12 @@
       <div class="top">
         <div>
           <h1>Visualizer v1 (prototype)</h1>
-          <div class="sub">black/white shadcn-style shell • bound to exported snapshot data</div>
+          <div class="sub">black/white shadcn-style shell • canonical backend + Obsidian adapter</div>
         </div>
-        <button class="btn" id="refreshBtn">Reload snapshot</button>
+        <div style="display:flex;gap:8px;align-items:center">
+          <a class="btn" id="obsidianBtn" href="./data/obsidian-graph.json" target="_blank" rel="noopener noreferrer">Open Obsidian adapter</a>
+          <button class="btn" id="refreshBtn">Reload snapshot</button>
+        </div>
       </div>
       <div class="meta" id="metaLine">loading…</div>
       <div class="empty" id="emptyBanner">No snapshot found. Run: <code>python3 scripts/visualizer_export.py</code></div>
@@ -147,6 +150,8 @@
             <div class="small">Selected node</div>
             <div class="v" style="font-size:18px;margin:8px 0 6px" id="nodeLabel">(click a node)</div>
             <div class="small" id="nodeType">type: —</div>
+            <div class="small" id="nodeSource" style="margin-top:4px">source: —</div>
+            <div class="small" id="graphBounds" style="margin-top:4px">bounds: —</div>
             <ul id="nodeLinks"></ul>
           </div>
         </div>
@@ -161,15 +166,26 @@
       return String(n);
     };
 
+    const REPO_BLOB_BASE = 'https://github.com/hurttlocker/cortex/blob/main/';
+    let canonicalData = null;
+    let activeGraph = null;
+
     function gateStatusClass(s) {
       if (s === 'PASS') return 'ok';
       if (s === 'WARN') return 'warn';
+      if (s === 'NO_DATA') return 'warn';
       return 'bad';
+    }
+
+    function sourceHref(ref) {
+      if (!ref || typeof ref !== 'string') return null;
+      if (ref.startsWith('http://') || ref.startsWith('https://')) return ref;
+      return REPO_BLOB_BASE + ref.replace(/^\/+/, '');
     }
 
     function renderTrend(svg, trend) {
       svg.innerHTML = '';
-      const width = 500, height = 120;
+      const width = 500;
       [20, 60, 100].forEach(y => {
         const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
         l.setAttribute('class', 'axis');
@@ -188,12 +204,34 @@
       svg.appendChild(poly);
     }
 
+    async function fetchCanonical(refresh = false) {
+      const apiPath = `/api/v1/canonical${refresh ? '?refresh=1' : ''}`;
+      try {
+        const r = await fetch(apiPath, { cache: 'no-store' });
+        if (r.ok) return await r.json();
+      } catch (_) {}
+      const fallback = await fetch('./data/latest.json?ts=' + Date.now());
+      if (!fallback.ok) throw new Error(`fallback HTTP ${fallback.status}`);
+      return fallback.json();
+    }
+
+    async function fetchSubgraph(focus, maxHops = 2, maxNodes = 200) {
+      const q = new URLSearchParams({ focus: focus || '', max_hops: String(maxHops), max_nodes: String(maxNodes) });
+      try {
+        const r = await fetch(`/api/v1/subgraph?${q.toString()}`, { cache: 'no-store' });
+        if (r.ok) return await r.json();
+      } catch (_) {}
+      return canonicalData?.data?.graph || { nodes: [], edges: [], bounds: { max_hops: maxHops, max_nodes: maxNodes }, focus: focus || '' };
+    }
+
     function renderGraph(graph) {
       const svg = document.getElementById('graphSvg');
       svg.innerHTML = '';
       const nodes = (graph && graph.nodes) || [];
       const edges = (graph && graph.edges) || [];
       const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
+
+      document.getElementById('graphBounds').textContent = `bounds: hops≤${graph?.bounds?.max_hops ?? '-'} nodes≤${graph?.bounds?.max_nodes ?? '-'}`;
 
       edges.forEach(e => {
         const a = byId[e.from], b = byId[e.to];
@@ -206,6 +244,43 @@
       });
 
       const nodeEls = new Map();
+
+      const selectNode = (id) => {
+        nodeEls.forEach(el => el.classList.remove('active'));
+        const el = nodeEls.get(id);
+        if (el) el.classList.add('active');
+
+        const n = byId[id];
+        if (!n) return;
+        document.getElementById('nodeLabel').textContent = n.label;
+        document.getElementById('nodeType').textContent = `type: ${n.type}`;
+
+        const source = document.getElementById('nodeSource');
+        const href = sourceHref(n.source_ref);
+        if (href) {
+          source.innerHTML = `source: <a href="${href}" target="_blank" rel="noopener noreferrer" style="color:#fff">${n.source_ref}</a>`;
+        } else {
+          source.textContent = 'source: —';
+        }
+
+        const links = edges.filter(e => e.from === id || e.to === id).map(e => {
+          const other = e.from === id ? e.to : e.from;
+          const label = byId[other]?.label || other;
+          return `${e.kind} → ${label}`;
+        });
+        const ul = document.getElementById('nodeLinks');
+        ul.innerHTML = '';
+        links.forEach(txt => {
+          const li = document.createElement('li'); li.textContent = txt; ul.appendChild(li);
+        });
+      };
+
+      const expandFocus = async (id) => {
+        const sub = await fetchSubgraph(id, graph?.bounds?.max_hops || 2, graph?.bounds?.max_nodes || 200);
+        activeGraph = sub;
+        renderGraph(activeGraph);
+      };
+
       nodes.forEach(n => {
         const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         g.setAttribute('class', 'node');
@@ -221,40 +296,21 @@
         g.appendChild(t);
 
         g.addEventListener('click', () => selectNode(n.id));
+        g.addEventListener('dblclick', () => expandFocus(n.id));
         svg.appendChild(g);
         nodeEls.set(n.id, g);
       });
-
-      function selectNode(id) {
-        nodeEls.forEach(el => el.classList.remove('active'));
-        const el = nodeEls.get(id);
-        if (el) el.classList.add('active');
-
-        const n = byId[id];
-        if (!n) return;
-        document.getElementById('nodeLabel').textContent = n.label;
-        document.getElementById('nodeType').textContent = `type: ${n.type}`;
-
-        const links = edges.filter(e => e.from === id || e.to === id).map(e => {
-          const other = e.from === id ? e.to : e.from;
-          const label = byId[other]?.label || other;
-          return `${e.kind} → ${label}`;
-        });
-        const ul = document.getElementById('nodeLinks');
-        ul.innerHTML = '';
-        links.forEach(txt => {
-          const li = document.createElement('li'); li.textContent = txt; ul.appendChild(li);
-        });
-      }
 
       if (graph && graph.focus) selectNode(graph.focus);
       else if (nodes[0]) selectNode(nodes[0].id);
     }
 
     function bind(data) {
+      canonicalData = data;
       const d = data.data || {};
       const ov = d.overview || {};
-      document.getElementById('metaLine').textContent = `generated ${data.generated_at || 'unknown'} • schema ${data.schema_version || 'n/a'}`;
+      const win = data.window || {};
+      document.getElementById('metaLine').textContent = `generated ${data.generated_at || 'unknown'} • schema ${data.schema_version || 'n/a'} • window ${win.from || '?'} → ${win.to || '?'}`;
       document.getElementById('releaseReadiness').textContent = ov.release_readiness || '—';
       document.getElementById('releaseReason').textContent = (d.ops?.events?.[0]?.message) || 'no active warnings';
       document.getElementById('qualityScore').textContent = `${d.quality?.score ?? '—'}/100`;
@@ -264,10 +320,24 @@
 
       const gates = document.getElementById('gates');
       gates.innerHTML = '';
-      (d.ops?.gates || []).forEach(g => {
+      const gateList = (d.ops?.gates || []);
+      if (!gateList.length) {
         const el = document.createElement('div');
         el.className = 'status';
-        el.innerHTML = `<div class="label"><span class="dot ${gateStatusClass(g.status)}"></span>${g.label}</div><div class="value">${g.status}</div>`;
+        el.innerHTML = `<div class="label"><span class="dot bad"></span>Gate data unavailable</div><div class="value">NO_DATA</div><div class="small">No gate payload in snapshot.</div>`;
+        gates.appendChild(el);
+      }
+
+      gateList.forEach(g => {
+        const el = document.createElement('div');
+        el.className = 'status';
+        const links = (g.evidence_links || []).map(l => `<a href="${l.href}" target="_blank" rel="noopener noreferrer">${l.label}</a>`).join(' • ');
+        el.innerHTML = `
+          <div class="label"><span class="dot ${gateStatusClass(g.status)}"></span>${g.label}</div>
+          <div class="value">${g.status}</div>
+          <div class="small">${g.reason || 'No reason provided.'}</div>
+          ${links ? `<div class="small" style="margin-top:6px">Evidence: ${links}</div>` : ''}
+        `;
         gates.appendChild(el);
       });
 
@@ -300,15 +370,14 @@
       hy.innerHTML = '';
       (d.retrieval?.results?.hybrid || []).forEach(x => { const li = document.createElement('li'); li.textContent = `#${x.rank} ${x.title}`; hy.appendChild(li); });
 
-      renderGraph(d.graph || {});
+      activeGraph = d.graph || {};
+      renderGraph(activeGraph);
     }
 
-    async function loadSnapshot() {
+    async function loadSnapshot(refresh = false) {
       const empty = document.getElementById('emptyBanner');
       try {
-        const res = await fetch('./data/latest.json?ts=' + Date.now());
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
+        const json = await fetchCanonical(refresh);
         empty.style.display = 'none';
         bind(json);
       } catch (e) {
@@ -317,7 +386,7 @@
       }
     }
 
-    document.getElementById('refreshBtn').addEventListener('click', loadSnapshot);
+    document.getElementById('refreshBtn').addEventListener('click', () => loadSnapshot(true));
     loadSnapshot();
   </script>
 </body>
