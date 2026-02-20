@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.4] - 2026-02-20
+
+### Added
+- Stable release promotion from audited RC path (`v0.3.4-rc1..a62f11e`).
+- Release go/no-go handoff docs and artifact revalidation notes for auditor continuity.
+
+### Changed
+- Search hardening for legacy `NULL memory_class` rows with startup backfill safeguards.
+- Conflict output defaults tuned for readability (compact preview + higher-similarity prioritization).
+
+### Validation
+- Delta audit result: **GO_WITH_CONDITIONS** (no Critical/High findings in audited scope).
+- Stable artifacts published for darwin/linux/windows with checksums.
+
 ## [0.3.4-rc1] - 2026-02-20
 
 ### Added
