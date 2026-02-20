@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"math"
@@ -3638,6 +3639,9 @@ func writeReasonTelemetry(event reasonRunTelemetry) error {
 func runCodexRolloutReportCLI(args []string, out io.Writer, errOut io.Writer) int {
 	res, err := codexrollout.Execute(args)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		fmt.Fprintf(errOut, "Error: %v\n", err)
 		return 1
 	}

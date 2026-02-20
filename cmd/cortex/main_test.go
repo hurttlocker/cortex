@@ -784,3 +784,14 @@ func TestRunCodexRolloutReportCLI_WarnOnlyExitZero(t *testing.T) {
 		t.Fatalf("expected warning in output, got: %s", out.String())
 	}
 }
+
+func TestRunCodexRolloutReportCLI_HelpExitZero(t *testing.T) {
+	var errOut bytes.Buffer
+	exitCode := runCodexRolloutReportCLI([]string{"--help"}, io.Discard, &errOut)
+	if exitCode != 0 {
+		t.Fatalf("expected help exit code 0, got %d", exitCode)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("unexpected stderr output: %s", errOut.String())
+	}
+}
