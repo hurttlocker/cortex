@@ -19,7 +19,7 @@ Cortex has moved from “feature buildout” into “operational hardening + rel
 
 ### What is true right now
 - Stable release is live: **v0.3.4**
-- v0.3.5-rc1 audit packet scaffolding is prepared (`docs/audits/` + `docs/releases/`)
+- v0.3.5-rc2 audit packet scaffolding is prepared (`docs/audits/` + `docs/releases/`)
 - Visualizer v1 closure sequence is complete (#99 and #104 are closed)
 - Post-release hardening lanes (v0.3.5-dev) are fully shipped on `main`
 - Current open issue count: **0** (at time of refresh)
@@ -105,7 +105,7 @@ Now, beyond that baseline, Cortex added:
 3. **Deterministic connectivity gate** for release/runtime path validation
 4. **One-command audit preflight** that emits markdown + per-step logs
 5. **Visualizer v1 closure** including retrieval-debug deltas and bounded provenance explorer
-6. **RC audit packet scaffolding** for `v0.3.5-rc1` (go/no-go + auditor command pack + release notes)
+6. **RC audit packet scaffolding** for `v0.3.5-rc2` (go/no-go + auditor command pack + release notes)
 
 ---
 
@@ -164,7 +164,7 @@ The platform is now strong on correctness and operations. The next strategic unl
 
 ## Recommended Next Roadmap Slice (Post RC-prep lanes)
 
-1. **External audit execution:** run immutable-target audit on `v0.3.5-rc1`, collect findings, close deltas.
+1. **External audit execution:** run immutable-target audit on `v0.3.5-rc2`, collect findings, close deltas.
 2. **Codex real-work tuning loop:** continue production dogfooding and adjust thresholds/prompts only from measured regressions.
 3. **SLO trend intelligence:** compare latest canary against historical baseline for relative regressions, not only static thresholds.
 4. **Gate observability dashboard:** unify release checks, canary trends, and audit preflight history into one operator view.
