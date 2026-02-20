@@ -2,8 +2,10 @@ package search
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,39 @@ func newTestStore(t *testing.T) store.Store {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+func newFileBackedTestStore(t *testing.T) (store.Store, string) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "cortex-test.db")
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("failed to create file-backed test store: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s, dbPath
+}
+
+func setMemoryClassNull(t *testing.T, dbPath string, memoryID int64) {
+	t.Helper()
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`UPDATE memories SET memory_class = NULL WHERE id = ?`, memoryID); err != nil {
+		t.Fatalf("set NULL memory_class: %v", err)
+	}
+}
+
+func findResultByID(results []Result, id int64) (Result, bool) {
+	for _, r := range results {
+		if r.MemoryID == id {
+			return r, true
+		}
+	}
+	return Result{}, false
 }
 
 // seedTestData inserts a standard set of test memories for search testing.
@@ -813,6 +848,81 @@ func TestSearchHybrid_FallbackNilEmbedder(t *testing.T) {
 	// Results should be nil due to error
 	if results != nil {
 		t.Error("expected nil results when error occurs")
+	}
+}
+
+func TestSearch_MixedLegacyNullMemoryClass_AllModes(t *testing.T) {
+	s, dbPath := newFileBackedTestStore(t)
+	ctx := context.Background()
+
+	legacyID, err := s.AddMemory(ctx, &store.Memory{
+		Content:     "legacy tokennull memory row",
+		SourceFile:  "legacy.md",
+		MemoryClass: store.MemoryClassRule,
+	})
+	if err != nil {
+		t.Fatalf("AddMemory legacy: %v", err)
+	}
+	modernID, err := s.AddMemory(ctx, &store.Memory{
+		Content:     "modern tokennew memory row",
+		SourceFile:  "modern.md",
+		MemoryClass: store.MemoryClassDecision,
+	})
+	if err != nil {
+		t.Fatalf("AddMemory modern: %v", err)
+	}
+
+	// Simulate historical row from pre-class schema.
+	setMemoryClassNull(t, dbPath, legacyID)
+
+	// Keyword path (FTS/BM25)
+	bm25 := NewEngine(s)
+	kw, err := bm25.Search(ctx, "tokennull", Options{Mode: ModeKeyword, Limit: 5})
+	if err != nil {
+		t.Fatalf("keyword search with NULL memory_class: %v", err)
+	}
+	legacyKW, ok := findResultByID(kw, legacyID)
+	if !ok {
+		t.Fatalf("expected keyword result to include legacy memory id=%d", legacyID)
+	}
+	if legacyKW.MemoryClass != "" {
+		t.Fatalf("expected keyword legacy class to be empty string, got %q", legacyKW.MemoryClass)
+	}
+
+	// Semantic + hybrid paths
+	if err := s.AddEmbedding(ctx, legacyID, []float32{0.9, 0.1, 0.1}); err != nil {
+		t.Fatalf("AddEmbedding legacy: %v", err)
+	}
+	if err := s.AddEmbedding(ctx, modernID, []float32{0.1, 0.9, 0.1}); err != nil {
+		t.Fatalf("AddEmbedding modern: %v", err)
+	}
+
+	embedder := newMockEmbedder()
+	embedder.embeddings["tokennull concept"] = []float32{0.9, 0.1, 0.1}
+	engine := NewEngineWithEmbedder(s, embedder)
+
+	sem, err := engine.Search(ctx, "tokennull concept", Options{Mode: ModeSemantic, Limit: 5})
+	if err != nil {
+		t.Fatalf("semantic search with NULL memory_class: %v", err)
+	}
+	legacySEM, ok := findResultByID(sem, legacyID)
+	if !ok {
+		t.Fatalf("expected semantic result to include legacy memory id=%d", legacyID)
+	}
+	if legacySEM.MemoryClass != "" {
+		t.Fatalf("expected semantic legacy class to be empty string, got %q", legacySEM.MemoryClass)
+	}
+
+	hyb, err := engine.Search(ctx, "tokennull concept", Options{Mode: ModeHybrid, Limit: 5})
+	if err != nil {
+		t.Fatalf("hybrid search with NULL memory_class: %v", err)
+	}
+	legacyHYB, ok := findResultByID(hyb, legacyID)
+	if !ok {
+		t.Fatalf("expected hybrid result to include legacy memory id=%d", legacyID)
+	}
+	if legacyHYB.MemoryClass != "" {
+		t.Fatalf("expected hybrid legacy class to be empty string, got %q", legacyHYB.MemoryClass)
 	}
 }
 
