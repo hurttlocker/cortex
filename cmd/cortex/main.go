@@ -2951,6 +2951,25 @@ func outputEnhancedStatsTTY(stats *observe.Stats, dateRange string) error {
 	fmt.Printf("│   This month:      %-25d │\n", stats.Freshness.ThisMonth)
 	fmt.Printf("│   Older:           %-25d │\n", stats.Freshness.Older)
 
+	fmt.Println("├─────────────────────────────────────────────┤")
+	fmt.Println("│ Growth Trends                                │")
+	fmt.Printf("│   Memories (24h):  %-24d │\n", stats.Growth.Memories24h)
+	fmt.Printf("│   Memories (7d):   %-24d │\n", stats.Growth.Memories7d)
+	fmt.Printf("│   Facts (24h):     %-24d │\n", stats.Growth.Facts24h)
+	fmt.Printf("│   Facts (7d):      %-24d │\n", stats.Growth.Facts7d)
+
+	if len(stats.Alerts) > 0 {
+		fmt.Println("├─────────────────────────────────────────────┤")
+		fmt.Println("│ Alerts                                       │")
+		for _, alert := range stats.Alerts {
+			line := alert
+			if len(line) > 41 {
+				line = line[:38] + "..."
+			}
+			fmt.Printf("│   ⚠ %-40s │\n", line)
+		}
+	}
+
 	if dateRange != "N/A" {
 		fmt.Println("├─────────────────────────────────────────────┤")
 		fmt.Printf("│ Date Range:   %-29s │\n", dateRange)

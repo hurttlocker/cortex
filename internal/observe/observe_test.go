@@ -191,6 +191,32 @@ func TestGetStats_StorageSize(t *testing.T) {
 	}
 }
 
+func TestGetStats_GrowthMetrics(t *testing.T) {
+	engine := newTestEngine(t)
+
+	m1 := addTestMemory(t, engine, "growth memory", "growth.md")
+	addTestFact(t, engine, m1, "system", "status", "ok", "state", 0.9)
+
+	stats, err := engine.GetStats(context.Background())
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+
+	if stats.Growth.Memories24h < 1 {
+		t.Fatalf("expected memories_24h >= 1, got %d", stats.Growth.Memories24h)
+	}
+	if stats.Growth.Facts24h < 1 {
+		t.Fatalf("expected facts_24h >= 1, got %d", stats.Growth.Facts24h)
+	}
+}
+
+func TestBuildGrowthAlerts(t *testing.T) {
+	alerts := buildGrowthAlerts(int64(2*1024*1024*1024), Growth{Memories24h: 600, Facts24h: 250000})
+	if len(alerts) < 3 {
+		t.Fatalf("expected multiple alerts, got %v", alerts)
+	}
+}
+
 // --- Stale Detection Tests ---
 
 func TestGetStaleFacts_NoStale(t *testing.T) {
