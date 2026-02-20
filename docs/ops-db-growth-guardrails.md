@@ -116,6 +116,8 @@ scripts/slo_snapshot.sh \
 
 The script exits non-zero if any checkpoint fails.
 
+CI canary is also available via GitHub Actions workflow: `.github/workflows/slo-canary.yml`.
+
 ## Related Tracking
 - #64 — DB growth guardrails follow-through
 - #74 — post-v0.3.4 reliability wave

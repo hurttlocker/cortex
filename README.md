@@ -535,6 +535,7 @@ No more black-box memory. No more hoping the agent remembers correctly.
 
 For ops posture at scale, see the DB growth runbook: [`docs/ops-db-growth-guardrails.md`](docs/ops-db-growth-guardrails.md).
 For checkpoint timing artifacts, run: `scripts/slo_snapshot.sh --output /tmp/slo.json --markdown /tmp/slo.md`.
+A scheduled CI canary uploads daily SLO artifacts (`.github/workflows/slo-canary.yml`).
 
 ### 📤 Export & Portability — Your Memory Is Yours
 
