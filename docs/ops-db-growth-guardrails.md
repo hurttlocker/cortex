@@ -120,6 +120,7 @@ scripts/slo_snapshot.sh \
 The script emits `PASS`, `WARN`, or `FAIL` status in output artifacts and exits non-zero on command failures or fail-threshold breaches (unless `--warn-only-thresholds` is set).
 
 CI canary is also available via GitHub Actions workflow: `.github/workflows/slo-canary.yml`.
+It now performs trend comparison against the previous successful canary artifact (`scripts/slo_trend_compare.py`) to detect relative regressions.
 
 ## Related Tracking
 - #64 — DB growth guardrails follow-through

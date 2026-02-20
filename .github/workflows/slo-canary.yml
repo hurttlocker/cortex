@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   slo-canary:
@@ -50,9 +51,109 @@ jobs:
             --output /tmp/slo-canary.json \
             --markdown /tmp/slo-canary.md
 
+      - name: Fetch previous successful canary artifact (best effort)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > /tmp/slo-prev-artifact-url.txt
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GITHUB_TOKEN"]
+          current_run_id = int(os.environ["GITHUB_RUN_ID"])
+
+          def api_get(url: str):
+              req = urllib.request.Request(url)
+              req.add_header("Accept", "application/vnd.github+json")
+              req.add_header("Authorization", f"Bearer {token}")
+              req.add_header("User-Agent", "cortex-slo-canary")
+              with urllib.request.urlopen(req, timeout=20) as resp:
+                  return json.loads(resp.read().decode("utf-8"))
+
+          runs_url = f"https://api.github.com/repos/{repo}/actions/workflows/slo-canary.yml/runs?status=success&per_page=20"
+          runs = api_get(runs_url).get("workflow_runs", [])
+
+          prior = None
+          for run in runs:
+              rid = int(run.get("id", 0))
+              if rid != current_run_id:
+                  prior = run
+                  break
+
+          if prior is None:
+              print("")
+              raise SystemExit(0)
+
+          artifacts_url = f"https://api.github.com/repos/{repo}/actions/runs/{prior['id']}/artifacts?per_page=100"
+          artifacts = api_get(artifacts_url).get("artifacts", [])
+
+          archive_url = ""
+          for art in artifacts:
+              name = str(art.get("name", ""))
+              if art.get("expired"):
+                  continue
+              if name.startswith("slo-canary-"):
+                  archive_url = art.get("archive_download_url", "")
+                  break
+
+          print(archive_url)
+          PY
+
+          artifact_url="$(cat /tmp/slo-prev-artifact-url.txt)"
+          if [[ -z "$artifact_url" ]]; then
+            echo "No prior canary artifact found; trend compare will run in no-baseline mode."
+            exit 0
+          fi
+
+          curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "$artifact_url" \
+            -o /tmp/slo-prev-artifact.zip
+
+          mkdir -p /tmp/slo-prev
+          unzip -o /tmp/slo-prev-artifact.zip -d /tmp/slo-prev >/dev/null
+
+          if [[ -f /tmp/slo-prev/slo-canary.json ]]; then
+            cp /tmp/slo-prev/slo-canary.json /tmp/slo-canary-prev.json
+            echo "Previous baseline restored: /tmp/slo-canary-prev.json"
+          else
+            echo "Previous artifact missing slo-canary.json; trend compare will use no-baseline mode."
+          fi
+
+      - name: Run SLO trend compare
+        run: |
+          set -euo pipefail
+          if [[ -f /tmp/slo-canary-prev.json ]]; then
+            python3 scripts/slo_trend_compare.py \
+              --current /tmp/slo-canary.json \
+              --baseline /tmp/slo-canary-prev.json \
+              --warn-regression-pct 30 \
+              --fail-regression-pct 80 \
+              --warn-regression-ms 150 \
+              --fail-regression-ms 500 \
+              --output-json /tmp/slo-trend.json \
+              --output-markdown /tmp/slo-trend.md
+          else
+            python3 scripts/slo_trend_compare.py \
+              --current /tmp/slo-canary.json \
+              --warn-regression-pct 30 \
+              --fail-regression-pct 80 \
+              --warn-regression-ms 150 \
+              --fail-regression-ms 500 \
+              --output-json /tmp/slo-trend.json \
+              --output-markdown /tmp/slo-trend.md
+          fi
+
       - name: Add markdown summary to run
         run: |
           cat /tmp/slo-canary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/slo-trend.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload SLO artifacts
         uses: actions/upload-artifact@v4
@@ -61,4 +162,6 @@ jobs:
           path: |
             /tmp/slo-canary.json
             /tmp/slo-canary.md
+            /tmp/slo-trend.json
+            /tmp/slo-trend.md
           retention-days: 30
