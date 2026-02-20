@@ -6,6 +6,27 @@ All notable changes to this project will be documented in this file.
 
 - No unreleased entries yet.
 
+## [0.3.5] - 2026-02-20
+
+### Added
+- Stable promotion from externally validated RC target `v0.3.5-rc2`.
+- External hostile-audit evidence path (immutable artifact + fresh-clone + adversarial checks) documented for release continuity.
+
+### Changed
+- Release promotion path now depends on successful hostile audit gate outcomes before stable tag publication.
+
+### Fixed
+- Carry-forward of RC hardening into stable:
+  - traversal-safe visualizer export output path guards
+  - strict rollout no-valid-telemetry non-zero enforcement
+  - unreadable recursive import subtree explicit failures
+  - symlink-loop recursion rejection in importer
+  - release checklist portability when `rg` is unavailable
+
+### Validation
+- External hostile audit verdict for `v0.3.5-rc2`: **GO** (no reproducible product findings).
+- Required gates pass: `audit_break_harness`, `audit_preflight`, `release_checklist`.
+
 ## [0.3.5-rc2] - 2026-02-20
 
 ### Fixed
