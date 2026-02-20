@@ -144,12 +144,14 @@ func (s *SQLiteStore) SearchFTSWithProject(ctx context.Context, query string, li
 	for rows.Next() {
 		r := &SearchResult{}
 		var metadataStr sql.NullString
+		var memoryClass sql.NullString
 		if err := rows.Scan(&r.Memory.ID, &r.Memory.Content, &r.Memory.SourceFile,
 			&r.Memory.SourceLine, &r.Memory.SourceSection, &r.Memory.ContentHash,
-			&r.Memory.Project, &r.Memory.MemoryClass, &metadataStr, &r.Memory.ImportedAt, &r.Memory.UpdatedAt,
+			&r.Memory.Project, &memoryClass, &metadataStr, &r.Memory.ImportedAt, &r.Memory.UpdatedAt,
 			&r.Score, &r.Snippet); err != nil {
 			return nil, fmt.Errorf("scanning FTS result: %w", err)
 		}
+		r.Memory.MemoryClass = memoryClass.String
 		r.Memory.Metadata = unmarshalMetadata(metadataStr)
 		results = append(results, r)
 	}
@@ -202,11 +204,13 @@ func (s *SQLiteStore) searchLikeFallback(ctx context.Context, query string, limi
 	for rows.Next() {
 		r := &SearchResult{Score: -0.5} // LIKE matches get a neutral score
 		var metadataStr sql.NullString
+		var memoryClass sql.NullString
 		if err := rows.Scan(&r.Memory.ID, &r.Memory.Content, &r.Memory.SourceFile,
 			&r.Memory.SourceLine, &r.Memory.SourceSection, &r.Memory.ContentHash,
-			&r.Memory.Project, &r.Memory.MemoryClass, &metadataStr, &r.Memory.ImportedAt, &r.Memory.UpdatedAt); err != nil {
+			&r.Memory.Project, &memoryClass, &metadataStr, &r.Memory.ImportedAt, &r.Memory.UpdatedAt); err != nil {
 			return nil, err
 		}
+		r.Memory.MemoryClass = memoryClass.String
 		r.Memory.Metadata = unmarshalMetadata(metadataStr)
 		r.Snippet = extractSnippet(r.Memory.Content, query)
 		results = append(results, r)

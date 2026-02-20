@@ -280,15 +280,17 @@ func scanSearchResultsWithMetadata(rows *sql.Rows) ([]*SearchResult, error) {
 		var m Memory
 		var deletedAt sql.NullTime
 		var metadata sql.NullString
+		var memoryClass sql.NullString
 		var score float64
 
 		err := rows.Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine, &m.SourceSection,
-			&m.ContentHash, &m.Project, &m.MemoryClass, &metadata, &m.ImportedAt, &m.UpdatedAt, &score)
+			&m.ContentHash, &m.Project, &memoryClass, &metadata, &m.ImportedAt, &m.UpdatedAt, &score)
 		if err != nil {
 			return nil, fmt.Errorf("scanning row: %w", err)
 		}
 		_ = deletedAt // not scanned in search queries
 
+		m.MemoryClass = memoryClass.String
 		m.Metadata = unmarshalMetadata(metadata)
 		results = append(results, &SearchResult{Memory: m, Score: score})
 	}
