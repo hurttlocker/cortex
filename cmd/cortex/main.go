@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hurttlocker/cortex/internal/codexrollout"
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/ingest"
@@ -139,6 +141,11 @@ func main() {
 		if err := runBench(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
+		}
+	case "codex-rollout-report":
+		exitCode := runCodexRolloutReportCLI(args[1:], os.Stdout, os.Stderr)
+		if exitCode != 0 {
+			os.Exit(exitCode)
 		}
 	case "mcp":
 		if err := runMCP(args[1:]); err != nil {
@@ -3628,6 +3635,16 @@ func writeReasonTelemetry(event reasonRunTelemetry) error {
 	return nil
 }
 
+func runCodexRolloutReportCLI(args []string, out io.Writer, errOut io.Writer) int {
+	res, err := codexrollout.Execute(args)
+	if err != nil {
+		fmt.Fprintf(errOut, "Error: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(out, res.Output)
+	return res.ExitCode
+}
+
 type benchCLIOptions struct {
 	embedFlag     string
 	includeLocal  bool
@@ -4052,6 +4069,7 @@ Commands:
   cleanup             Remove garbage memories and headless facts
   reason <query>      LLM reasoning over memories (search → prompt → analyze)
   bench               Benchmark LLM models for reason (speed, cost, quality)
+  codex-rollout-report Summarize reason telemetry + optional rollout guardrails
   projects            List all project tags with memory/fact counts
   tag                 Tag memories by project (--project, --source, --id, --auto)
   mcp                 Start MCP (Model Context Protocol) server
@@ -4149,6 +4167,12 @@ Reason Telemetry:
   ~/.cortex/reason-telemetry.jsonl appended on every cortex reason run
   CORTEX_REASON_TELEMETRY=off disables telemetry logging
 
+Codex Rollout Report Flags:
+  --file <path>                        Telemetry file path (default: ~/.cortex/reason-telemetry.jsonl)
+  --one-shot-p95-warn-ms <N>           Warn threshold for one-shot p95 latency in ms (default: 20000)
+  --recursive-known-cost-min-share <F> Warn threshold for recursive known-cost completeness (default: 0.80)
+  --warn-only[=true|false]             Warn-only mode (default: true); strict mode exits non-zero on warnings
+
 Reinforce:
   cortex reinforce <fact_id> [fact_id...]   Reset decay timer for specified facts
 
@@ -4176,6 +4200,9 @@ Examples:
   cortex search "deployment rule" --explain --json
   cortex bench --compare google/gemini-2.5-flash,deepseek/deepseek-v3.2 --recursive
   cortex bench --models openai/gpt-5.1-codex-mini,google/gemini-3-flash-preview --output bench.md
+  cortex codex-rollout-report --warn-only                 # Warn-only mode (exit 0)
+  cortex codex-rollout-report --warn-only=false           # Strict mode (non-zero on warnings)
+  cortex codex-rollout-report --one-shot-p95-warn-ms 15000 --recursive-known-cost-min-share 0.90
   cortex mcp                          # Start MCP server (stdio, for Claude Desktop/Cursor)
   cortex mcp --port 8080              # Start MCP server (HTTP+SSE)
 

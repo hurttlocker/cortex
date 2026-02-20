@@ -737,3 +737,50 @@ func TestAcquireEmbedRunLock_ReclaimsZeroPIDLock(t *testing.T) {
 	}
 	defer lock.Release()
 }
+
+// ==================== codex rollout report subcommand ====================
+
+func TestRunCodexRolloutReportCLI_StrictModeExitCode(t *testing.T) {
+	tmp := t.TempDir()
+	telemetryPath := filepath.Join(tmp, "reason-telemetry.jsonl")
+	content := strings.Join([]string{
+		`{"mode":"one-shot","provider":"openrouter","model":"openai-codex/gpt-5.2","wall_ms":25000,"cost_known":true,"cost_usd":0.001}`,
+		`{"mode":"recursive","provider":"openrouter","model":"google/gemini-2.5-flash","wall_ms":35000,"cost_known":false}`,
+	}, "\n")
+	if err := os.WriteFile(telemetryPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write telemetry fixture: %v", err)
+	}
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	exitCode := runCodexRolloutReportCLI([]string{"--file", telemetryPath, "--warn-only=false"}, &out, &errOut)
+	if exitCode != 2 {
+		t.Fatalf("expected strict mode exit code 2, got %d", exitCode)
+	}
+	if !strings.Contains(out.String(), "Guardrail status") {
+		t.Fatalf("expected guardrail status output, got: %s", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("unexpected stderr output: %s", errOut.String())
+	}
+}
+
+func TestRunCodexRolloutReportCLI_WarnOnlyExitZero(t *testing.T) {
+	tmp := t.TempDir()
+	telemetryPath := filepath.Join(tmp, "reason-telemetry.jsonl")
+	content := strings.Join([]string{
+		`{"mode":"one-shot","provider":"openrouter","model":"openai-codex/gpt-5.2","wall_ms":25000,"cost_known":true,"cost_usd":0.001}`,
+	}, "\n")
+	if err := os.WriteFile(telemetryPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write telemetry fixture: %v", err)
+	}
+
+	var out bytes.Buffer
+	exitCode := runCodexRolloutReportCLI([]string{"--file", telemetryPath}, &out, io.Discard)
+	if exitCode != 0 {
+		t.Fatalf("expected warn-only default exit code 0, got %d", exitCode)
+	}
+	if !strings.Contains(out.String(), "WARN:") {
+		t.Fatalf("expected warning in output, got: %s", out.String())
+	}
+}

@@ -464,7 +464,13 @@ cortex search "テスト" --limit 3
 ### 9e. Concurrent imports
 ```bash
 for i in $(seq 1 10); do
-  echo "# Note $i" > "$CORTEX_TEST_DIR/concurrent_$i.md"
+  cat > "$CORTEX_TEST_DIR/concurrent_$i.md" <<EOF
+# Concurrent Note $i
+
+Decision: use lock-safe import path for worker $i.
+Status: worker $i completed preflight checks.
+Context: this fixture is intentionally substantive (not low-signal) for import locking validation.
+EOF
   cortex import "$CORTEX_TEST_DIR/concurrent_$i.md" &
 done
 wait
