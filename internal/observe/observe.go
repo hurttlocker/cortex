@@ -27,7 +27,17 @@ type Stats struct {
 	AvgConfidence          float64                       `json:"avg_confidence"`
 	FactsByType            map[string]int                `json:"facts_by_type"`
 	Freshness              Freshness                     `json:"freshness"`
+	Growth                 Growth                        `json:"growth"`
+	Alerts                 []string                      `json:"alerts,omitempty"`
 	ConfidenceDistribution *store.ConfidenceDistribution `json:"confidence_distribution,omitempty"`
+}
+
+// Growth holds short-window growth metrics for ops guardrails.
+type Growth struct {
+	Memories24h int `json:"memories_24h"`
+	Memories7d  int `json:"memories_7d"`
+	Facts24h    int `json:"facts_24h"`
+	Facts7d     int `json:"facts_7d"`
 }
 
 // Freshness holds distribution of memories by import date buckets.
@@ -134,7 +144,83 @@ func (e *Engine) GetStats(ctx context.Context) (*Stats, error) {
 		stats.ConfidenceDistribution = confDist
 	}
 
+	// Growth metrics + guardrail alerts are only available on SQLite store.
+	if sq, ok := e.store.(*store.SQLiteStore); ok {
+		growth, err := e.getGrowth(ctx, sq)
+		if err == nil {
+			stats.Growth = growth
+			stats.Alerts = buildGrowthAlerts(stats.StorageBytes, growth)
+		}
+	}
+
 	return stats, nil
+}
+
+func (e *Engine) getGrowth(ctx context.Context, sq *store.SQLiteStore) (Growth, error) {
+	g := Growth{}
+
+	if err := sq.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM memories
+		WHERE deleted_at IS NULL
+		  AND imported_at >= datetime('now', '-1 day')
+	`).Scan(&g.Memories24h); err != nil {
+		return g, err
+	}
+
+	if err := sq.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM memories
+		WHERE deleted_at IS NULL
+		  AND imported_at >= datetime('now', '-7 day')
+	`).Scan(&g.Memories7d); err != nil {
+		return g, err
+	}
+
+	if err := sq.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM facts
+		WHERE superseded_by IS NULL
+		  AND created_at >= datetime('now', '-1 day')
+	`).Scan(&g.Facts24h); err != nil {
+		return g, err
+	}
+
+	if err := sq.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM facts
+		WHERE superseded_by IS NULL
+		  AND created_at >= datetime('now', '-7 day')
+	`).Scan(&g.Facts7d); err != nil {
+		return g, err
+	}
+
+	return g, nil
+}
+
+func buildGrowthAlerts(storageBytes int64, growth Growth) []string {
+	alerts := make([]string, 0)
+
+	const (
+		warnStorageBytes = int64(1.5 * 1024 * 1024 * 1024) // 1.5 GB
+		noteStorageBytes = int64(1.0 * 1024 * 1024 * 1024) // 1.0 GB
+	)
+
+	switch {
+	case storageBytes >= warnStorageBytes:
+		alerts = append(alerts, "db_size_high: storage is above 1.5GB; run maintenance (VACUUM/cleanup) soon")
+	case storageBytes >= noteStorageBytes:
+		alerts = append(alerts, "db_size_notice: storage is above 1.0GB; monitor growth weekly")
+	}
+
+	if growth.Facts24h >= 200000 {
+		alerts = append(alerts, "fact_growth_spike: 24h fact growth is unusually high")
+	}
+	if growth.Memories24h >= 500 {
+		alerts = append(alerts, "memory_growth_spike: 24h memory growth is unusually high")
+	}
+
+	return alerts
 }
 
 // GetStaleFacts returns facts that have decayed below the confidence threshold.
