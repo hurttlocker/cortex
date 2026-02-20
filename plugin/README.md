@@ -212,6 +212,22 @@ Plugin settings must be nested under `config`, not alongside `enabled`:
 
 **Fix:** Edit `~/.openclaw/openclaw.json` manually and nest settings under `config`.
 
+**Cause 1b: "Unrecognized keys" warnings even when config is correct**
+
+You may still see warnings like:
+
+```text
+plugins.entries.openclaw-cortex: Unrecognized keys: "autoRecall", "autoCapture", ...
+```
+
+when your config is correctly nested under `config`. In current OpenClaw builds, this can happen because core config validation may not fully apply extension `configSchema` before warning.
+
+- **Impact:** noisy logs only (plugin still works)
+- **Safety:** non-blocking for runtime behavior
+- **What to do:** keep config nested under `config` and continue
+
+We'll track upstream validator behavior; until then, treat this as known log noise, not a plugin failure.
+
 **Cause 2: Missing dependencies**
 If you see `Cannot find module '@sinclair/typebox'`, run:
 ```bash
