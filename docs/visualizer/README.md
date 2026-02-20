@@ -41,11 +41,21 @@ python3 scripts/visualizer_api.py --bootstrap --port 8787
 # open http://127.0.0.1:8787/prototype-v1.html
 ```
 
+From the UI, click **Open in Obsidian** to launch desktop Obsidian at the graph index note.
+
 API routes:
 - `GET /api/v1/canonical`
 - `GET /api/v1/obsidian`
 - `GET /api/v1/subgraph?focus=<node_id>&max_hops=2&max_nodes=200`
+- `GET /api/v1/reason-runs?model=&provider=&preset=&mode=&since_hours=168&limit=80`
 - `GET /api/v1/health`
+
+## Open Obsidian directly from CLI
+```bash
+python3 scripts/visualizer_open_obsidian.py
+```
+This refreshes exports and opens Obsidian desktop to:
+`docs/visualizer/data/obsidian-vault/index.md`
 
 ## Notes
 - Black/white baseline for shadcn alignment.

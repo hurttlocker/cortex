@@ -56,6 +56,18 @@
     .table { width: 100%; border-collapse: collapse; font-size: 12px; }
     .table th, .table td { text-align: left; border-top: 1px solid #1f1f1f; padding: 8px 6px; }
     .table th { color: var(--muted); font-weight: 500; }
+    .filters { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-bottom: 8px; }
+    .filters select, .filters input {
+      width: 100%;
+      background: #0b0b0c;
+      color: #fff;
+      border: 1px solid #2a2a2d;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+    .reason-details { margin-top: 8px; border: 1px solid #202020; border-radius: 8px; padding: 8px; background: #080808; }
+    .reason-details ul { margin-top: 6px; }
     .split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .panel { border: 1px solid #202020; border-radius: 8px; padding: 8px; background: #080808; }
     ul { margin: 7px 0 0; padding-left: 16px; }
@@ -91,7 +103,8 @@
           <div class="sub">black/white shadcn-style shell • canonical backend + Obsidian adapter</div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
-          <a class="btn" id="obsidianBtn" href="./data/obsidian-graph.json" target="_blank" rel="noopener noreferrer">Open Obsidian adapter</a>
+          <a class="btn" id="obsidianOpenBtn" href="#" target="_self" rel="noopener noreferrer">Open in Obsidian</a>
+          <a class="btn" id="obsidianJsonBtn" href="./data/obsidian-graph.json" target="_blank" rel="noopener noreferrer">View Obsidian JSON</a>
           <button class="btn" id="refreshBtn">Reload snapshot</button>
         </div>
       </div>
@@ -125,11 +138,26 @@
 
       <section class="row2">
         <article class="card">
-          <div class="title"><span>Reasoning Run Inspector</span><span class="pill">timeline</span></div>
+          <div class="title"><span>Reasoning Run Inspector</span><span class="pill">timeline + filters</span></div>
+          <div class="filters">
+            <select id="reasonModel"><option value="">All models</option></select>
+            <select id="reasonProvider"><option value="">All providers</option></select>
+            <select id="reasonPreset"><option value="">All presets</option></select>
+            <select id="reasonMode"><option value="">All modes</option></select>
+            <input id="reasonSinceHours" type="number" min="1" max="720" value="168" />
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <div class="small" id="reasonSummary">runs: —</div>
+            <button class="btn" id="reasonApplyBtn">Apply filters</button>
+          </div>
           <table class="table">
-            <thead><tr><th>Run</th><th>Mode</th><th>Latency</th><th>Tokens</th><th>Cost</th></tr></thead>
+            <thead><tr><th>Run</th><th>Mode</th><th>Latency</th><th>Tokens</th><th>Cost</th><th>Status</th></tr></thead>
             <tbody id="runsBody"></tbody>
           </table>
+          <div class="reason-details" id="reasonDetails">
+            <div class="small">Select a run to inspect steps.</div>
+            <ul id="reasonSteps"></ul>
+          </div>
         </article>
         <article class="card">
           <div class="title"><span>Retrieval Debug (query replay)</span><span class="pill">bm25 vs hybrid</span></div>
@@ -151,6 +179,7 @@
             <div class="v" style="font-size:18px;margin:8px 0 6px" id="nodeLabel">(click a node)</div>
             <div class="small" id="nodeType">type: —</div>
             <div class="small" id="nodeSource" style="margin-top:4px">source: —</div>
+            <div class="small" id="nodeObsidian" style="margin-top:4px">obsidian: —</div>
             <div class="small" id="graphBounds" style="margin-top:4px">bounds: —</div>
             <ul id="nodeLinks"></ul>
           </div>
@@ -168,7 +197,9 @@
 
     const REPO_BLOB_BASE = 'https://github.com/hurttlocker/cortex/blob/main/';
     let canonicalData = null;
+    let obsidianData = null;
     let activeGraph = null;
+    let reasonPayload = null;
 
     function gateStatusClass(s) {
       if (s === 'PASS') return 'ok';
@@ -215,6 +246,17 @@
       return fallback.json();
     }
 
+    async function fetchObsidian(refresh = false) {
+      const apiPath = `/api/v1/obsidian${refresh ? '?refresh=1' : ''}`;
+      try {
+        const r = await fetch(apiPath, { cache: 'no-store' });
+        if (r.ok) return await r.json();
+      } catch (_) {}
+      const fallback = await fetch('./data/obsidian-graph.json?ts=' + Date.now());
+      if (!fallback.ok) throw new Error(`fallback HTTP ${fallback.status}`);
+      return fallback.json();
+    }
+
     async function fetchSubgraph(focus, maxHops = 2, maxNodes = 200) {
       const q = new URLSearchParams({ focus: focus || '', max_hops: String(maxHops), max_nodes: String(maxNodes) });
       try {
@@ -222,6 +264,134 @@
         if (r.ok) return await r.json();
       } catch (_) {}
       return canonicalData?.data?.graph || { nodes: [], edges: [], bounds: { max_hops: maxHops, max_nodes: maxNodes }, focus: focus || '' };
+    }
+
+    function readReasonFilters() {
+      return {
+        model: document.getElementById('reasonModel').value || '',
+        provider: document.getElementById('reasonProvider').value || '',
+        preset: document.getElementById('reasonPreset').value || '',
+        mode: document.getElementById('reasonMode').value || '',
+        since_hours: String(Math.max(1, Number(document.getElementById('reasonSinceHours').value || 168))),
+        limit: '80'
+      };
+    }
+
+    function fallbackReasonPayload() {
+      const runs = ((canonicalData?.data?.reason?.runs) || []).map((r, i) => ({
+        run_id: r.run_id || `fallback-${i}`,
+        timestamp: r.run_id || '',
+        mode: r.mode || 'unknown',
+        model: r.model || 'unknown',
+        provider: r.provider || 'unknown',
+        preset: '',
+        latency_ms: Number(r.latency_ms || 0),
+        tokens_in: 0,
+        tokens_out: 0,
+        tokens_total: Number(r.tokens_total || 0),
+        estimated_cost_usd: Number(r.estimated_cost_usd || 0),
+        status: r.status || 'ok',
+        step_outcomes: []
+      }));
+      return {
+        schema_version: canonicalData?.schema_version || 'v1',
+        generated_at: canonicalData?.generated_at || '',
+        filters_applied: { model: '', provider: '', preset: '', mode: '', since_hours: 168, limit: 80 },
+        filter_options: { model: [], provider: [], preset: [], mode: [], since_hours_default: 168 },
+        summary: {
+          run_count: runs.length,
+          error_count: runs.filter(r => r.status === 'error').length,
+          recursive_count: runs.filter(r => r.mode === 'recursive').length,
+          one_shot_count: runs.filter(r => r.mode !== 'recursive').length,
+          p95_latency_ms: Number(canonicalData?.data?.reason?.p95_latency_ms || 0),
+          cost_total_usd: Number(canonicalData?.data?.reason?.cost_24h_usd || 0),
+          tokens_total: runs.reduce((a, r) => a + (r.tokens_total || 0), 0)
+        },
+        runs
+      };
+    }
+
+    async function fetchReasonRuns(filters) {
+      const q = new URLSearchParams(filters || {});
+      try {
+        const r = await fetch(`/api/v1/reason-runs?${q.toString()}`, { cache: 'no-store' });
+        if (r.ok) return await r.json();
+      } catch (_) {}
+      return fallbackReasonPayload();
+    }
+
+    function setSelectOptions(id, values, label) {
+      const el = document.getElementById(id);
+      const current = el.value;
+      el.innerHTML = '';
+      const first = document.createElement('option');
+      first.value = '';
+      first.textContent = label;
+      el.appendChild(first);
+      (values || []).forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v;
+        el.appendChild(opt);
+      });
+      if (current) el.value = current;
+    }
+
+    function renderReasonDetails(run) {
+      const details = document.getElementById('reasonDetails');
+      const steps = document.getElementById('reasonSteps');
+      if (!run) {
+        details.querySelector('.small').textContent = 'Select a run to inspect steps.';
+        steps.innerHTML = '';
+        return;
+      }
+
+      details.querySelector('.small').textContent = `run ${run.run_id} • ${run.model} • ${run.provider} • preset: ${run.preset || 'n/a'} • status: ${run.status}`;
+      steps.innerHTML = '';
+      (run.step_outcomes || []).forEach(s => {
+        const li = document.createElement('li');
+        const latency = s.latency_ms != null ? `${s.latency_ms}ms` : 'n/a';
+        const count = s.count != null ? ` count=${s.count}` : '';
+        li.textContent = `${s.name}: ${s.status} (${latency}${count})`;
+        steps.appendChild(li);
+      });
+      if (!(run.step_outcomes || []).length) {
+        const li = document.createElement('li');
+        li.textContent = 'No step outcomes available for this run.';
+        steps.appendChild(li);
+      }
+    }
+
+    function renderReasonRuns(payload) {
+      reasonPayload = payload;
+      const runs = document.getElementById('runsBody');
+      runs.innerHTML = '';
+
+      const summary = payload?.summary || {};
+      document.getElementById('reasonSummary').textContent = `runs: ${summary.run_count ?? 0} • errors: ${summary.error_count ?? 0} • p95: ${summary.p95_latency_ms ?? 0}ms • cost: $${Number(summary.cost_total_usd || 0).toFixed(4)}`;
+
+      setSelectOptions('reasonModel', payload?.filter_options?.model || [], 'All models');
+      setSelectOptions('reasonProvider', payload?.filter_options?.provider || [], 'All providers');
+      setSelectOptions('reasonPreset', payload?.filter_options?.preset || [], 'All presets');
+      setSelectOptions('reasonMode', payload?.filter_options?.mode || [], 'All modes');
+
+      const list = payload?.runs || [];
+      list.forEach((r, idx) => {
+        const tr = document.createElement('tr');
+        tr.style.cursor = 'pointer';
+        tr.innerHTML = `<td>${r.run_id}</td><td>${r.mode}</td><td>${(Number(r.latency_ms || 0)/1000).toFixed(1)}s</td><td>${fmtNum(Number(r.tokens_total || 0))}</td><td>$${Number(r.estimated_cost_usd || 0).toFixed(4)}</td><td>${r.status || 'unknown'}</td>`;
+        tr.addEventListener('click', () => renderReasonDetails(r));
+        runs.appendChild(tr);
+        if (idx === 0) renderReasonDetails(r);
+      });
+
+      if (!list.length) renderReasonDetails(null);
+    }
+
+    async function loadReasonRuns() {
+      const filters = readReasonFilters();
+      const payload = await fetchReasonRuns(filters);
+      renderReasonRuns(payload);
     }
 
     function renderGraph(graph) {
@@ -261,6 +431,14 @@
           source.innerHTML = `source: <a href="${href}" target="_blank" rel="noopener noreferrer" style="color:#fff">${n.source_ref}</a>`;
         } else {
           source.textContent = 'source: —';
+        }
+
+        const obsLine = document.getElementById('nodeObsidian');
+        const obsNode = obsidianData?.graph?.nodes?.find(x => x.id === id);
+        if (obsNode?.obsidian_uri) {
+          obsLine.innerHTML = `obsidian: <a href="${obsNode.obsidian_uri}" target="_self" style="color:#fff">open node note</a>`;
+        } else {
+          obsLine.textContent = 'obsidian: —';
         }
 
         const links = edges.filter(e => e.from === id || e.to === id).map(e => {
@@ -303,6 +481,24 @@
 
       if (graph && graph.focus) selectNode(graph.focus);
       else if (nodes[0]) selectNode(nodes[0].id);
+    }
+
+    function bindObsidian(data) {
+      obsidianData = data;
+      const openBtn = document.getElementById('obsidianOpenBtn');
+      const jsonBtn = document.getElementById('obsidianJsonBtn');
+      if (data?.graph?.obsidian_index_uri) {
+        openBtn.href = data.graph.obsidian_index_uri;
+        openBtn.style.opacity = '1';
+        openBtn.title = data.graph.index_path || 'Open Obsidian index';
+      } else {
+        openBtn.href = '#';
+        openBtn.style.opacity = '0.6';
+        openBtn.title = 'Obsidian index metadata unavailable';
+      }
+      if (jsonBtn && data) {
+        jsonBtn.href = './data/obsidian-graph.json';
+      }
     }
 
     function bind(data) {
@@ -355,14 +551,6 @@
         const li = document.createElement('li'); li.textContent = a; actions.appendChild(li);
       });
 
-      const runs = document.getElementById('runsBody');
-      runs.innerHTML = '';
-      (d.reason?.runs || []).slice(0, 6).forEach(r => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>#${r.run_id}</td><td>${r.mode}</td><td>${(r.latency_ms/1000).toFixed(1)}s</td><td>${fmtNum(r.tokens_total)}</td><td>$${(r.estimated_cost_usd || 0).toFixed(4)}</td>`;
-        runs.appendChild(tr);
-      });
-
       const bm25 = document.getElementById('bm25List');
       bm25.innerHTML = '';
       (d.retrieval?.results?.bm25 || []).forEach(x => { const li = document.createElement('li'); li.textContent = `#${x.rank} ${x.title}`; bm25.appendChild(li); });
@@ -377,9 +565,14 @@
     async function loadSnapshot(refresh = false) {
       const empty = document.getElementById('emptyBanner');
       try {
-        const json = await fetchCanonical(refresh);
+        const [canonical, obsidian] = await Promise.all([
+          fetchCanonical(refresh),
+          fetchObsidian(refresh),
+        ]);
         empty.style.display = 'none';
-        bind(json);
+        bindObsidian(obsidian);
+        bind(canonical);
+        await loadReasonRuns();
       } catch (e) {
         empty.style.display = 'block';
         console.error(e);
@@ -387,6 +580,17 @@
     }
 
     document.getElementById('refreshBtn').addEventListener('click', () => loadSnapshot(true));
+    document.getElementById('reasonApplyBtn').addEventListener('click', () => loadReasonRuns());
+    ['reasonModel','reasonProvider','reasonPreset','reasonMode'].forEach(id => {
+      document.getElementById(id).addEventListener('change', () => loadReasonRuns());
+    });
+    document.getElementById('reasonSinceHours').addEventListener('change', () => loadReasonRuns());
+    document.getElementById('obsidianOpenBtn').addEventListener('click', (e) => {
+      const href = e.currentTarget.getAttribute('href') || '';
+      if (!href || href === '#') {
+        e.preventDefault();
+      }
+    });
     loadSnapshot();
   </script>
 </body>

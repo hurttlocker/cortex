@@ -97,26 +97,60 @@ Contract notes:
 ```json
 {
   "schema_version": "v1",
-  "data": {
-    "runs": [
-      {
-        "run_id": "2201",
-        "mode": "recursive|one-shot",
-        "model": "...",
-        "provider": "...",
-        "latency_ms": 18700,
-        "tokens_total": 19300,
-        "estimated_cost_usd": 0.021,
-        "status": "ok|error",
-        "steps": [
-          { "name": "search", "latency_ms": 1200, "status": "ok" },
-          { "name": "reason", "latency_ms": 13000, "status": "ok" }
-        ]
-      }
-    ],
+  "generated_at": "2026-02-20T16:40:00Z",
+  "filters_applied": {
+    "model": "google/gemini-3-flash-preview",
+    "provider": "openrouter",
+    "preset": "daily-digest",
+    "mode": "recursive",
+    "since_hours": 168,
+    "limit": 80
+  },
+  "filter_options": {
+    "model": ["..."],
+    "provider": ["..."],
+    "preset": ["..."],
+    "mode": ["recursive", "one-shot"],
+    "since_hours_default": 168
+  },
+  "summary": {
+    "run_count": 12,
+    "error_count": 1,
+    "recursive_count": 10,
+    "one_shot_count": 2,
     "p95_latency_ms": 14200,
-    "cost_24h_usd": 0.42
-  }
+    "cost_total_usd": 0.42,
+    "tokens_total": 19300
+  },
+  "runs": [
+    {
+      "run_id": "2026-02-20T16:24:58Z",
+      "timestamp": "2026-02-20T16:24:58Z",
+      "mode": "recursive",
+      "model": "google/gemini-3-flash-preview",
+      "provider": "openrouter",
+      "preset": "daily-digest",
+      "query": "...",
+      "latency_ms": 121872,
+      "search_ms": 1024,
+      "llm_ms": 119001,
+      "tokens_in": 4103,
+      "tokens_out": 508,
+      "tokens_total": 4611,
+      "estimated_cost_usd": 0.000920,
+      "cost_known": true,
+      "iterations": 7,
+      "recursive_depth": 2,
+      "facts_used": 48,
+      "memories_used": 20,
+      "status": "ok|error",
+      "step_outcomes": [
+        { "name": "search", "latency_ms": 1024, "status": "ok|no-data|error" },
+        { "name": "reason", "latency_ms": 119001, "status": "ok|no-data|error" },
+        { "name": "recursive-loop", "count": 7, "status": "ok|no-data|error" }
+      ]
+    }
+  ]
 }
 ```
 
@@ -183,6 +217,9 @@ Contract notes:
   "graph": {
     "focus": "fact_123",
     "bounds": { "max_hops": 2, "max_nodes": 200, "default_radius": 1 },
+    "vault_dir": "/abs/path/to/obsidian-vault",
+    "index_path": "/abs/path/to/obsidian-vault/index.md",
+    "obsidian_index_uri": "obsidian://open?path=/abs/path/to/obsidian-vault/index.md",
     "nodes": [
       {
         "id": "fact_123",
@@ -191,7 +228,10 @@ Contract notes:
         "confidence": 0.91,
         "timestamp": "2026-02-20T15:50:00Z",
         "source_ref": "docs/ops-db-growth-guardrails.md",
-        "links": ["mem_88", "out_12"]
+        "links": ["mem_88", "out_12"],
+        "note_file": "canary-regression-threshold-exceeded.md",
+        "note_path": "/abs/path/to/obsidian-vault/canary-regression-threshold-exceeded.md",
+        "obsidian_uri": "obsidian://open?path=/abs/path/to/obsidian-vault/canary-regression-threshold-exceeded.md"
       }
     ],
     "edges": [
@@ -212,6 +252,7 @@ Contract notes:
   - `/api/v1/canonical` → canonical read-model
   - `/api/v1/obsidian` → derived Obsidian adapter
   - `/api/v1/subgraph` → bounded neighborhood extraction from canonical graph
+  - `/api/v1/reason-runs` → filterable run timeline + step outcomes
 
 ## Next Steps
 1. Migrate producer path from script shim to first-class Cortex read-model endpoint/command
