@@ -398,6 +398,130 @@ def bounded_subgraph(now_ts: str) -> dict:
     }
 
 
+def build_retrieval_debug() -> dict:
+    bm25 = [
+        {
+            "id": "ops-db-growth-guardrails",
+            "rank": 1,
+            "title": "docs/ops-db-growth-guardrails.md",
+            "score": 0.87,
+            "why": "Exact keyword overlap for release/canary guardrails.",
+        },
+        {
+            "id": "release-v0-3-4",
+            "rank": 2,
+            "title": "docs/releases/v0.3.4.md",
+            "score": 0.82,
+            "why": "Strong lexical overlap with release/regression terms.",
+        },
+        {
+            "id": "readme",
+            "rank": 3,
+            "title": "README.md",
+            "score": 0.71,
+            "why": "General release keywords appear, but context is broad.",
+        },
+    ]
+
+    semantic = [
+        {
+            "id": "cortex-deep-dive",
+            "rank": 1,
+            "title": "docs/CORTEX_DEEP_DIVE.md",
+            "score": 0.93,
+            "why": "Closest conceptual match to regressions and operational diagnostics.",
+        },
+        {
+            "id": "release-v0-3-4",
+            "rank": 2,
+            "title": "docs/releases/v0.3.4.md",
+            "score": 0.89,
+            "why": "Release notes semantically align with gate movement context.",
+        },
+        {
+            "id": "memory-2026-02-19",
+            "rank": 3,
+            "title": "memory/2026-02-19.md",
+            "score": 0.83,
+            "why": "Temporal memory captures regression chatter and follow-up actions.",
+        },
+    ]
+
+    hybrid = [
+        {
+            "id": "cortex-deep-dive",
+            "rank": 1,
+            "title": "docs/CORTEX_DEEP_DIVE.md",
+            "score": 0.92,
+            "why": "Semantic strength plus confidence-weighted rerank moved it to the top.",
+        },
+        {
+            "id": "release-v0-3-4",
+            "rank": 2,
+            "title": "docs/releases/v0.3.4.md",
+            "score": 0.88,
+            "why": "Consistent top performer across lexical and semantic modes.",
+        },
+        {
+            "id": "ops-db-growth-guardrails",
+            "rank": 3,
+            "title": "docs/ops-db-growth-guardrails.md",
+            "score": 0.85,
+            "why": "Still highly relevant, but reranker favored richer explanatory docs.",
+        },
+    ]
+
+    bm25_by_id = {r["id"]: r for r in bm25}
+    semantic_by_id = {r["id"]: r for r in semantic}
+    hybrid_by_id = {r["id"]: r for r in hybrid}
+
+    all_ids = sorted(set(bm25_by_id) | set(semantic_by_id) | set(hybrid_by_id))
+    deltas = []
+
+    for rid in all_ids:
+        b = bm25_by_id.get(rid)
+        s = semantic_by_id.get(rid)
+        h = hybrid_by_id.get(rid)
+
+        bm25_rank = b.get("rank") if b else None
+        semantic_rank = s.get("rank") if s else None
+        hybrid_rank = h.get("rank") if h else None
+
+        movement_vs_bm25 = (bm25_rank - hybrid_rank) if (bm25_rank is not None and hybrid_rank is not None) else None
+        movement_vs_semantic = (semantic_rank - hybrid_rank) if (semantic_rank is not None and hybrid_rank is not None) else None
+
+        deltas.append(
+            {
+                "id": rid,
+                "title": (h or s or b or {}).get("title", rid),
+                "bm25_rank": bm25_rank,
+                "semantic_rank": semantic_rank,
+                "hybrid_rank": hybrid_rank,
+                "movement_vs_bm25": movement_vs_bm25,
+                "movement_vs_semantic": movement_vs_semantic,
+                "reason": (h or s or b or {}).get("why", "rank movement driven by hybrid rerank blend"),
+            }
+        )
+
+    deltas.sort(
+        key=lambda d: (
+            -(abs(d.get("movement_vs_bm25") or 0)),
+            d.get("hybrid_rank") if d.get("hybrid_rank") is not None else 999,
+            d.get("title", ""),
+        )
+    )
+
+    return {
+        "query": "release gate regressions this week",
+        "results": {
+            "bm25": bm25,
+            "semantic": semantic,
+            "hybrid": hybrid,
+        },
+        "deltas": deltas,
+    }
+
+
 def build_snapshot(stats: dict, telemetry: list[dict]) -> dict:
     now = now_rfc3339()
 
@@ -520,21 +644,7 @@ def build_snapshot(stats: dict, telemetry: list[dict]) -> dict:
                 "p95_latency_ms": int(p95_latency_ms),
                 "cost_24h_usd": round(cost_24h, 4),
             },
-            "retrieval": {
-                "query": "release gate regressions this week",
-                "results": {
-                    "bm25": [
-                        {"rank": 1, "title": "docs/ops-db-growth-guardrails.md", "score": 0.87},
-                        {"rank": 2, "title": "docs/releases/v0.3.4.md", "score": 0.82},
-                        {"rank": 3, "title": "README.md", "score": 0.71},
-                    ],
-                    "hybrid": [
-                        {"rank": 1, "title": "docs/CORTEX_DEEP_DIVE.md", "score": 0.92},
-                        {"rank": 2, "title": "docs/releases/v0.3.4.md", "score": 0.88},
-                        {"rank": 3, "title": "memory/2026-02-19.md", "score": 0.81},
-                    ],
-                },
-            },
+            "retrieval": build_retrieval_debug(),
             "graph": bounded_subgraph(now),
             "stats": stats,
         },
