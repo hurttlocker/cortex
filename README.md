@@ -767,6 +767,7 @@ cd cortex
 go build ./cmd/cortex/
 go test ./...
 scripts/connectivity_smoke.sh   # end-to-end runtime gate (import→extract→search→optimize)
+scripts/audit_break_harness.sh  # adversarial sanity checks (missing paths + lock/concurrency regressions)
 scripts/audit_preflight.sh --tag v0.3.5-rc1   # generate audit-ready markdown + logs
 ```
 

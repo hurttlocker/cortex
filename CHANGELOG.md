@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 - Deterministic runtime connectivity smoke gate: `scripts/connectivity_smoke.sh`.
 - One-command external audit preflight pack generator: `scripts/audit_preflight.sh --tag ...`.
+- Adversarial audit sanity harness: `scripts/audit_break_harness.sh`.
 - v0.3.5-rc1 audit handoff docs (`go-no-go`, auditor command pack, release notes).
 
 ### Changed
