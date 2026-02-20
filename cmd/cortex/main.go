@@ -3146,7 +3146,11 @@ func outputConflictsTTY(conflicts []observe.Conflict, verbose bool) error {
 
 	for i := 0; i < detailLimit; i++ {
 		c := conflicts[i]
-		fmt.Printf("\n❌ [%d/%d] %s conflict\n", i+1, len(conflicts), strings.Title(c.ConflictType))
+		conflictType := c.ConflictType
+		if conflictType == "" {
+			conflictType = "attribute"
+		}
+		fmt.Printf("\n❌ [%d/%d] %s conflict\n", i+1, len(conflicts), conflictType)
 		fmt.Printf("   \"%s\" (confidence: %.2f, id: %d)\n", formatFactText(c.Fact1.Subject, c.Fact1.Predicate, c.Fact1.Object), c.Fact1.Confidence, c.Fact1.ID)
 		fmt.Printf("   \"%s\" (confidence: %.2f, id: %d)\n", formatFactText(c.Fact2.Subject, c.Fact2.Predicate, c.Fact2.Object), c.Fact2.Confidence, c.Fact2.ID)
 		fmt.Printf("   Similarity: %.2f\n", c.Similarity)
