@@ -6,6 +6,7 @@ Status: draft scaffold for issue #100
 - Stable read models for UI modules in issues #101-#104
 - Backward-compatible evolution via explicit `schema_version`
 - Cortex remains source-of-truth (no UI-owned state)
+- One canonical backend payload can power both Cortex UI and Obsidian graph consumers
 
 ## Global Envelope
 All visualizer payloads follow this shape:
@@ -25,7 +26,7 @@ All visualizer payloads follow this shape:
 {
   "schema_version": "v1",
   "data": {
-    "overall_status": "PASS|WARN|FAIL",
+    "overall_status": "PASS|WARN|FAIL|NO_DATA",
     "gates": [
       { "key": "ci", "label": "CI Build/Test", "status": "PASS", "reason": "..." },
       { "key": "canary", "label": "Canary Trend", "status": "WARN", "reason": "..." },
@@ -110,23 +111,64 @@ All visualizer payloads follow this shape:
 }
 ```
 
-## 5) Provenance Explorer Contract
+## 5) Provenance Explorer / Canonical Graph Contract
 
 ```json
 {
   "schema_version": "v1",
   "data": {
-    "focus_fact_id": "fact_123",
+    "focus": "fact_123",
+    "bounds": { "max_hops": 2, "max_nodes": 200, "default_radius": 1 },
     "nodes": [
-      { "id": "fact_123", "type": "fact", "label": "canary regression threshold exceeded" },
-      { "id": "mem_88", "type": "source", "label": "docs/ops-db-growth-guardrails.md" },
-      { "id": "out_12", "type": "artifact", "label": "release summary" }
+      {
+        "id": "fact_123",
+        "type": "fact",
+        "label": "canary regression threshold exceeded",
+        "weight": 1.0,
+        "confidence": 0.91,
+        "timestamp": "2026-02-20T15:50:00Z",
+        "source_ref": "docs/ops-db-growth-guardrails.md"
+      }
     ],
     "edges": [
-      { "from": "fact_123", "to": "mem_88", "kind": "sourced_from" },
-      { "from": "fact_123", "to": "out_12", "kind": "influenced" }
+      {
+        "id": "edge_1",
+        "from": "fact_123",
+        "to": "mem_88",
+        "kind": "sourced_from",
+        "weight": 1.0,
+        "timestamp": "2026-02-20T15:50:00Z",
+        "source_ref": "docs/ops-db-growth-guardrails.md"
+      }
+    ]
+  }
+}
+```
+
+## 6) Obsidian Adapter Contract (derived from canonical graph)
+
+```json
+{
+  "schema_version": "v1",
+  "generated_at": "2026-02-20T15:50:00Z",
+  "source_snapshot": "canonical-v1",
+  "graph": {
+    "focus": "fact_123",
+    "bounds": { "max_hops": 2, "max_nodes": 200, "default_radius": 1 },
+    "nodes": [
+      {
+        "id": "fact_123",
+        "title": "canary regression threshold exceeded",
+        "type": "fact",
+        "confidence": 0.91,
+        "timestamp": "2026-02-20T15:50:00Z",
+        "source_ref": "docs/ops-db-growth-guardrails.md",
+        "links": ["mem_88", "out_12"]
+      }
     ],
-    "bounds": { "max_hops": 2, "max_nodes": 200 }
+    "edges": [
+      { "id": "edge_1", "from": "fact_123", "to": "mem_88", "kind": "sourced_from" }
+    ]
   }
 }
 ```
@@ -140,3 +182,4 @@ All visualizer payloads follow this shape:
 1. Define exact producers for each contract (command adapter vs endpoint)
 2. Add golden fixtures under `tests/fixtures/visualizer/`
 3. Bind #101-#104 UI modules to these contracts
+4. Keep Obsidian adapter derived-only (never as source-of-truth)
