@@ -287,11 +287,45 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 
 	_, err = e.store.AddMemory(ctx, mem)
 	if err != nil {
+		if isDuplicateMemoryInsert(err) {
+			existing, findErr := e.store.FindByHash(ctx, hash)
+			if findErr != nil {
+				return findErr
+			}
+			if existing != nil && opts.Metadata != nil {
+				if meta, ok := opts.Metadata.(*store.Metadata); ok && meta != nil {
+					if err := e.store.UpdateMemoryMetadata(ctx, existing.ID, meta); err != nil {
+						return fmt.Errorf("updating metadata on existing memory: %w", err)
+					}
+					result.MemoriesUpdated++
+					return nil
+				}
+			}
+			result.MemoriesUnchanged++
+			return nil
+		}
 		return err
 	}
 
 	result.MemoriesNew++
 	return nil
+}
+
+func isDuplicateMemoryInsert(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "constraint") {
+		return false
+	}
+	if strings.Contains(msg, "unique") && strings.Contains(msg, "memories.content_hash") {
+		return true
+	}
+	if strings.Contains(msg, "constraint failed") && strings.Contains(msg, "memories.content_hash") {
+		return true
+	}
+	return false
 }
 
 // detectImporter finds an importer by file extension.

@@ -230,3 +230,34 @@ func TestListMemoriesWithMetadataFilter(t *testing.T) {
 		t.Errorf("expected 1 result for channel=telegram, got %d", len(memories))
 	}
 }
+
+func TestSearchFTSWithMetadata_NullMemoryClass(t *testing.T) {
+	s := newTestStore(t)
+	ss := s.(*SQLiteStore)
+	ctx := context.Background()
+
+	id, err := s.AddMemory(ctx, &Memory{
+		Content:     "metadata search null class regression",
+		SourceFile:  "meta-null.md",
+		ContentHash: HashContentOnly("metadata search null class regression"),
+		Metadata:    &Metadata{AgentID: "main", Channel: "discord"},
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	if _, err := ss.db.ExecContext(ctx, `UPDATE memories SET memory_class = NULL WHERE id = ?`, id); err != nil {
+		t.Fatalf("setting NULL memory_class: %v", err)
+	}
+
+	results, err := ss.SearchFTSWithMetadata(ctx, "null class", 10, "", MetadataSearchFilters{Agent: "main"})
+	if err != nil {
+		t.Fatalf("SearchFTSWithMetadata with NULL memory_class error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one result")
+	}
+	if results[0].Memory.MemoryClass != "" {
+		t.Fatalf("expected empty class for NULL memory_class, got %q", results[0].Memory.MemoryClass)
+	}
+}

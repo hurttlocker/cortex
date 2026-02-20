@@ -152,6 +152,38 @@ func TestSearchFTSWithProject(t *testing.T) {
 	}
 }
 
+func TestSearchFTSWithProject_NullMemoryClass(t *testing.T) {
+	s := newTestStore(t)
+	ss := s.(*SQLiteStore)
+	ctx := context.Background()
+
+	id, err := s.AddMemory(ctx, &Memory{
+		Content:     "memory class null regression test",
+		SourceFile:  "null-class.md",
+		Project:     "trading",
+		ContentHash: HashContentOnly("memory class null regression test"),
+	})
+	if err != nil {
+		t.Fatalf("AddMemory error: %v", err)
+	}
+
+	// Simulate legacy rows where memory_class is NULL.
+	if _, err := ss.db.ExecContext(ctx, `UPDATE memories SET memory_class = NULL WHERE id = ?`, id); err != nil {
+		t.Fatalf("setting NULL memory_class: %v", err)
+	}
+
+	results, err := s.SearchFTSWithProject(ctx, "memory class", 10, "trading")
+	if err != nil {
+		t.Fatalf("SearchFTSWithProject with NULL memory_class error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one result")
+	}
+	if results[0].Memory.MemoryClass != "" {
+		t.Fatalf("expected empty class for NULL memory_class, got %q", results[0].Memory.MemoryClass)
+	}
+}
+
 func TestListMemories_ProjectFilter(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

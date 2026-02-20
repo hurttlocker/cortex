@@ -3,7 +3,9 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -374,11 +376,19 @@ func (s *SQLiteStore) migrateFTSMultiColumn() error {
 	if state == "true" {
 		return nil
 	}
-	if state == "in_progress" {
-		if err := s.waitForMetaValue(key, "true", 30*time.Second); err != nil {
-			return fmt.Errorf("waiting for concurrent FTS migration: %w", err)
+	if isMetaMigrationInProgress(state) {
+		stale, reason := isStaleMetaMigrationClaim(state)
+		if stale {
+			fmt.Printf("  Clearing stale FTS migration claim (%s)\n", reason)
+			if err := s.clearMetaKey(key); err != nil {
+				return fmt.Errorf("clearing stale FTS migration claim: %w", err)
+			}
+		} else {
+			if err := s.waitForMetaValue(key, "true", 30*time.Second); err != nil {
+				return fmt.Errorf("waiting for concurrent FTS migration: %w", err)
+			}
+			return nil
 		}
-		return nil
 	}
 
 	// Fresh DBs now bootstrap with multi-column FTS directly.
@@ -529,16 +539,122 @@ func (s *SQLiteStore) hasFTSMultiSchema() (bool, error) {
 	return hasSourceFile && hasSourceSection, nil
 }
 
+func formatMetaMigrationClaim(pid int, startedAt time.Time) string {
+	return fmt.Sprintf("in_progress;pid=%d;started_at=%s", pid, startedAt.UTC().Format(time.RFC3339))
+}
+
+func isMetaMigrationInProgress(value string) bool {
+	return strings.HasPrefix(value, "in_progress")
+}
+
+func parseMetaMigrationClaim(value string) (int, time.Time, bool) {
+	if !isMetaMigrationInProgress(value) {
+		return 0, time.Time{}, false
+	}
+
+	parts := strings.Split(value, ";")
+	var pid int
+	var startedAt time.Time
+	var pidFound bool
+	var tsFound bool
+
+	for _, part := range parts[1:] {
+		part = strings.TrimSpace(part)
+		switch {
+		case strings.HasPrefix(part, "pid="):
+			if _, err := fmt.Sscanf(part, "pid=%d", &pid); err != nil {
+				return 0, time.Time{}, false
+			}
+			if pid <= 0 {
+				return 0, time.Time{}, false
+			}
+			pidFound = true
+		case strings.HasPrefix(part, "started_at="):
+			ts := strings.TrimPrefix(part, "started_at=")
+			parsed, err := time.Parse(time.RFC3339, ts)
+			if err != nil {
+				return 0, time.Time{}, false
+			}
+			startedAt = parsed
+			tsFound = true
+		}
+	}
+
+	if !pidFound || !tsFound {
+		return 0, time.Time{}, false
+	}
+
+	return pid, startedAt, true
+}
+
+func isStaleMetaMigrationClaim(value string) (bool, string) {
+	if !isMetaMigrationInProgress(value) {
+		return false, ""
+	}
+
+	pid, _, ok := parseMetaMigrationClaim(value)
+	if !ok {
+		return true, "malformed or legacy in_progress value"
+	}
+	if !isStoreProcessAlive(pid) {
+		return true, fmt.Sprintf("pid %d is not running", pid)
+	}
+	return false, ""
+}
+
+func isStoreProcessAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
+}
+
 func (s *SQLiteStore) claimMetaMigration(key string) (bool, error) {
-	result, err := s.db.Exec("INSERT OR IGNORE INTO meta (key, value) VALUES (?, 'in_progress')", key)
-	if err != nil {
-		return false, err
+	claimValue := formatMetaMigrationClaim(os.Getpid(), time.Now().UTC())
+
+	for attempt := 0; attempt < 2; attempt++ {
+		result, err := s.db.Exec("INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)", key, claimValue)
+		if err != nil {
+			return false, err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return false, err
+		}
+		if rows == 1 {
+			return true, nil
+		}
+
+		existing, err := s.getMetaValue(key)
+		if err != nil {
+			return false, err
+		}
+		if !isMetaMigrationInProgress(existing) {
+			return false, nil
+		}
+
+		stale, _ := isStaleMetaMigrationClaim(existing)
+		if !stale {
+			return false, nil
+		}
+
+		// Compare-and-delete so we only clear the stale value we inspected.
+		clearRes, err := s.db.Exec("DELETE FROM meta WHERE key = ? AND value = ?", key, existing)
+		if err != nil {
+			return false, err
+		}
+		cleared, err := clearRes.RowsAffected()
+		if err != nil {
+			return false, err
+		}
+		if cleared == 0 {
+			// Lost race to another writer; retry once.
+			continue
+		}
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return false, err
-	}
-	return rows == 1, nil
+
+	return false, nil
 }
 
 func (s *SQLiteStore) waitForMetaValue(key, want string, timeout time.Duration) error {
