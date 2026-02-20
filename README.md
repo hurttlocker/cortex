@@ -523,6 +523,7 @@ cortex stats        # Overview: counts, freshness, growth trends (24h/7d), stora
 cortex stale        # What's fading — reinforce, delete, or skip
 cortex conflicts    # Contradictions among active facts (compact grouped output)
 cortex conflicts --verbose  # Full per-conflict detail (no compacting)
+cortex optimize     # Manual maintenance: integrity_check + VACUUM + ANALYZE
 cortex conflicts --resolve highest-confidence  # Auto-resolve by confidence
 cortex conflicts --resolve newest --dry-run    # Preview before applying
 cortex conflicts --keep 12345 --drop 12346     # Surgical manual resolution

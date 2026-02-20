@@ -417,6 +417,68 @@ func TestRunUpdate_ContentPath(t *testing.T) {
 	}
 }
 
+// ==================== optimize command ====================
+
+func TestRunOptimize_UnknownFlag(t *testing.T) {
+	err := runOptimize([]string{"--nope"})
+	if err == nil {
+		t.Fatal("expected unknown flag error")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunOptimize_CheckOnlyJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDB := globalDBPath
+	oldReadOnly := globalReadOnly
+	globalDBPath = dbPath
+	globalReadOnly = false
+	t.Cleanup(func() {
+		globalDBPath = oldDB
+		globalReadOnly = oldReadOnly
+	})
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	_ = s.Close()
+
+	out := captureStdout(func() {
+		if err := runOptimize([]string{"--check-only", "--json"}); err != nil {
+			t.Fatalf("runOptimize: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, `"integrity_check"`) {
+		t.Fatalf("expected integrity_check in JSON output, got: %s", out)
+	}
+	if !strings.Contains(out, `"vacuum_ran": false`) {
+		t.Fatalf("expected vacuum_ran=false in JSON output, got: %s", out)
+	}
+	if !strings.Contains(out, `"analyze_ran": false`) {
+		t.Fatalf("expected analyze_ran=false in JSON output, got: %s", out)
+	}
+}
+
+func TestRunOptimize_ReadOnlyBlocked(t *testing.T) {
+	oldReadOnly := globalReadOnly
+	globalReadOnly = true
+	t.Cleanup(func() { globalReadOnly = oldReadOnly })
+
+	err := runOptimize([]string{"--check-only"})
+	if err == nil {
+		t.Fatal("expected read-only mode error")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // ==================== search arg parsing ====================
 
 func TestRunSearch_NoArgs(t *testing.T) {
