@@ -23,6 +23,8 @@ STATUS_WARN = "WARN"
 STATUS_FAIL = "FAIL"
 STATUS_NO_DATA = "NO_DATA"
 
+WORKSPACE_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
 
 def now_rfc3339() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -739,6 +741,24 @@ def export_obsidian_vault(obsidian_graph: dict, vault_dir: pathlib.Path) -> None
     (vault_dir / "index.md").write_text("\n".join(index_lines) + "\n", encoding="utf-8")
 
 
+def resolve_output_path(raw: str, workspace_root: pathlib.Path, field_name: str, allow_outside: bool) -> pathlib.Path:
+    p = pathlib.Path(raw).expanduser()
+    if not p.is_absolute():
+        p = (pathlib.Path.cwd() / p).resolve()
+    else:
+        p = p.resolve()
+
+    if not allow_outside:
+        try:
+            p.relative_to(workspace_root)
+        except ValueError as exc:
+            raise ValueError(
+                f"{field_name} must stay within workspace root {workspace_root} (got: {p}). "
+                "Use --allow-outside-workdir to override intentionally."
+            ) from exc
+    return p
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export Cortex visualizer snapshot JSON")
     parser.add_argument("--output", default="docs/visualizer/data/latest.json", help="canonical output json path")
@@ -758,7 +778,14 @@ def main() -> None:
         default="",
         help="optional: export Obsidian markdown vault files to this directory",
     )
+    parser.add_argument(
+        "--allow-outside-workdir",
+        action="store_true",
+        help="allow output paths outside repo/workspace root (disabled by default for safety)",
+    )
     args = parser.parse_args()
+
+    workspace_root = WORKSPACE_ROOT.resolve()
 
     cortex_bin = args.cortex_bin
     if not os.path.exists(cortex_bin):
@@ -769,16 +796,22 @@ def main() -> None:
     snapshot = build_snapshot(stats, telemetry)
     obsidian_graph = build_obsidian_graph(snapshot)
 
-    out = pathlib.Path(args.output)
+    out = resolve_output_path(args.output, workspace_root, "--output", args.allow_outside_workdir)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
 
-    obs_out = pathlib.Path(args.obsidian_output)
+    obs_out = resolve_output_path(args.obsidian_output, workspace_root, "--obsidian-output", args.allow_outside_workdir)
     obs_out.parent.mkdir(parents=True, exist_ok=True)
     obs_out.write_text(json.dumps(obsidian_graph, indent=2), encoding="utf-8")
 
     if args.obsidian_vault_dir:
-        export_obsidian_vault(obsidian_graph, pathlib.Path(args.obsidian_vault_dir))
+        vault_dir = resolve_output_path(
+            args.obsidian_vault_dir,
+            workspace_root,
+            "--obsidian-vault-dir",
+            args.allow_outside_workdir,
+        )
+        export_obsidian_vault(obsidian_graph, vault_dir)
 
     print(f"wrote canonical snapshot: {out}")
     print(f"wrote obsidian adapter: {obs_out}")
