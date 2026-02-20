@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cortex Visualizer v1 — Mock</title>
+  <style>
+    :root {
+      --bg: #000;
+      --panel: #0a0a0a;
+      --panel-2: #111;
+      --text: #fff;
+      --muted: #a1a1aa;
+      --border: #262626;
+      --ok: #10b981;
+      --warn: #f59e0b;
+      --bad: #ef4444;
+      --accent: #fff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      min-height: 100vh;
+    }
+    .sidebar {
+      border-right: 1px solid var(--border);
+      padding: 18px 14px;
+      background: #050505;
+    }
+    .brand {
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 18px;
+      color: #e5e5e5;
+    }
+    .nav { display: grid; gap: 6px; }
+    .nav .item {
+      padding: 9px 10px;
+      border-radius: 8px;
+      color: var(--muted);
+      border: 1px solid transparent;
+      font-size: 13px;
+    }
+    .nav .item.active {
+      color: var(--text);
+      background: var(--panel-2);
+      border-color: var(--border);
+    }
+    .main { padding: 20px; }
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+    h1 { margin: 0; font-size: 20px; }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .btn {
+      border: 1px solid var(--border);
+      color: var(--text);
+      background: var(--panel-2);
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+    }
+    .grid4 {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--panel);
+      padding: 12px;
+    }
+    .k { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+    .v { margin-top: 6px; font-size: 22px; font-weight: 600; }
+    .row {
+      display: grid;
+      grid-template-columns: 1.6fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .row2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .pill {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 11px;
+      padding: 3px 9px;
+      color: var(--muted);
+      background: #080808;
+    }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .status {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      background: #090909;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; margin-right: 6px; }
+    .ok { background: var(--ok); }
+    .warn { background: var(--warn); }
+    .bad { background: var(--bad); }
+    .label { font-size: 11px; color: var(--muted); }
+    .value { margin-top: 6px; font-size: 15px; }
+    .spark {
+      width: 100%;
+      height: 130px;
+      border: 1px dashed #1f1f1f;
+      border-radius: 8px;
+      background: linear-gradient(180deg, #0b0b0b 0%, #060606 100%);
+      padding: 8px;
+    }
+    svg { width: 100%; height: 100%; }
+    .axis { stroke: #222; stroke-width: 1; }
+    .line { fill: none; stroke: #fff; stroke-width: 2; }
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .table th, .table td {
+      border-top: 1px solid #1f1f1f;
+      text-align: left;
+      padding: 8px 6px;
+    }
+    .table th { color: var(--muted); font-weight: 500; }
+    .meter { height: 8px; background: #131313; border-radius: 999px; overflow: hidden; border: 1px solid #1e1e1e; }
+    .meter > span { display: block; height: 100%; background: #fff; }
+    .small { color: var(--muted); font-size: 11px; }
+    .split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .panel { border: 1px solid #202020; border-radius: 8px; padding: 8px; background: #080808; }
+    ul { margin: 8px 0 0; padding-left: 16px; }
+    li { margin-bottom: 5px; color: #d4d4d8; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">Cortex Visualizer</div>
+      <div class="nav">
+        <div class="item active">Overview</div>
+        <div class="item">Ops Gate Board</div>
+        <div class="item">Memory Quality</div>
+        <div class="item">Reason Inspector</div>
+        <div class="item">Retrieval Debug</div>
+        <div class="item">Provenance Explorer</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="top">
+        <div>
+          <h1>Visualizer v1 (mock)</h1>
+          <div class="sub">shadcn baseline style • black + white • static preview</div>
+        </div>
+        <button class="btn">Refresh (mock)</button>
+      </div>
+
+      <section class="grid4">
+        <article class="card">
+          <div class="k">Release Readiness</div>
+          <div class="v">WARN</div>
+          <div class="small">2 guardrails flagged</div>
+        </article>
+        <article class="card">
+          <div class="k">Memory Quality Score</div>
+          <div class="v">78/100</div>
+          <div class="small">-4 in last 24h</div>
+        </article>
+        <article class="card">
+          <div class="k">Reason p95 Latency</div>
+          <div class="v">14.2s</div>
+          <div class="small">target ≤ 15s</div>
+        </article>
+        <article class="card">
+          <div class="k">Facts / 24h Growth</div>
+          <div class="v">+1.29M</div>
+          <div class="small">spike detected</div>
+        </article>
+      </section>
+
+      <section class="row">
+        <article class="card">
+          <div class="title">
+            <span>Ops Gate Board</span>
+            <span class="pill">PASS/WARN/FAIL</span>
+          </div>
+
+          <div class="status-grid">
+            <div class="status">
+              <div class="label"><span class="dot ok"></span>CI Build/Test</div>
+              <div class="value">PASS</div>
+            </div>
+            <div class="status">
+              <div class="label"><span class="dot warn"></span>Canary Trend</div>
+              <div class="value">WARN</div>
+            </div>
+            <div class="status">
+              <div class="label"><span class="dot ok"></span>Release Checklist</div>
+              <div class="value">PASS</div>
+            </div>
+          </div>
+
+          <div class="spark">
+            <svg viewBox="0 0 500 120" preserveAspectRatio="none">
+              <line class="axis" x1="0" y1="20" x2="500" y2="20" />
+              <line class="axis" x1="0" y1="60" x2="500" y2="60" />
+              <line class="axis" x1="0" y1="100" x2="500" y2="100" />
+              <polyline class="line" points="0,78 55,76 110,72 165,70 220,66 275,64 330,58 385,55 440,61 500,57" />
+            </svg>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="title">
+            <span>Memory Quality Engine</span>
+            <span class="pill">composite</span>
+          </div>
+
+          <div class="small">Conflict density</div>
+          <div class="meter" style="margin:6px 0 10px;"><span style="width:32%"></span></div>
+
+          <div class="small">Stale ratio pressure</div>
+          <div class="meter" style="margin:6px 0 10px;"><span style="width:44%"></span></div>
+
+          <div class="small">Confidence health</div>
+          <div class="meter" style="margin:6px 0 10px;"><span style="width:79%"></span></div>
+
+          <div class="small">Extraction yield</div>
+          <div class="meter" style="margin:6px 0 6px;"><span style="width:69%"></span></div>
+
+          <ul>
+            <li>Top drag: fact growth spike reducing signal density.</li>
+            <li>Action: tighten low-signal ingestion filter window.</li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="row2">
+        <article class="card">
+          <div class="title">
+            <span>Reasoning Run Inspector</span>
+            <span class="pill">timeline</span>
+          </div>
+          <table class="table">
+            <thead>
+              <tr><th>Run</th><th>Mode</th><th>Latency</th><th>Tokens</th><th>Cost</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>#2201</td><td>recursive</td><td>18.7s</td><td>19.3k</td><td>$0.021</td></tr>
+              <tr><td>#2200</td><td>one-shot</td><td>9.4s</td><td>6.2k</td><td>$0.006</td></tr>
+              <tr><td>#2199</td><td>recursive</td><td>14.1s</td><td>15.7k</td><td>$0.017</td></tr>
+            </tbody>
+          </table>
+        </article>
+
+        <article class="card">
+          <div class="title">
+            <span>Retrieval Debug (query replay)</span>
+            <span class="pill">bm25 vs semantic vs hybrid</span>
+          </div>
+          <div class="split">
+            <div class="panel">
+              <div class="small">BM25 top</div>
+              <ul>
+                <li>#1 docs/ops-db-growth-guardrails.md</li>
+                <li>#2 docs/releases/v0.3.4.md</li>
+                <li>#3 README.md</li>
+              </ul>
+            </div>
+            <div class="panel">
+              <div class="small">Hybrid top</div>
+              <ul>
+                <li>#1 docs/CORTEX_DEEP_DIVE.md</li>
+                <li>#2 docs/releases/v0.3.4.md</li>
+                <li>#3 memory/2026-02-19.md</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="title">
+          <span>Provenance Explorer (focused subgraph)</span>
+          <span class="pill">fact → source → impacted outputs</span>
+        </div>
+        <div class="small">Fact: "canary regression threshold exceeded"</div>
+        <ul>
+          <li>Source memory: docs/ops-db-growth-guardrails.md (line sample)</li>
+          <li>Influenced: release check summary, canary status card, weekly audit brief</li>
+          <li>Traversal mode: 2-hop bounded subgraph (server-side)</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

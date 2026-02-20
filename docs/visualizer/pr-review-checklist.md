@@ -33,6 +33,20 @@ Use this checklist to enforce decision-speed quality without contract churn.
 - [ ] No shadow state introduced in UI layer
 - [ ] Source-of-truth producer map remains accurate
 
+## 6) Dual-target compatibility (Cortex UI + Obsidian graph view)
+- [ ] One canonical graph read-model powers both consumers (no duplicated business logic)
+- [ ] Stable graph IDs are defined (`node_id`, `edge_id`) and remain deterministic across exports
+- [ ] Graph contract includes required fields for both targets (`type`, `label`, `weight/confidence`, `timestamp`, `source_ref`)
+- [ ] Server-side bounds are enforced (`max_hops`, `max_nodes`, default radius) before rendering/export
+- [ ] Obsidian export adapter is additive only (does not alter canonical Cortex graph semantics)
+- [ ] Evidence links resolve from graph node → source context (file/line or canonical reference)
+
+## 7) Graph performance + safety
+- [ ] No global full-scale graph render path in default UX
+- [ ] Focus-node first flow with explicit neighborhood expansion
+- [ ] p95 graph payload + render targets stated and verified
+- [ ] Privacy/redaction rules applied before any export target
+
 ## Suggested reviewer decision labels
 - **APPROVE**: all required gates pass
-- **REQUEST_CHANGES**: contract ambiguity, missing fixtures, or unproven reliability paths
+- **REQUEST_CHANGES**: contract ambiguity, missing fixtures, unbounded graph behavior, or unproven reliability paths
