@@ -248,18 +248,44 @@ def build_snapshot(stats: dict, telemetry: list[dict]) -> dict:
                         "label": "CI Build/Test",
                         "status": STATUS_PASS,
                         "reason": "latest branch checks healthy",
+                        "evidence_links": [
+                            {
+                                "label": "CI workflow",
+                                "href": "https://github.com/hurttlocker/cortex/blob/main/.github/workflows/ci.yml",
+                            }
+                        ],
                     },
                     {
                         "key": "canary",
                         "label": "Canary Trend",
                         "status": canary_status,
                         "reason": alerts[0] if alerts else "no active canary warnings",
+                        "evidence_links": [
+                            {
+                                "label": "SLO canary workflow",
+                                "href": "https://github.com/hurttlocker/cortex/blob/main/.github/workflows/slo-canary.yml",
+                            },
+                            {
+                                "label": "Ops growth guardrails",
+                                "href": "https://github.com/hurttlocker/cortex/blob/main/docs/ops-db-growth-guardrails.md",
+                            },
+                        ],
                     },
                     {
                         "key": "release",
                         "label": "Release Checklist",
                         "status": STATUS_PASS,
                         "reason": "checklist gate available",
+                        "evidence_links": [
+                            {
+                                "label": "Release workflow",
+                                "href": "https://github.com/hurttlocker/cortex/blob/main/.github/workflows/release.yml",
+                            },
+                            {
+                                "label": "Release checklist script",
+                                "href": "https://github.com/hurttlocker/cortex/blob/main/scripts/release_checklist.sh",
+                            },
+                        ],
                     },
                 ],
                 "trend": trend,

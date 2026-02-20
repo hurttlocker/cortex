@@ -31,9 +31,27 @@ def validate_canonical(path: pathlib.Path) -> None:
 
     ops = d["ops"]
     require(ops, "overall_status", "ops")
+    require(ops, "gates", "ops")
     allowed = {"PASS", "WARN", "FAIL", "NO_DATA"}
     if ops["overall_status"] not in allowed:
         fail("ops.overall_status not in PASS|WARN|FAIL|NO_DATA")
+
+    for idx, gate in enumerate(ops.get("gates", [])):
+        where = f"ops.gates[{idx}]"
+        for key in ["key", "label", "status", "reason"]:
+            require(gate, key, where)
+        if gate["status"] not in allowed:
+            fail(f"{where}.status not in PASS|WARN|FAIL|NO_DATA")
+        links = gate.get("evidence_links", [])
+        if links is None:
+            links = []
+        if not isinstance(links, list):
+            fail(f"{where}.evidence_links must be an array")
+        for j, link in enumerate(links):
+            if not isinstance(link, dict):
+                fail(f"{where}.evidence_links[{j}] must be an object")
+            for link_key in ["label", "href"]:
+                require(link, link_key, f"{where}.evidence_links[{j}]")
 
     graph = d["graph"]
     for k in ["focus", "bounds", "nodes", "edges"]:

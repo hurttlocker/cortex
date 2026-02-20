@@ -26,19 +26,45 @@
           "key": "ci",
           "label": "CI Build/Test",
           "status": "PASS",
-          "reason": "latest branch checks healthy"
+          "reason": "latest branch checks healthy",
+          "evidence_links": [
+            {
+              "label": "CI workflow",
+              "href": "https://github.com/hurttlocker/cortex/blob/main/.github/workflows/ci.yml"
+            }
+          ]
         },
         {
           "key": "canary",
           "label": "Canary Trend",
           "status": "WARN",
-          "reason": "db_size_notice: storage is above 1.0GB; monitor growth weekly"
+          "reason": "db_size_notice: storage is above 1.0GB; monitor growth weekly",
+          "evidence_links": [
+            {
+              "label": "SLO canary workflow",
+              "href": "https://github.com/hurttlocker/cortex/blob/main/.github/workflows/slo-canary.yml"
+            },
+            {
+              "label": "Ops growth guardrails",
+              "href": "https://github.com/hurttlocker/cortex/blob/main/docs/ops-db-growth-guardrails.md"
+            }
+          ]
         },
         {
           "key": "release",
           "label": "Release Checklist",
           "status": "PASS",
-          "reason": "checklist gate available"
+          "reason": "checklist gate available",
+          "evidence_links": [
+            {
+              "label": "Release workflow",
+              "href": "https://github.com/hurttlocker/cortex/blob/main/.github/workflows/release.yml"
+            },
+            {
+              "label": "Release checklist script",
+              "href": "https://github.com/hurttlocker/cortex/blob/main/scripts/release_checklist.sh"
+            }
+          ]
         }
       ],
       "trend": [

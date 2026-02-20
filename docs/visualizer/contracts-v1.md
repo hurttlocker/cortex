@@ -28,9 +28,33 @@ All visualizer payloads follow this shape:
   "data": {
     "overall_status": "PASS|WARN|FAIL|NO_DATA",
     "gates": [
-      { "key": "ci", "label": "CI Build/Test", "status": "PASS", "reason": "..." },
-      { "key": "canary", "label": "Canary Trend", "status": "WARN", "reason": "..." },
-      { "key": "release", "label": "Release Checklist", "status": "PASS", "reason": "..." }
+      {
+        "key": "ci",
+        "label": "CI Build/Test",
+        "status": "PASS",
+        "reason": "...",
+        "evidence_links": [
+          { "label": "CI workflow", "href": "https://..." }
+        ]
+      },
+      {
+        "key": "canary",
+        "label": "Canary Trend",
+        "status": "WARN",
+        "reason": "...",
+        "evidence_links": [
+          { "label": "SLO canary workflow", "href": "https://..." }
+        ]
+      },
+      {
+        "key": "release",
+        "label": "Release Checklist",
+        "status": "PASS",
+        "reason": "...",
+        "evidence_links": [
+          { "label": "Release workflow", "href": "https://..." }
+        ]
+      }
     ],
     "trend": [
       { "ts": "2026-02-20T00:00:00Z", "score": 72.1 },
@@ -42,6 +66,10 @@ All visualizer payloads follow this shape:
   }
 }
 ```
+
+Contract notes:
+- `status` uses enum: `PASS|WARN|FAIL|NO_DATA`
+- `evidence_links` should be non-empty for operational gates when status is not `NO_DATA`
 
 ## 2) Memory Quality Engine Contract
 
