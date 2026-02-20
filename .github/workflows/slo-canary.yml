@@ -149,11 +149,23 @@ jobs:
               --output-markdown /tmp/slo-trend.md
           fi
 
+      - name: Run SLO budget policy guard
+        run: |
+          python3 scripts/slo_budget_guard.py \
+            --snapshot /tmp/slo-canary.json \
+            --trend /tmp/slo-trend.json \
+            --warn-total-ms 5000 \
+            --fail-total-ms 15000 \
+            --output-json /tmp/slo-budget.json \
+            --output-markdown /tmp/slo-budget.md
+
       - name: Add markdown summary to run
         run: |
           cat /tmp/slo-canary.md >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           cat /tmp/slo-trend.md >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/slo-budget.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload SLO artifacts
         uses: actions/upload-artifact@v4
@@ -164,4 +176,6 @@ jobs:
             /tmp/slo-canary.md
             /tmp/slo-trend.json
             /tmp/slo-trend.md
+            /tmp/slo-budget.json
+            /tmp/slo-budget.md
           retention-days: 30
