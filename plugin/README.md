@@ -83,6 +83,10 @@ Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
 | `capture.similarityThreshold` | `0.95` | Cosine similarity cutoff for duplicate suppression |
 | `capture.dedupeWindowSec` | `300` | Recent lookback window for dedupe checks |
 | `capture.coalesceWindowSec` | `20` | Coalesce short rapid-fire captures into one memory |
+| `capture.minCaptureChars` | `20` | Suppress short low-signal captures below this length |
+| `capture.lowSignalPatterns` | built-in list | Additional low-signal phrases to suppress |
+| `recallDedupe.enabled` | `true` | Deduplicate exact/near-duplicate recall memories |
+| `recallDedupe.similarityThreshold` | `0.98` | Similarity cutoff used for recall dedupe |
 
 ## Features
 
@@ -97,10 +101,12 @@ Capture hygiene reduces memory bloat and retrieval noise:
 
 - **Near-duplicate suppression** with cosine similarity against recent captures
 - **Burst coalescing** for rapid-fire short exchanges
-- **Low-signal filter** for trivial acknowledgements (`ok`, `yes`, `got it`, etc.)
+- **Low-signal filter** for trivial acknowledgements/commands (`ok`, `yes`, `got it`, `HEARTBEAT_OK`, `fire the test`)
+- **Minimum capture length guard** (`capture.minCaptureChars`, default `20`)
+- **Recall-side dedupe** before `<cortex-memories>` injection
 - **Server-side dedupe** flags passed into `cortex import` for defense-in-depth
 
-These controls are configurable under `capture.*`.
+These controls are configurable under `capture.*` and `recallDedupe.*`.
 
 ### AI Tools
 The plugin registers 4 tools the AI can use:

@@ -583,3 +583,102 @@ func TestInferPredicate(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractKeyValues_TypeInference(t *testing.T) {
+	pipeline := NewPipeline()
+	text := `Preference: Q prefers Sonnet for coding tasks
+Decision: decided to use HNSW over FAISS
+Relationship: SB is engaged to Q
+Status: Cortex is running on port 7437
+Wedding venue: Fairmount Horticulture Center`
+
+	facts := pipeline.extractKeyValues(text, nil)
+	if len(facts) != 5 {
+		t.Fatalf("expected 5 facts, got %d", len(facts))
+	}
+
+	types := map[string]string{}
+	for _, f := range facts {
+		types[f.Predicate] = f.FactType
+	}
+
+	if types["preference"] != "preference" {
+		t.Fatalf("expected preference fact type, got %q", types["preference"])
+	}
+	if types["decision"] != "decision" {
+		t.Fatalf("expected decision fact type, got %q", types["decision"])
+	}
+	if types["relationship"] != "relationship" {
+		t.Fatalf("expected relationship fact type, got %q", types["relationship"])
+	}
+	if types["status"] != "state" {
+		t.Fatalf("expected state fact type, got %q", types["status"])
+	}
+	if types["wedding venue"] != "location" {
+		t.Fatalf("expected location fact type, got %q", types["wedding venue"])
+	}
+}
+
+func TestExtractNaturalLanguagePatterns_RealPhrases(t *testing.T) {
+	pipeline := NewPipeline()
+	ctx := context.Background()
+	text := `Q prefers Sonnet for coding tasks.
+We decided to use HNSW over FAISS.
+SB is engaged to Q.
+Cortex is running on port 7437.
+Sydney is in Philadelphia.`
+
+	facts, err := pipeline.Extract(ctx, text, nil)
+	if err != nil {
+		t.Fatalf("Extract() failed: %v", err)
+	}
+
+	typeCount := map[string]int{}
+	for _, f := range facts {
+		typeCount[f.FactType]++
+	}
+
+	for _, required := range []string{"preference", "decision", "relationship", "state", "location"} {
+		if typeCount[required] == 0 {
+			t.Fatalf("expected at least one %s fact, got none (facts=%v)", required, typeCount)
+		}
+	}
+}
+
+func TestExtractDistributionSanity_MixedCorpus(t *testing.T) {
+	pipeline := NewPipeline()
+	ctx := context.Background()
+	text := `Name: Q
+Role: Engineer
+Project: Cortex
+Theme: dark
+Q prefers Sonnet for coding tasks.
+We decided to use HNSW over FAISS.
+SB is engaged to Q.
+Cortex is running on port 7437.
+Team is in Philadelphia.`
+
+	facts, err := pipeline.Extract(ctx, text, nil)
+	if err != nil {
+		t.Fatalf("Extract() failed: %v", err)
+	}
+	if len(facts) == 0 {
+		t.Fatal("expected extracted facts")
+	}
+
+	counts := map[string]int{}
+	for _, f := range facts {
+		counts[f.FactType]++
+	}
+
+	kvRatio := float64(counts["kv"]) / float64(len(facts))
+	if kvRatio >= 0.8 {
+		t.Fatalf("expected kv ratio < 0.8 on mixed corpus, got %.2f (counts=%v)", kvRatio, counts)
+	}
+
+	for _, required := range []string{"preference", "decision", "relationship", "state", "location"} {
+		if counts[required] == 0 {
+			t.Fatalf("expected non-zero %s facts in mixed corpus, counts=%v", required, counts)
+		}
+	}
+}

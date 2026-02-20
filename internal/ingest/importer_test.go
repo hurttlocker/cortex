@@ -91,3 +91,42 @@ func TestProcessMemory_NearDuplicateSuppressed(t *testing.T) {
 		t.Fatalf("expected memory count to remain 1, got %d", len(memories))
 	}
 }
+
+func TestShouldSkipLowSignalCapture(t *testing.T) {
+	opts := ImportOptions{CaptureLowSignalEnabled: true, CaptureMinChars: 20}
+
+	if !shouldSkipLowSignalCapture("### User\nHEARTBEAT_OK\n\n### Assistant\nok", opts) {
+		t.Fatal("expected HEARTBEAT_OK capture to be filtered")
+	}
+	if !shouldSkipLowSignalCapture("### User\nFire the test\n\n### Assistant\nSounds good", opts) {
+		t.Fatal("expected trivial command capture to be filtered")
+	}
+	if shouldSkipLowSignalCapture("### User\nQ prefers Sonnet for coding tasks\n\n### Assistant\nSaved", opts) {
+		t.Fatal("did not expect meaningful preference capture to be filtered")
+	}
+}
+
+func TestProcessMemory_LowSignalSuppressed(t *testing.T) {
+	s := newTestStore(t)
+	engine := NewEngine(s)
+	ctx := context.Background()
+
+	result := &ImportResult{}
+	raw := RawMemory{
+		Content:       "### User\nHEARTBEAT_OK\n\n### Assistant\nok",
+		SourceFile:    "auto-capture.md",
+		SourceLine:    1,
+		SourceSection: "capture",
+	}
+	opts := ImportOptions{CaptureLowSignalEnabled: true, CaptureMinChars: 20}
+
+	if err := engine.processMemory(ctx, raw, opts, result); err != nil {
+		t.Fatalf("processMemory: %v", err)
+	}
+	if result.MemoriesNew != 0 {
+		t.Fatalf("expected no new memory for low-signal capture, got %d", result.MemoriesNew)
+	}
+	if result.MemoriesUnchanged != 1 {
+		t.Fatalf("expected unchanged counter to increment, got %d", result.MemoriesUnchanged)
+	}
+}

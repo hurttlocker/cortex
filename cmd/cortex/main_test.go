@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/observe"
+	"github.com/hurttlocker/cortex/internal/store"
 )
 
 // ==================== parseGlobalFlags ====================
@@ -348,6 +350,73 @@ func TestRunImport_InvalidDedupeWindow(t *testing.T) {
 	}
 }
 
+func TestRunImport_InvalidCaptureMinChars(t *testing.T) {
+	err := runImport([]string{"--capture-low-signal", "--capture-min-chars", "0", "/tmp/x.md"})
+	if err == nil {
+		t.Fatal("expected error for invalid capture min chars")
+	}
+	if !strings.Contains(err.Error(), "--capture-min-chars") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunUpdate_NoArgs(t *testing.T) {
+	err := runUpdate([]string{})
+	if err == nil {
+		t.Fatal("expected usage error")
+	}
+	if !strings.Contains(err.Error(), "usage: cortex update") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunUpdate_RequiresContentOrFile(t *testing.T) {
+	err := runUpdate([]string{"123"})
+	if err == nil {
+		t.Fatal("expected missing content/file error")
+	}
+	if !strings.Contains(err.Error(), "must provide either --content or --file") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunUpdate_ContentPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDB := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDB })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memoryID, err := s.AddMemory(ctx, &store.Memory{Content: "old content", SourceFile: "note.md"})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	s.Close()
+
+	if err := runUpdate([]string{fmt.Sprintf("%d", memoryID), "--content", "new content"}); err != nil {
+		t.Fatalf("runUpdate: %v", err)
+	}
+
+	s2, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore reopen: %v", err)
+	}
+	defer s2.Close()
+	updated, err := s2.GetMemory(ctx, memoryID)
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if updated == nil || updated.Content != "new content" {
+		t.Fatalf("expected updated content, got %+v", updated)
+	}
+}
+
 // ==================== search arg parsing ====================
 
 func TestRunSearch_NoArgs(t *testing.T) {
@@ -442,6 +511,145 @@ func TestRunConflicts_UnexpectedArg(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unexpected argument") {
 		t.Errorf("expected 'unexpected argument' error, got: %v", err)
+	}
+}
+
+func TestOutputConflictsTTY_CompactsByDefault(t *testing.T) {
+	conflicts := make([]observe.Conflict, 0, 14)
+	for i := 0; i < 14; i++ {
+		c := observe.Conflict{ConflictType: "attribute", Similarity: 0.90}
+		c.Fact1.ID = int64(i + 1)
+		c.Fact1.Subject = "user"
+		c.Fact1.Predicate = "email"
+		c.Fact1.Object = fmt.Sprintf("old-%d@example.com", i)
+		c.Fact1.Confidence = 0.80
+		c.Fact2.ID = int64(100 + i)
+		c.Fact2.Subject = "user"
+		c.Fact2.Predicate = "email"
+		c.Fact2.Object = fmt.Sprintf("new-%d@example.com", i)
+		c.Fact2.Confidence = 0.92
+		conflicts = append(conflicts, c)
+	}
+
+	out := captureStdout(func() {
+		if err := outputConflictsTTY(conflicts, false); err != nil {
+			t.Fatalf("outputConflictsTTY: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Top conflict groups") {
+		t.Fatalf("expected grouped summary, got: %q", out)
+	}
+	if !strings.Contains(out, "Sample conflicts (showing 10 of 14)") {
+		t.Fatalf("expected sample header, got: %q", out)
+	}
+	if !strings.Contains(out, "additional conflicts hidden") {
+		t.Fatalf("expected hidden-details hint, got: %q", out)
+	}
+	if strings.Contains(out, "[11/14]") {
+		t.Fatalf("expected compact output to hide items after preview limit, got: %q", out)
+	}
+}
+
+func TestOutputConflictsTTY_VerboseShowsAll(t *testing.T) {
+	conflicts := make([]observe.Conflict, 0, 11)
+	for i := 0; i < 11; i++ {
+		c := observe.Conflict{ConflictType: "attribute", Similarity: 0.88}
+		c.Fact1.ID = int64(i + 1)
+		c.Fact1.Subject = "system"
+		c.Fact1.Predicate = "status"
+		c.Fact1.Object = fmt.Sprintf("old-%d", i)
+		c.Fact2.ID = int64(200 + i)
+		c.Fact2.Subject = "system"
+		c.Fact2.Predicate = "status"
+		c.Fact2.Object = fmt.Sprintf("new-%d", i)
+		conflicts = append(conflicts, c)
+	}
+
+	out := captureStdout(func() {
+		if err := outputConflictsTTY(conflicts, true); err != nil {
+			t.Fatalf("outputConflictsTTY: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Detailed conflicts") {
+		t.Fatalf("expected detailed header, got: %q", out)
+	}
+	if !strings.Contains(out, "[11/11]") {
+		t.Fatalf("expected full detail in verbose mode, got: %q", out)
+	}
+	if strings.Contains(out, "additional conflicts hidden") {
+		t.Fatalf("did not expect hidden-details hint in verbose mode, got: %q", out)
+	}
+}
+
+func TestOutputResolveBatchTTY_CompactsByDefault(t *testing.T) {
+	batch := &observe.ResolveBatch{Total: 15, Resolved: 15, Results: make([]observe.Resolution, 0, 15)}
+	for i := 0; i < 15; i++ {
+		c := observe.Conflict{ConflictType: "attribute", Similarity: 0.93}
+		c.Fact1.Subject = "user"
+		c.Fact1.Predicate = "timezone"
+		c.Fact2.Subject = "user"
+		c.Fact2.Predicate = "timezone"
+		batch.Results = append(batch.Results, observe.Resolution{
+			Conflict: c,
+			Winner:   "fact1",
+			WinnerID: int64(10 + i),
+			LoserID:  int64(100 + i),
+			Reason:   "higher confidence",
+			Applied:  true,
+		})
+	}
+
+	out := captureStdout(func() {
+		if err := outputResolveBatchTTY(batch, observe.StrategyHighestConfidence, false, false); err != nil {
+			t.Fatalf("outputResolveBatchTTY: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Resolution sample (showing 12 of 15)") {
+		t.Fatalf("expected sampled resolution header, got: %q", out)
+	}
+	if !strings.Contains(out, "additional resolution entries hidden") {
+		t.Fatalf("expected hidden-details hint, got: %q", out)
+	}
+	if strings.Contains(out, "[13/15]") {
+		t.Fatalf("expected compact output to hide items after preview limit, got: %q", out)
+	}
+}
+
+func TestOutputResolveBatchTTY_VerboseShowsAll(t *testing.T) {
+	batch := &observe.ResolveBatch{Total: 13, Resolved: 13, Results: make([]observe.Resolution, 0, 13)}
+	for i := 0; i < 13; i++ {
+		c := observe.Conflict{ConflictType: "attribute", Similarity: 0.91}
+		c.Fact1.Subject = "company"
+		c.Fact1.Predicate = "stage"
+		c.Fact2.Subject = "company"
+		c.Fact2.Predicate = "stage"
+		batch.Results = append(batch.Results, observe.Resolution{
+			Conflict: c,
+			Winner:   "fact2",
+			WinnerID: int64(200 + i),
+			LoserID:  int64(20 + i),
+			Reason:   "newest memory",
+			Applied:  true,
+		})
+	}
+
+	out := captureStdout(func() {
+		if err := outputResolveBatchTTY(batch, observe.StrategyNewest, false, true); err != nil {
+			t.Fatalf("outputResolveBatchTTY: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Resolution details") {
+		t.Fatalf("expected detailed header, got: %q", out)
+	}
+	if !strings.Contains(out, "[13/13]") {
+		t.Fatalf("expected full details in verbose mode, got: %q", out)
+	}
+	if strings.Contains(out, "additional resolution entries hidden") {
+		t.Fatalf("did not expect hidden-details hint in verbose mode, got: %q", out)
 	}
 }
 

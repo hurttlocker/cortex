@@ -211,6 +211,7 @@ func (e *Engine) ImportDir(ctx context.Context, dir string, opts ImportOptions) 
 
 // processMemory handles dedup and storage for a single memory chunk.
 func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOptions, result *ImportResult) error {
+	opts.Normalize()
 	hash := store.HashMemoryContent(raw.Content, raw.SourceFile)
 
 	// Check for existing memory with same hash (dedup)
@@ -230,6 +231,11 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 				return nil
 			}
 		}
+		result.MemoriesUnchanged++
+		return nil
+	}
+
+	if shouldSkipLowSignalCapture(raw.Content, opts) {
 		result.MemoriesUnchanged++
 		return nil
 	}

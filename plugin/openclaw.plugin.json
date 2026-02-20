@@ -75,6 +75,23 @@
       "placeholder": "20",
       "help": "Merge rapid-fire short captures inside this time window.",
       "advanced": true
+    },
+    "capture.minCaptureChars": {
+      "label": "Capture Min Chars",
+      "placeholder": "20",
+      "help": "Skip very short captures below this length unless marked important.",
+      "advanced": true
+    },
+    "recallDedupe.enabled": {
+      "label": "Recall Dedupe Enabled",
+      "help": "Deduplicate exact/near-duplicate memories before injecting recall context.",
+      "advanced": true
+    },
+    "recallDedupe.similarityThreshold": {
+      "label": "Recall Dedupe Similarity Threshold",
+      "placeholder": "0.98",
+      "help": "Cosine similarity cutoff for near-duplicate recall suppression.",
+      "advanced": true
     }
   },
   "configSchema": {
@@ -109,10 +126,19 @@
           "dedupeWindowSec": { "type": "number", "minimum": 1, "maximum": 86400 },
           "coalesceWindowSec": { "type": "number", "minimum": 0, "maximum": 3600 },
           "shortCaptureMaxChars": { "type": "number", "minimum": 50, "maximum": 5000 },
+          "minCaptureChars": { "type": "number", "minimum": 1, "maximum": 5000 },
           "lowSignalPatterns": {
             "type": "array",
             "items": { "type": "string" }
           }
+        }
+      },
+      "recallDedupe": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "similarityThreshold": { "type": "number", "minimum": 0, "maximum": 1 }
         }
       }
     }

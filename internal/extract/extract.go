@@ -113,15 +113,19 @@ func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string
 	var facts []ExtractedFact
 
 	// Tier 1: Rule-based extraction
-	// 1. Extract key-value patterns
+	// 1. Extract key-value patterns (with type inference)
 	kvFacts := p.extractKeyValues(text, metadata)
 	facts = append(facts, kvFacts...)
 
-	// 2. Extract regex patterns (dates, emails, phones, URLs, money)
+	// 2. Extract natural-language sentence patterns (preference/decision/relationship/state/location)
+	naturalFacts := p.extractNaturalLanguagePatterns(text, metadata)
+	facts = append(facts, naturalFacts...)
+
+	// 3. Extract regex patterns (dates, emails, phones, URLs, money)
 	regexFacts := p.extractRegexPatterns(text, metadata)
 	facts = append(facts, regexFacts...)
 
-	// 3. Assign decay rates and set extraction method for Tier 1 facts
+	// 4. Assign decay rates and set extraction method for Tier 1 facts
 	for i := range facts {
 		facts[i].ExtractionMethod = "rules"
 		if rate, ok := DecayRates[facts[i].FactType]; ok {
@@ -275,12 +279,18 @@ func (p *Pipeline) extractKeyValues(text string, metadata map[string]string) []E
 				// Clean up key (remove markdown formatting, etc.)
 				key = cleanKey(key)
 
+				factType := inferFactTypeFromKV(key, value, line)
+				confidence := 0.9 // High confidence for explicit patterns
+				if factType != "kv" {
+					confidence = 0.88 // Slightly lower confidence for inferred semantic type
+				}
+
 				fact := ExtractedFact{
 					Subject:     subject,
 					Predicate:   key,
 					Object:      value,
-					FactType:    "kv",
-					Confidence:  0.9, // High confidence for explicit patterns
+					FactType:    factType,
+					Confidence:  confidence,
 					SourceQuote: line,
 				}
 
@@ -291,6 +301,141 @@ func (p *Pipeline) extractKeyValues(text string, metadata map[string]string) []E
 	}
 
 	return facts
+}
+
+var (
+	preferenceSentenceRE = regexp.MustCompile(`(?i)^\s*([a-z][a-z0-9'._ -]{0,80})\s+(prefers?|likes?|dislikes?|wants?)\s+(.+)$`)
+	decisionSentenceRE   = regexp.MustCompile(`(?i)^\s*(?:we\s+)?(decided|decide|chose|choose|selected|select|approved)\s+(?:to\s+)?(.+)$`)
+	engagedSentenceRE    = regexp.MustCompile(`(?i)^\s*([a-z][a-z0-9'._ -]{0,80})\s+is\s+engaged\s+to\s+([a-z][a-z0-9'._ -]{0,80})\s*$`)
+	relatedSentenceRE    = regexp.MustCompile(`(?i)^\s*([a-z][a-z0-9'._ -]{0,80})\s+is\s+([a-z][a-z0-9'._ -]{0,80})'?s\s+(fianc[eé]e|manager|partner|spouse|wife|husband)\s*$`)
+	stateSentenceRE      = regexp.MustCompile(`(?i)^\s*([a-z][a-z0-9'._ -]{0,80})\s+is\s+(running|active|inactive|idle|blocked|online|offline|down|up)(?:\s+on\s+port\s+(\d+))?(?:[.!])?\s*$`)
+	locationSentenceRE   = regexp.MustCompile(`(?i)^\s*([a-z][a-z0-9'._ -]{0,80})\s+(?:is at|is in|located in|based in)\s+(.+?)(?:[.!])?\s*$`)
+)
+
+// extractNaturalLanguagePatterns finds facts expressed as plain sentences.
+func (p *Pipeline) extractNaturalLanguagePatterns(text string, metadata map[string]string) []ExtractedFact {
+	var facts []ExtractedFact
+	subject := inferSubject(metadata)
+	lines := strings.Split(text, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		if strings.Contains(line, ":") || strings.Contains(line, "=") || strings.Contains(line, "→") || strings.Contains(line, "—") {
+			// Let explicit key/value patterns handle these.
+			continue
+		}
+
+		if m := preferenceSentenceRE.FindStringSubmatch(line); len(m) == 4 {
+			facts = append(facts, ExtractedFact{
+				Subject:     strings.TrimSpace(m[1]),
+				Predicate:   strings.ToLower(strings.TrimSpace(m[2])),
+				Object:      trimFactObject(m[3]),
+				FactType:    "preference",
+				Confidence:  0.86,
+				SourceQuote: line,
+			})
+			continue
+		}
+
+		if m := decisionSentenceRE.FindStringSubmatch(line); len(m) == 3 {
+			decisionSubject := subject
+			if decisionSubject == "" {
+				decisionSubject = "decision"
+			}
+			facts = append(facts, ExtractedFact{
+				Subject:     decisionSubject,
+				Predicate:   strings.ToLower(strings.TrimSpace(m[1])),
+				Object:      trimFactObject(m[2]),
+				FactType:    "decision",
+				Confidence:  0.84,
+				SourceQuote: line,
+			})
+			continue
+		}
+
+		if m := engagedSentenceRE.FindStringSubmatch(line); len(m) == 3 {
+			facts = append(facts, ExtractedFact{
+				Subject:     strings.TrimSpace(m[1]),
+				Predicate:   "engaged_to",
+				Object:      strings.TrimSpace(m[2]),
+				FactType:    "relationship",
+				Confidence:  0.9,
+				SourceQuote: line,
+			})
+			continue
+		}
+
+		if m := relatedSentenceRE.FindStringSubmatch(line); len(m) == 4 {
+			facts = append(facts, ExtractedFact{
+				Subject:     strings.TrimSpace(m[1]),
+				Predicate:   strings.ToLower(strings.TrimSpace(m[3])),
+				Object:      strings.TrimSpace(m[2]),
+				FactType:    "relationship",
+				Confidence:  0.88,
+				SourceQuote: line,
+			})
+			continue
+		}
+
+		if m := stateSentenceRE.FindStringSubmatch(line); len(m) >= 3 {
+			stateObj := strings.ToLower(strings.TrimSpace(m[2]))
+			if len(m) >= 4 && strings.TrimSpace(m[3]) != "" {
+				stateObj = stateObj + " on port " + strings.TrimSpace(m[3])
+			}
+			facts = append(facts, ExtractedFact{
+				Subject:     strings.TrimSpace(m[1]),
+				Predicate:   "status",
+				Object:      stateObj,
+				FactType:    "state",
+				Confidence:  0.87,
+				SourceQuote: line,
+			})
+			continue
+		}
+
+		if m := locationSentenceRE.FindStringSubmatch(line); len(m) == 3 {
+			facts = append(facts, ExtractedFact{
+				Subject:     strings.TrimSpace(m[1]),
+				Predicate:   "location",
+				Object:      trimFactObject(m[2]),
+				FactType:    "location",
+				Confidence:  0.86,
+				SourceQuote: line,
+			})
+		}
+	}
+
+	return facts
+}
+
+func inferFactTypeFromKV(key, value, sourceLine string) string {
+	joined := strings.ToLower(strings.TrimSpace(key + " " + value + " " + sourceLine))
+	keyLower := strings.ToLower(strings.TrimSpace(key))
+
+	switch {
+	case strings.Contains(joined, "prefers"), strings.Contains(joined, "preference"), strings.Contains(joined, "likes"), strings.Contains(joined, "dislikes"), strings.Contains(joined, "wants"), strings.Contains(keyLower, "favorite"):
+		return "preference"
+	case strings.Contains(joined, "decided"), strings.Contains(joined, "decision"), strings.Contains(joined, "chose"), strings.Contains(joined, "selected"), strings.Contains(joined, "approved"):
+		return "decision"
+	case strings.Contains(joined, "engaged to"), strings.Contains(joined, "married to"), strings.Contains(joined, "reports to"), strings.Contains(joined, "fiancée"), strings.Contains(joined, "fiancee"), strings.Contains(joined, "spouse"), strings.Contains(joined, "partner"), strings.Contains(joined, "manager"):
+		return "relationship"
+	case strings.Contains(keyLower, "status"), strings.Contains(keyLower, "state"), strings.Contains(joined, "running"), strings.Contains(joined, "blocked"), strings.Contains(joined, "idle"), strings.Contains(joined, "online"), strings.Contains(joined, "offline"):
+		return "state"
+	case strings.Contains(keyLower, "location"), strings.Contains(keyLower, "address"), strings.Contains(keyLower, "city"), strings.Contains(keyLower, "country"), strings.Contains(keyLower, "venue"), strings.Contains(joined, "located in"):
+		return "location"
+	default:
+		return "kv"
+	}
+}
+
+func trimFactObject(v string) string {
+	out := strings.TrimSpace(v)
+	out = strings.TrimRight(out, ".; ")
+	return out
 }
 
 // extractRegexPatterns finds common data type patterns in text.
