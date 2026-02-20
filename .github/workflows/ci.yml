@@ -20,6 +20,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/ci_release_guard.sh --repo ${{ github.repository }}
 
+      - name: Validate visualizer fixtures/contracts
+        run: python3 scripts/validate_visualizer_contract.py
+
       - name: Build
         run: go build ./cmd/cortex/
 
