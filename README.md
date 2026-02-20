@@ -435,6 +435,12 @@ cortex reason "query" --recursive --preset weekly-dive  # → auto-selects deeps
 
 **Local models work great for scheduled/cron use** — even on CPU-only hardware, a 4B model can run recursive reasoning in 60-90s, perfect for nightly digests and audits. Users with GPUs (especially Apple Silicon with Metal) get interactive-speed local reasoning.
 
+**Built-in reason telemetry (new):** every `cortex reason` run appends a JSONL event to `~/.cortex/reason-telemetry.jsonl` with mode (`one-shot` vs `recursive`), model/provider, tokens, durations, and estimated cost (when pricing is known). Disable with:
+
+```bash
+export CORTEX_REASON_TELEMETRY=off
+```
+
 ### 📊 Benchmark Command — Test Any Model
 
 ```bash

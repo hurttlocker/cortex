@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -134,6 +135,67 @@ func TestFormatBytes(t *testing.T) {
 		if got != c.want {
 			t.Errorf("formatBytes(%d) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestEstimateReasonRunCost_KnownModel(t *testing.T) {
+	cost, known := estimateReasonRunCost("openrouter", "google/gemini-3-flash-preview", 1000, 500)
+	if !known {
+		t.Fatal("expected known cost")
+	}
+	want := 0.00045 // 1000*0.15/M + 500*0.60/M
+	if math.Abs(cost-want) > 1e-10 {
+		t.Fatalf("cost = %.8f, want %.8f", cost, want)
+	}
+}
+
+func TestEstimateReasonRunCost_UnknownModel(t *testing.T) {
+	cost, known := estimateReasonRunCost("openrouter", "unknown/model", 1000, 500)
+	if known {
+		t.Fatal("expected unknown cost")
+	}
+	if cost != 0 {
+		t.Fatalf("cost = %.8f, want 0", cost)
+	}
+}
+
+func TestShouldWriteReasonTelemetry_DefaultOn(t *testing.T) {
+	t.Setenv("CORTEX_REASON_TELEMETRY", "")
+	if !shouldWriteReasonTelemetry() {
+		t.Fatal("expected telemetry enabled by default")
+	}
+}
+
+func TestShouldWriteReasonTelemetry_Disabled(t *testing.T) {
+	t.Setenv("CORTEX_REASON_TELEMETRY", "off")
+	if shouldWriteReasonTelemetry() {
+		t.Fatal("expected telemetry disabled")
+	}
+}
+
+func TestWriteReasonTelemetry_WritesJSONL(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	entry := reasonRunTelemetry{
+		Timestamp: "2026-02-19T20:00:00Z",
+		Mode:      "one-shot",
+		Query:     "test query",
+		Provider:  "openrouter",
+		Model:     "google/gemini-3-flash-preview",
+	}
+	if err := writeReasonTelemetry(entry); err != nil {
+		t.Fatalf("writeReasonTelemetry failed: %v", err)
+	}
+
+	path := filepath.Join(home, ".cortex", "reason-telemetry.jsonl")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading telemetry file failed: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, `"mode":"one-shot"`) || !strings.Contains(s, `"query":"test query"`) {
+		t.Fatalf("unexpected telemetry content: %s", s)
 	}
 }
 

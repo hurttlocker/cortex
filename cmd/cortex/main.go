@@ -3098,6 +3098,7 @@ func runReason(args []string) error {
 
 	// Run reasoning
 	ctx := context.Background()
+	runStarted := time.Now()
 
 	if recursive {
 		// Recursive mode — iterative loop with actions
@@ -3142,6 +3143,33 @@ func runReason(args []string) error {
 		}
 		fmt.Println(" ───")
 
+		if shouldWriteReasonTelemetry() {
+			costUSD, costKnown := estimateReasonRunCost(rResult.Provider, rResult.Model, rResult.TokensIn, rResult.TokensOut)
+			err := writeReasonTelemetry(reasonRunTelemetry{
+				Timestamp:      time.Now().UTC().Format(time.RFC3339),
+				Mode:           "recursive",
+				Query:          truncateReasonQuery(query),
+				Preset:         presetName,
+				Project:        projectFlag,
+				Provider:       rResult.Provider,
+				Model:          rResult.Model,
+				Iterations:     rResult.Iterations,
+				RecursiveDepth: maxDepth,
+				MemoriesUsed:   rResult.MemoriesUsed,
+				FactsUsed:      rResult.FactsUsed,
+				TokensIn:       rResult.TokensIn,
+				TokensOut:      rResult.TokensOut,
+				SearchMS:       rResult.SearchTime.Milliseconds(),
+				LLMMS:          rResult.LLMTime.Milliseconds(),
+				WallMS:         time.Since(runStarted).Milliseconds(),
+				CostUSD:        costUSD,
+				CostKnown:      costKnown,
+			})
+			if err != nil && verbose {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write reason telemetry: %v\n", err)
+			}
+		}
+
 		return nil
 	}
 
@@ -3176,6 +3204,109 @@ func runReason(args []string) error {
 		result.TokensIn, result.TokensOut,
 	)
 
+	if shouldWriteReasonTelemetry() {
+		costUSD, costKnown := estimateReasonRunCost(result.Provider, result.Model, result.TokensIn, result.TokensOut)
+		err := writeReasonTelemetry(reasonRunTelemetry{
+			Timestamp:      time.Now().UTC().Format(time.RFC3339),
+			Mode:           "one-shot",
+			Query:          truncateReasonQuery(query),
+			Preset:         presetName,
+			Project:        projectFlag,
+			Provider:       result.Provider,
+			Model:          result.Model,
+			Iterations:     1,
+			RecursiveDepth: 0,
+			MemoriesUsed:   result.MemoriesUsed,
+			FactsUsed:      result.FactsUsed,
+			TokensIn:       result.TokensIn,
+			TokensOut:      result.TokensOut,
+			SearchMS:       result.SearchTime.Milliseconds(),
+			LLMMS:          result.LLMTime.Milliseconds(),
+			WallMS:         time.Since(runStarted).Milliseconds(),
+			CostUSD:        costUSD,
+			CostKnown:      costKnown,
+		})
+		if err != nil && verbose {
+			fmt.Fprintf(os.Stderr, "Warning: failed to write reason telemetry: %v\n", err)
+		}
+	}
+
+	return nil
+}
+
+type reasonRunTelemetry struct {
+	Timestamp      string  `json:"timestamp"`
+	Mode           string  `json:"mode"` // one-shot | recursive
+	Query          string  `json:"query"`
+	Preset         string  `json:"preset,omitempty"`
+	Project        string  `json:"project,omitempty"`
+	Provider       string  `json:"provider"`
+	Model          string  `json:"model"`
+	Iterations     int     `json:"iterations"`
+	RecursiveDepth int     `json:"recursive_depth"`
+	MemoriesUsed   int     `json:"memories_used"`
+	FactsUsed      int     `json:"facts_used"`
+	TokensIn       int     `json:"tokens_in"`
+	TokensOut      int     `json:"tokens_out"`
+	SearchMS       int64   `json:"search_ms"`
+	LLMMS          int64   `json:"llm_ms"`
+	WallMS         int64   `json:"wall_ms"`
+	CostUSD        float64 `json:"cost_usd,omitempty"`
+	CostKnown      bool    `json:"cost_known"`
+}
+
+func shouldWriteReasonTelemetry() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("CORTEX_REASON_TELEMETRY")))
+	switch v {
+	case "0", "false", "off", "no", "disabled":
+		return false
+	default:
+		return true
+	}
+}
+
+func truncateReasonQuery(q string) string {
+	q = strings.TrimSpace(q)
+	const max = 240
+	if len(q) <= max {
+		return q
+	}
+	return q[:max] + "…"
+}
+
+func estimateReasonRunCost(provider, model string, tokensIn, tokensOut int) (float64, bool) {
+	if provider != "openrouter" {
+		return 0, false
+	}
+	pricing, ok := reason.ModelPricing[model]
+	if !ok || (pricing[0] == 0 && pricing[1] == 0) {
+		return 0, false
+	}
+	cost := (float64(tokensIn) * pricing[0] / 1_000_000) + (float64(tokensOut) * pricing[1] / 1_000_000)
+	return cost, true
+}
+
+func writeReasonTelemetry(event reasonRunTelemetry) error {
+	if event.Timestamp == "" {
+		event.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	}
+	path := filepath.Join(getConfigDir(), "reason-telemetry.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	b, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3690,6 +3821,10 @@ Bench Flags:
   --local             Include local ollama models
   --output <file>     Write markdown report to file
   --json              Output report as JSON
+
+Reason Telemetry:
+  ~/.cortex/reason-telemetry.jsonl appended on every cortex reason run
+  CORTEX_REASON_TELEMETRY=off disables telemetry logging
 
 Reinforce:
   cortex reinforce <fact_id> [fact_id...]   Reset decay timer for specified facts
