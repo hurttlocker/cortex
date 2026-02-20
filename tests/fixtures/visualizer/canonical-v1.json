@@ -96,18 +96,140 @@
       ]
     },
     "quality": {
+      "formula_version": "mqe-v1",
       "score": 80,
-      "delta_24h": -4,
+      "score_status": "PASS",
+      "delta_24h": -1.6,
+      "trend_24h": [
+        {
+          "ts": "2026-02-20T04:24:41Z",
+          "score": 81.2
+        },
+        {
+          "ts": "2026-02-20T10:24:53Z",
+          "score": 80.5
+        },
+        {
+          "ts": "2026-02-20T16:24:58Z",
+          "score": 79.6
+        }
+      ],
       "factors": {
         "conflict_density": 0.22,
         "stale_pressure": 0.18,
         "confidence_health": 0.867,
         "extraction_yield": 0.74
       },
+      "factors_v2": [
+        {
+          "key": "stale_ratio",
+          "label": "Stale Ratio",
+          "definition": "Share of records in freshness.older over total freshness buckets.",
+          "source": "stats.freshness.older / (today + this_week + this_month + older)",
+          "direction": "penalty",
+          "weight": 0.22,
+          "value": 0.18,
+          "quality_value": 0.82,
+          "status": "PASS",
+          "weighted_score": 18.04,
+          "remediation": "Run stale-fact cleanup and reinforce active facts used in current workflows."
+        },
+        {
+          "key": "conflict_density",
+          "label": "Conflict Density (proxy)",
+          "definition": "Proxy derived from low/medium confidence mix plus explicit conflict alerts.",
+          "source": "stats.confidence_distribution + stats.alerts",
+          "direction": "penalty",
+          "weight": 0.2,
+          "value": 0.22,
+          "quality_value": 0.78,
+          "status": "WARN",
+          "weighted_score": 15.6,
+          "remediation": "Review conflict clusters and add supersession/tombstones for contradictory facts."
+        },
+        {
+          "key": "confidence_health",
+          "label": "Confidence Distribution Health",
+          "definition": "High-confidence share plus half-weighted medium-confidence share.",
+          "source": "stats.confidence_distribution.high/medium/total",
+          "direction": "bonus",
+          "weight": 0.24,
+          "value": 0.867,
+          "quality_value": 0.867,
+          "status": "PASS",
+          "weighted_score": 20.81,
+          "remediation": "Improve extraction quality on noisy sources and reinforce high-value facts."
+        },
+        {
+          "key": "extraction_yield",
+          "label": "Extraction Yield Health",
+          "definition": "Health band based on facts generated per memory over the last 24h.",
+          "source": "stats.growth.facts_24h / stats.growth.memories_24h",
+          "direction": "bonus",
+          "weight": 0.18,
+          "value": 0.74,
+          "quality_value": 0.74,
+          "status": "WARN",
+          "weighted_score": 13.32,
+          "remediation": "Tune extraction prompts/chunking to maintain high-signal yield without over-generation."
+        },
+        {
+          "key": "duplication_noise",
+          "label": "Duplication / Noise Pressure",
+          "definition": "KV fact dominance plus growth-spike penalties to flag likely ingestion noise.",
+          "source": "stats.facts_by_type.kv / stats.facts + stats.alerts",
+          "direction": "penalty",
+          "weight": 0.16,
+          "value": 0.35,
+          "quality_value": 0.65,
+          "status": "WARN",
+          "weighted_score": 10.4,
+          "remediation": "Tighten low-signal ingestion filters and dedupe thresholds for repetitive captures."
+        }
+      ],
+      "top_drivers": [
+        {
+          "key": "duplication_noise",
+          "label": "Duplication / Noise Pressure",
+          "status": "WARN",
+          "impact_points": 5.6,
+          "why": "KV fact dominance plus growth-spike penalties to flag likely ingestion noise.",
+          "remediation": "Tighten low-signal ingestion filters and dedupe thresholds for repetitive captures."
+        },
+        {
+          "key": "conflict_density",
+          "label": "Conflict Density (proxy)",
+          "status": "WARN",
+          "impact_points": 4.4,
+          "why": "Proxy derived from low/medium confidence mix plus explicit conflict alerts.",
+          "remediation": "Review conflict clusters and add supersession/tombstones for contradictory facts."
+        }
+      ],
       "actions": [
-        "tighten low-signal ingestion filters for high-volume sources",
-        "run optimize + growth guardrails, then verify canary trend"
-      ]
+        "Tighten low-signal ingestion filters and dedupe thresholds for repetitive captures.",
+        "Review conflict clusters and add supersession/tombstones for contradictory facts."
+      ],
+      "reproducibility": {
+        "formula": "score = round(sum(weight_i * quality_i) / sum(weight_i) * 100); quality_i = metric_i for bonus factors, (1 - metric_i) for penalty factors",
+        "inputs": {
+          "stats.confidence_distribution": {
+            "high": 2387365,
+            "medium": 463975,
+            "low": 0,
+            "total": 2851340
+          },
+          "stats.freshness": {
+            "today": 602,
+            "this_week": 1967,
+            "this_month": 0,
+            "older": 0
+          },
+          "stats.growth": {
+            "memories_24h": 880,
+            "facts_24h": 1231720
+          }
+        }
+      }
     },
     "reason": {
       "runs": [

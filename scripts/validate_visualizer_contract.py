@@ -53,6 +53,46 @@ def validate_canonical(path: pathlib.Path) -> None:
             for link_key in ["label", "href"]:
                 require(link, link_key, f"{where}.evidence_links[{j}]")
 
+    quality = d["quality"]
+    for k in [
+        "formula_version",
+        "score",
+        "score_status",
+        "delta_24h",
+        "trend_24h",
+        "factors",
+        "factors_v2",
+        "top_drivers",
+        "actions",
+        "reproducibility",
+    ]:
+        require(quality, k, "quality")
+
+    if quality.get("score_status") not in allowed:
+        fail("quality.score_status not in PASS|WARN|FAIL|NO_DATA")
+
+    if not isinstance(quality.get("factors_v2"), list):
+        fail("quality.factors_v2 must be an array")
+
+    for idx, factor in enumerate(quality.get("factors_v2", [])):
+        where = f"quality.factors_v2[{idx}]"
+        for key in [
+            "key",
+            "label",
+            "definition",
+            "source",
+            "direction",
+            "weight",
+            "value",
+            "quality_value",
+            "weighted_score",
+            "status",
+            "remediation",
+        ]:
+            require(factor, key, where)
+        if factor["status"] not in allowed:
+            fail(f"{where}.status not in PASS|WARN|FAIL|NO_DATA")
+
     graph = d["graph"]
     for k in ["focus", "bounds", "nodes", "edges"]:
         require(graph, k, "graph")

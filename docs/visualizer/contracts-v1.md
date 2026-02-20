@@ -77,17 +77,57 @@ Contract notes:
 {
   "schema_version": "v1",
   "data": {
+    "formula_version": "mqe-v1",
     "score": 78,
-    "delta_24h": -4,
-    "factors": [
-      { "key": "conflict_density", "value": 0.32, "weight": 0.25, "impact": -7 },
-      { "key": "stale_pressure", "value": 0.44, "weight": 0.20, "impact": -5 },
-      { "key": "confidence_health", "value": 0.79, "weight": 0.30, "impact": 8 },
-      { "key": "extraction_yield", "value": 0.69, "weight": 0.25, "impact": 2 }
+    "score_status": "PASS|WARN|FAIL|NO_DATA",
+    "delta_24h": -1.6,
+    "trend_24h": [
+      { "ts": "2026-02-20T10:24:53Z", "score": 79.1 },
+      { "ts": "2026-02-20T16:24:58Z", "score": 77.5 }
+    ],
+    "factors": {
+      "conflict_density": 0.22,
+      "stale_pressure": 0.18,
+      "confidence_health": 0.86,
+      "extraction_yield": 0.74
+    },
+    "factors_v2": [
+      {
+        "key": "stale_ratio",
+        "label": "Stale Ratio",
+        "definition": "Share of records in freshness.older over total freshness buckets.",
+        "source": "stats.freshness.older / (today + this_week + this_month + older)",
+        "direction": "penalty|bonus",
+        "weight": 0.22,
+        "value": 0.18,
+        "quality_value": 0.82,
+        "status": "PASS|WARN|FAIL|NO_DATA",
+        "weighted_score": 18.0,
+        "remediation": "Run stale-fact cleanup and reinforce active facts used in current workflows."
+      }
+    ],
+    "top_drivers": [
+      {
+        "key": "duplication_noise",
+        "label": "Duplication / Noise Pressure",
+        "status": "WARN",
+        "impact_points": 6.2,
+        "why": "KV fact dominance plus growth-spike penalties to flag likely ingestion noise.",
+        "remediation": "Tighten low-signal ingestion filters and dedupe thresholds for repetitive captures."
+      }
     ],
     "actions": [
-      "tighten low-signal ingestion filter window"
-    ]
+      "Tighten low-signal ingestion filters and dedupe thresholds for repetitive captures.",
+      "Review conflict clusters and add supersession/tombstones for contradictory facts."
+    ],
+    "reproducibility": {
+      "formula": "score = round(sum(weight_i * quality_i) / sum(weight_i) * 100); quality_i = metric_i for bonus factors, (1 - metric_i) for penalty factors",
+      "inputs": {
+        "stats.confidence_distribution": { "high": 0, "medium": 0, "low": 0, "total": 0 },
+        "stats.freshness": { "today": 0, "this_week": 0, "this_month": 0, "older": 0 },
+        "stats.growth": { "memories_24h": 0, "facts_24h": 0 }
+      }
+    }
   }
 }
 ```
@@ -217,9 +257,12 @@ Contract notes:
   "graph": {
     "focus": "fact_123",
     "bounds": { "max_hops": 2, "max_nodes": 200, "default_radius": 1 },
-    "vault_dir": "/abs/path/to/obsidian-vault",
-    "index_path": "/abs/path/to/obsidian-vault/index.md",
-    "obsidian_index_uri": "obsidian://open?path=/abs/path/to/obsidian-vault/index.md",
+    "vault_dir": "/abs/path/to/obsidian-vault/_cortex_visualizer",
+    "index_path": "/abs/path/to/obsidian-vault/_cortex_visualizer/cortex-visualizer-dashboard.md",
+    "obsidian_index_uri": "obsidian://open?path=/abs/path/to/obsidian-vault/_cortex_visualizer/cortex-visualizer-dashboard.md",
+    "dashboard_file": "cortex-visualizer-dashboard.md",
+    "dashboard_path": "/abs/path/to/obsidian-vault/_cortex_visualizer/cortex-visualizer-dashboard.md",
+    "obsidian_dashboard_uri": "obsidian://open?path=/abs/path/to/obsidian-vault/_cortex_visualizer/cortex-visualizer-dashboard.md",
     "nodes": [
       {
         "id": "fact_123",
@@ -229,9 +272,10 @@ Contract notes:
         "timestamp": "2026-02-20T15:50:00Z",
         "source_ref": "docs/ops-db-growth-guardrails.md",
         "links": ["mem_88", "out_12"],
-        "note_file": "canary-regression-threshold-exceeded.md",
-        "note_path": "/abs/path/to/obsidian-vault/canary-regression-threshold-exceeded.md",
-        "obsidian_uri": "obsidian://open?path=/abs/path/to/obsidian-vault/canary-regression-threshold-exceeded.md"
+        "note_file": "cortex-visualizer-dashboard.md",
+        "note_path": "/abs/path/to/obsidian-vault/_cortex_visualizer/cortex-visualizer-dashboard.md",
+        "obsidian_uri": "obsidian://open?path=/abs/path/to/obsidian-vault/_cortex_visualizer/cortex-visualizer-dashboard.md",
+        "note_heading": "canary regression threshold exceeded"
       }
     ],
     "edges": [
@@ -240,6 +284,11 @@ Contract notes:
   }
 }
 ```
+
+Notes:
+- Adapter now targets a **single visual dashboard note** by default.
+- Dashboard note contains Mermaid diagrams + summary blocks derived from canonical payload.
+- Node-level open actions resolve to the same dashboard file (with node metadata in `note_heading`).
 
 ## Versioning Rules
 - Non-breaking additions: add nullable fields only
