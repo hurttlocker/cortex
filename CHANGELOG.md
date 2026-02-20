@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- Deterministic runtime connectivity smoke gate: `scripts/connectivity_smoke.sh` (import → extract → stats → search → list facts → optimize integrity).
+
+### Changed
+- CI now runs the connectivity smoke gate on every PR/push.
+- `scripts/release_checklist.sh` now requires the same connectivity smoke gate before release publish checks pass.
+
 ## [0.3.4] - 2026-02-20
 
 ### Added
