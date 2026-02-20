@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import pathlib
 import subprocess
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -50,6 +52,201 @@ def response_json(h: SimpleHTTPRequestHandler, payload: dict, status: int = 200)
     h.send_header("Content-Length", str(len(body)))
     h.end_headers()
     h.wfile.write(body)
+
+
+def now_rfc3339() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_rfc3339(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def p95(values: list[int]) -> int:
+    if not values:
+        return 0
+    ordered = sorted(values)
+    idx = max(0, min(len(ordered) - 1, math.ceil(0.95 * len(ordered)) - 1))
+    return int(ordered[idx])
+
+
+def normalize_reason_run(row: dict, idx: int) -> dict:
+    ts = str(row.get("timestamp", ""))
+    mode = str(row.get("mode", "one-shot"))
+    wall_ms = int(row.get("wall_ms", 0) or 0)
+    search_ms = int(row.get("search_ms", 0) or 0)
+    llm_ms = int(row.get("llm_ms", 0) or 0)
+    tokens_in = int(row.get("tokens_in", 0) or 0)
+    tokens_out = int(row.get("tokens_out", 0) or 0)
+    cost = float(row.get("cost_usd", 0.0) or 0.0)
+    iterations = int(row.get("iterations", 0) or 0)
+    reason_status = str(row.get("reason_status", "")).lower()
+
+    run_status = "ok"
+    if reason_status in {"error", "failed", "fail"}:
+        run_status = "error"
+    elif wall_ms <= 0:
+        run_status = "error"
+
+    step_outcomes: list[dict] = []
+    if mode == "recursive":
+        step_outcomes.append(
+            {
+                "name": "search",
+                "latency_ms": search_ms,
+                "status": "ok" if search_ms > 0 else "no-data",
+            }
+        )
+        step_outcomes.append(
+            {
+                "name": "reason",
+                "latency_ms": llm_ms,
+                "status": "ok" if llm_ms > 0 else "no-data",
+            }
+        )
+        step_outcomes.append(
+            {
+                "name": "recursive-loop",
+                "count": iterations,
+                "status": "ok" if iterations > 0 else "no-data",
+            }
+        )
+    else:
+        step_outcomes.append(
+            {
+                "name": "reason",
+                "latency_ms": llm_ms if llm_ms > 0 else wall_ms,
+                "status": "ok" if (llm_ms > 0 or wall_ms > 0) else "no-data",
+            }
+        )
+
+    return {
+        "run_id": ts if ts else f"run-{idx}",
+        "timestamp": ts,
+        "mode": mode,
+        "model": str(row.get("model", "unknown")),
+        "provider": str(row.get("provider", "unknown")),
+        "preset": str(row.get("preset", "")),
+        "query": str(row.get("query", "")),
+        "latency_ms": wall_ms,
+        "search_ms": search_ms,
+        "llm_ms": llm_ms,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "tokens_total": tokens_in + tokens_out,
+        "estimated_cost_usd": round(cost, 6),
+        "cost_known": bool(row.get("cost_known", True)),
+        "iterations": iterations,
+        "recursive_depth": int(row.get("recursive_depth", 0) or 0),
+        "facts_used": int(row.get("facts_used", 0) or 0),
+        "memories_used": int(row.get("memories_used", 0) or 0),
+        "status": run_status,
+        "step_outcomes": step_outcomes,
+    }
+
+
+def load_reason_runs(telemetry_path: pathlib.Path, limit: int = 800) -> list[dict]:
+    if not telemetry_path.exists():
+        return []
+
+    rows: list[dict] = []
+    try:
+        for line in telemetry_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+    except Exception:
+        return []
+
+    rows = rows[-limit:]
+    out = [normalize_reason_run(row, idx) for idx, row in enumerate(rows)]
+    out.sort(key=lambda r: parse_rfc3339(r.get("timestamp", "")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return out
+
+
+def filter_reason_runs(runs: list[dict], qs: dict) -> tuple[list[dict], dict]:
+    model = qs.get("model", [""])[0].strip()
+    provider = qs.get("provider", [""])[0].strip()
+    preset = qs.get("preset", [""])[0].strip()
+    mode = qs.get("mode", [""])[0].strip()
+
+    try:
+        since_hours = max(1, min(24 * 30, int(qs.get("since_hours", ["168"])[0])))
+    except Exception:
+        since_hours = 168
+
+    try:
+        limit = max(1, min(300, int(qs.get("limit", ["80"])[0])))
+    except Exception:
+        limit = 80
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+
+    filtered = []
+    for run in runs:
+        ts = parse_rfc3339(run.get("timestamp", ""))
+        if ts is not None and ts < cutoff:
+            continue
+        if model and run.get("model") != model:
+            continue
+        if provider and run.get("provider") != provider:
+            continue
+        if preset and run.get("preset") != preset:
+            continue
+        if mode and run.get("mode") != mode:
+            continue
+        filtered.append(run)
+
+    return filtered[:limit], {
+        "model": model,
+        "provider": provider,
+        "preset": preset,
+        "mode": mode,
+        "since_hours": since_hours,
+        "limit": limit,
+    }
+
+
+def summarize_reason_runs(runs: list[dict]) -> dict:
+    latencies = [int(r.get("latency_ms", 0) or 0) for r in runs if int(r.get("latency_ms", 0) or 0) > 0]
+    total_cost = sum(float(r.get("estimated_cost_usd", 0.0) or 0.0) for r in runs)
+    total_tokens = sum(int(r.get("tokens_total", 0) or 0) for r in runs)
+    errors = [r for r in runs if r.get("status") == "error"]
+    recursive = [r for r in runs if r.get("mode") == "recursive"]
+    one_shot = [r for r in runs if r.get("mode") != "recursive"]
+
+    return {
+        "run_count": len(runs),
+        "error_count": len(errors),
+        "recursive_count": len(recursive),
+        "one_shot_count": len(one_shot),
+        "p95_latency_ms": p95(latencies),
+        "cost_total_usd": round(total_cost, 6),
+        "tokens_total": total_tokens,
+    }
+
+
+def reason_filter_options(runs: list[dict]) -> dict:
+    def unique(field: str) -> list[str]:
+        vals = sorted({str(r.get(field, "")).strip() for r in runs if str(r.get(field, "")).strip()})
+        return vals
+
+    return {
+        "model": unique("model"),
+        "provider": unique("provider"),
+        "preset": unique("preset"),
+        "mode": unique("mode"),
+        "since_hours_default": 168,
+    }
 
 
 def bounded_subgraph(canonical: dict, focus: str, max_hops: int, max_nodes: int) -> dict:
@@ -115,7 +312,7 @@ def make_handler(args: argparse.Namespace):
                 response_json(self, {"ok": True})
                 return
 
-            if parsed.path in ("/api/v1/canonical", "/api/v1/obsidian", "/api/v1/subgraph"):
+            if parsed.path in ("/api/v1/canonical", "/api/v1/obsidian", "/api/v1/subgraph", "/api/v1/reason-runs"):
                 refresh = qs.get("refresh", ["0"])[0] in ("1", "true", "yes")
                 if refresh:
                     run_export(exporter, args)
@@ -135,6 +332,20 @@ def make_handler(args: argparse.Namespace):
                         response_json(self, {"error": "obsidian adapter unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
                         return
                     response_json(self, obsidian)
+                    return
+
+                if parsed.path == "/api/v1/reason-runs":
+                    runs = load_reason_runs(args.telemetry)
+                    filtered, filters_applied = filter_reason_runs(runs, qs)
+                    payload = {
+                        "schema_version": "v1",
+                        "generated_at": now_rfc3339(),
+                        "filters_applied": filters_applied,
+                        "filter_options": reason_filter_options(runs),
+                        "summary": summarize_reason_runs(filtered),
+                        "runs": filtered,
+                    }
+                    response_json(self, payload)
                     return
 
                 focus = qs.get("focus", [""])[0]
