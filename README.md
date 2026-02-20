@@ -450,6 +450,25 @@ cortex reason "query" --recursive --preset weekly-dive  # → auto-selects deeps
 export CORTEX_REASON_TELEMETRY=off
 ```
 
+### ⚙️ Codex rollout operating mode
+
+Use this as the default decision rule while Codex rollout is active:
+
+- **Codex one-shot (interactive default):** fastest turnaround for normal dev Q&A, quick audits, and lightweight synthesis.
+- **Cloud recursive (reliability default):** use `--recursive` for deep or high-stakes prompts (multi-step analysis, conflict-heavy memory, weekly/fact audits).
+- **When to switch from one-shot → recursive:**
+  - answer quality is shallow or misses context,
+  - query needs decomposition/sub-questions,
+  - you need stronger consistency over speed.
+
+Rollout report command (telemetry summary by mode, p50/p95 latency, cost, provider/model mix):
+
+```bash
+scripts/codex_rollout_report.sh
+# or
+go run ./cmd/codex-rollout-report --file ~/.cortex/reason-telemetry.jsonl
+```
+
 ### 📊 Benchmark Command — Test Any Model
 
 ```bash
