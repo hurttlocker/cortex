@@ -44,11 +44,24 @@ func (e *Engine) ImportFile(ctx context.Context, path string, opts ImportOptions
 		return nil, fmt.Errorf("resolving path: %w", err)
 	}
 
-	// Check file exists and is not a directory
-	info, err := os.Stat(absPath)
+	// Check path metadata and guard against symlinked directories.
+	pathInfo, err := os.Lstat(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("stat %s: %w", path, err)
 	}
+
+	info := pathInfo
+	if pathInfo.Mode()&os.ModeSymlink != 0 {
+		targetInfo, targetErr := os.Stat(absPath)
+		if targetErr != nil {
+			return nil, fmt.Errorf("stat symlink target %s: %w", path, targetErr)
+		}
+		if targetInfo.IsDir() {
+			return nil, fmt.Errorf("symlinked directory import is not supported: %s", absPath)
+		}
+		info = targetInfo
+	}
+
 	if info.IsDir() {
 		return e.ImportDir(ctx, absPath, opts)
 	}
@@ -144,11 +157,23 @@ func (e *Engine) ImportDir(ctx context.Context, dir string, opts ImportOptions) 
 		return e.ImportFile(ctx, absDir, opts)
 	}
 
+	result := &ImportResult{}
+
 	// Collect files to import
 	var files []string
-	walkFn := func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // skip errors
+	walkFn := func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			result.Errors = append(result.Errors, ImportError{
+				File:    path,
+				Message: fmt.Sprintf("walk error: %v", walkErr),
+			})
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d == nil {
+			return nil
 		}
 
 		// Skip hidden files and directories
@@ -165,6 +190,25 @@ func (e *Engine) ImportDir(ctx context.Context, dir string, opts ImportOptions) 
 			return filepath.SkipDir
 		}
 
+		// Guard against symlinked directories to prevent recursive cycles.
+		if d.Type()&os.ModeSymlink != 0 {
+			targetInfo, statErr := os.Stat(path)
+			if statErr != nil {
+				result.Errors = append(result.Errors, ImportError{
+					File:    path,
+					Message: fmt.Sprintf("symlink target stat error: %v", statErr),
+				})
+				return nil
+			}
+			if targetInfo.IsDir() {
+				result.Errors = append(result.Errors, ImportError{
+					File:    path,
+					Message: "symlinked directory skipped (potential recursion cycle)",
+				})
+				return nil
+			}
+		}
+
 		if d.IsDir() {
 			return nil
 		}
@@ -177,7 +221,6 @@ func (e *Engine) ImportDir(ctx context.Context, dir string, opts ImportOptions) 
 		return nil, fmt.Errorf("walking directory: %w", err)
 	}
 
-	result := &ImportResult{}
 	total := len(files)
 
 	for i, file := range files {
