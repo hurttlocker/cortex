@@ -7,7 +7,7 @@
 ## Last Updated
 
 - **Updated:** 2026-02-20 (ET)
-- **Repo checked:** `hurttlocker/cortex` @ `9ab5d04` (main)
+- **Repo checked:** `hurttlocker/cortex` @ `25bae09` (main)
 - **Latest stable release:** `v0.3.4`
 - **Current dev fallback version in source:** `0.3.5-dev`
 
@@ -19,18 +19,17 @@ Cortex has moved from “feature buildout” into “operational hardening + rel
 
 ### What is true right now
 - Stable release is live: **v0.3.4**
-- RC and delta audits were completed before promotion
-- Post-release hardening lanes (v0.3.5-dev) are actively shipped on `main`
+- v0.3.5-rc1 audit packet scaffolding is prepared (`docs/audits/` + `docs/releases/`)
+- Visualizer v1 closure sequence is complete (#99 and #104 are closed)
+- Post-release hardening lanes (v0.3.5-dev) are fully shipped on `main`
 - Current open issue count: **0** (at time of refresh)
 
 ### Most recent merged wave (top commits)
-1. `9ab5d04` — SLO canary threshold warn/fail bands (lane 6)
-2. `5c6323d` — fix `--cortex-bin` handling in `slo_snapshot.sh`
-3. `2bcd23a` — scheduled SLO canary workflow + artifacts (lane 5)
-4. `0693413` — release checklist enforcement before GoReleaser (lane 4)
-5. `8a224f2` — CI doc/status drift guard for go/no-go docs (lane 3)
-6. `be52bba` — SLO snapshot script/report tooling (lane 2)
-7. `efd9314` — `cortex optimize` command (lane 1)
+1. `25bae09` — close #104: retrieval debug deltas + bounded provenance closure (#121)
+2. `8c8488e` — one-command external audit preflight script + docs (#120)
+3. `21a39fa` — deterministic connectivity smoke gate in CI/release flow (#118)
+4. `71977db` — memory quality engine composite + explainability (#116)
+5. `1f874a6` — reason run inspector filters + drill-down (#114)
 
 ---
 
@@ -42,17 +41,19 @@ Import, extraction, hybrid search, MCP, reasoning, and observability are deliver
 ## Layer 2 — Reliability + Release Readiness (DONE)
 The v0.3.4 cycle delivered audit fit, immutable target auditing, release artifact verification, and explicit go/no-go docs.
 
-## Layer 3 — Ops Maturity (IN PROGRESS, HEAVILY ADVANCED)
-Most high-impact ops controls are now in place:
+## Layer 3 — Ops Maturity (COMPLETE FOR RC PREP)
+High-impact ops controls are now in place:
 - `cortex optimize` maintenance path
 - SLO snapshot artifact generation
 - CI doc drift guardrails
 - Release checklist gating before publish
 - Scheduled canary + artifact history
 - Thresholded canary regression signaling
+- Deterministic connectivity smoke gate
+- One-command audit preflight evidence generation
 
 ## Layer 4 — Next Expansion (NEXT)
-Natural next targets are trend-aware regression comparisons, dashboarding, and higher-level memory-quality improvements.
+Natural next targets are external-audit execution on immutable RC, codex-in-production tuning based on telemetry, and trend-aware regression intelligence/dashboarding.
 
 ---
 
@@ -70,6 +71,8 @@ Natural next targets are trend-aware regression comparisons, dashboarding, and h
 - PR autofix gate
 - Release workflow gate: `scripts/release_checklist.sh`
 - Docs drift gate: `scripts/ci_release_guard.sh`
+- Runtime connectivity gate: `scripts/connectivity_smoke.sh`
+- Auditor evidence gate: `scripts/audit_preflight.sh`
 
 ---
 
@@ -98,13 +101,11 @@ The prior document anchored to `v0.3.3` / `968954e` and emphasized audit hardeni
 Now, beyond that baseline, Cortex added:
 
 1. **Stable promotion to v0.3.4** after audit loop
-2. **Null memory_class hardening closure** in search/migrations path
-3. **DB maintenance command** (`cortex optimize`)
-4. **SLO reporting script** (`scripts/slo_snapshot.sh`)
-5. **Scheduled SLO canary workflow** (`.github/workflows/slo-canary.yml`)
-6. **Thresholded canary gates** (PASS/WARN/FAIL, warn/fail ms bands)
-7. **CI guard against go/no-go doc drift**
-8. **Release workflow checklist enforcement** before publish
+2. **Reliability lane completion** (optimize, SLO snapshot/canary, checklist/doc drift guards)
+3. **Deterministic connectivity gate** for release/runtime path validation
+4. **One-command audit preflight** that emits markdown + per-step logs
+5. **Visualizer v1 closure** including retrieval-debug deltas and bounded provenance explorer
+6. **RC audit packet scaffolding** for `v0.3.5-rc1` (go/no-go + auditor command pack + release notes)
 
 ---
 
@@ -161,12 +162,12 @@ The platform is now strong on correctness and operations. The next strategic unl
 
 ---
 
-## Recommended Next Roadmap Slice (Post Lane 6)
+## Recommended Next Roadmap Slice (Post RC-prep lanes)
 
-1. **Lane 7:** SLO trend comparator (latest vs historical canary artifacts)
-2. **Lane 8:** Canary budget checks (cost/tokens where applicable)
-3. **Lane 9:** Readme roadmap refresh to reflect shipped lane sequence explicitly
-4. **Lane 10:** Dashboarding of canary + drift + release gate history
+1. **External audit execution:** run immutable-target audit on `v0.3.5-rc1`, collect findings, close deltas.
+2. **Codex real-work tuning loop:** continue production dogfooding and adjust thresholds/prompts only from measured regressions.
+3. **SLO trend intelligence:** compare latest canary against historical baseline for relative regressions, not only static thresholds.
+4. **Gate observability dashboard:** unify release checks, canary trends, and audit preflight history into one operator view.
 
 ---
 

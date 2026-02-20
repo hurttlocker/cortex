@@ -4,14 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- No unreleased entries yet.
+
+## [0.3.5-rc1] - 2026-02-20
+
 ### Added
-- Deterministic runtime connectivity smoke gate: `scripts/connectivity_smoke.sh` (import → extract → stats → search → list facts → optimize integrity).
-- One-command external audit preflight pack generator: `scripts/audit_preflight.sh --tag ...` (writes markdown summary + per-step logs under `docs/audits/`).
+- Deterministic runtime connectivity smoke gate: `scripts/connectivity_smoke.sh`.
+- One-command external audit preflight pack generator: `scripts/audit_preflight.sh --tag ...`.
+- v0.3.5-rc1 audit handoff docs (`go-no-go`, auditor command pack, release notes).
 
 ### Changed
-- CI now runs the connectivity smoke gate on every PR/push.
-- `scripts/release_checklist.sh` now requires the same connectivity smoke gate before release publish checks pass.
-- `scripts/audit_rc_smoke.sh` now includes the runtime connectivity smoke as part of its RC validation flow.
+- CI now executes runtime connectivity smoke on PR/push.
+- Release checklist now requires connectivity smoke before publish checks pass.
+- RC smoke now includes runtime connectivity validation.
+- Visualizer closure includes retrieval-debug deltas/reasons across bm25+semantic+hybrid and bounded provenance contract enforcement.
 
 ## [0.3.4] - 2026-02-20
 
