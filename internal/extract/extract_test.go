@@ -217,6 +217,30 @@ func TestExtractKeyValues_NonAutoCaptureKeepsSimpleColon(t *testing.T) {
 	}
 }
 
+func TestExtractKeyValues_TranscriptLikeNonAutoSkipsEnvelopeNoise(t *testing.T) {
+	pipeline := NewPipeline()
+	text := `Conversation info (untrusted metadata):
+{"conversation_label":"Guild #mister channel id:1473406695219658964"}
+
+Sender (untrusted metadata):
+{"label":"cashcoldgame","name":"cashcoldgame","username":"cashcoldgame"}
+
+user: Fire the test
+assistant: done
+**Decision:** ship phase 6`
+
+	facts := pipeline.extractKeyValues(text, map[string]string{"source_file": "memory/2026-02-20.md"})
+	if len(facts) != 1 {
+		t.Fatalf("Expected 1 fact for transcript-like non-auto capture, got %d", len(facts))
+	}
+	if facts[0].Predicate != "decision" {
+		t.Fatalf("Expected predicate 'decision', got %q", facts[0].Predicate)
+	}
+	if facts[0].FactType != "decision" {
+		t.Fatalf("Expected fact type 'decision', got %q", facts[0].FactType)
+	}
+}
+
 func TestStripAutoCaptureScaffold(t *testing.T) {
 	in := `## Conversation Capture — 2026-02-21T03:00:00Z
 Channel: discord

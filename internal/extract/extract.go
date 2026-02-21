@@ -312,6 +312,7 @@ func (p *Pipeline) extractKeyValues(text string, metadata map[string]string) []E
 	lines := strings.Split(text, "\n")
 	subject := inferSubject(metadata)
 	autoCapture := isAutoCaptureSource(metadata)
+	transcriptLike := isTranscriptLikeContent(text, metadata)
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -331,7 +332,7 @@ func (p *Pipeline) extractKeyValues(text string, metadata map[string]string) []E
 					continue
 				}
 
-				if shouldSkipKVExtraction(pattern.name, key, value, line, autoCapture) {
+				if shouldSkipKVExtraction(pattern.name, key, value, line, autoCapture, transcriptLike) {
 					continue
 				}
 
@@ -482,6 +483,30 @@ func isAutoCaptureSource(metadata map[string]string) bool {
 	return strings.Contains(path, "auto-capture") || strings.Contains(path, "cortex-capture-")
 }
 
+var transcriptRoleLineRE = regexp.MustCompile(`(?im)^\s*(assistant|user|system)\s*:`)
+
+func isTranscriptLikeContent(text string, metadata map[string]string) bool {
+	if isAutoCaptureSource(metadata) {
+		return true
+	}
+
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "<cortex-memories>") ||
+		strings.Contains(lower, "(untrusted metadata)") ||
+		strings.Contains(lower, "conversation info (untrusted metadata)") ||
+		strings.Contains(lower, "sender (untrusted metadata)") ||
+		strings.Contains(lower, "[message_id:") ||
+		strings.Contains(lower, "[queued messages while agent was busy]") {
+		return true
+	}
+
+	if len(transcriptRoleLineRE.FindAllStringIndex(text, -1)) >= 2 {
+		return true
+	}
+
+	return false
+}
+
 func normalizeKVKeyForFilter(key string) string {
 	key = strings.ToLower(strings.TrimSpace(key))
 	key = strings.Trim(key, "\"'`[]{}()")
@@ -490,7 +515,7 @@ func normalizeKVKeyForFilter(key string) string {
 	return key
 }
 
-func shouldSkipKVExtraction(patternName, key, value, sourceLine string, autoCapture bool) bool {
+func shouldSkipKVExtraction(patternName, key, value, sourceLine string, autoCapture, transcriptLike bool) bool {
 	keyTrim := strings.TrimSpace(key)
 	if keyTrim == "" || strings.TrimSpace(value) == "" {
 		return true
@@ -500,12 +525,44 @@ func shouldSkipKVExtraction(patternName, key, value, sourceLine string, autoCapt
 		return true
 	}
 
-	if strings.HasPrefix(strings.TrimSpace(sourceLine), "{") || strings.HasPrefix(strings.TrimSpace(sourceLine), "}") {
+	lineTrim := strings.TrimSpace(sourceLine)
+	if strings.HasPrefix(lineTrim, "{") || strings.HasPrefix(lineTrim, "}") {
 		return true
 	}
 
 	if strings.ContainsAny(keyTrim, "{}") {
 		return true
+	}
+
+	k := normalizeKVKeyForFilter(keyTrim)
+	if k == "" {
+		return true
+	}
+
+	lowerLine := strings.ToLower(sourceLine)
+	if strings.Contains(lowerLine, "untrusted metadata") || strings.Contains(lowerLine, "queued messages while agent was busy") {
+		return true
+	}
+
+	if transcriptLike {
+		// Transcript wrappers and role lines generate large amounts of low-signal KV noise.
+		switch k {
+		case "conversationlabel", "groupsubject", "groupchannel", "groupspace",
+			"sender", "label", "username", "tag", "currenttime", "messageid",
+			"assistant", "user", "system":
+			return true
+		}
+
+		if strings.HasPrefix(strings.ToLower(lineTrim), "assistant:") ||
+			strings.HasPrefix(strings.ToLower(lineTrim), "user:") ||
+			strings.HasPrefix(strings.ToLower(lineTrim), "system:") {
+			return true
+		}
+
+		// JSON metadata envelopes should not emit KV facts.
+		if strings.HasPrefix(lineTrim, "\"") && strings.Contains(lineTrim, "\":") {
+			return true
+		}
 	}
 
 	if !autoCapture {
@@ -521,20 +578,8 @@ func shouldSkipKVExtraction(patternName, key, value, sourceLine string, autoCapt
 		return true
 	}
 
-	k := normalizeKVKeyForFilter(keyTrim)
-	if k == "" {
-		return true
-	}
-
-	switch k {
-	case "conversationlabel", "groupsubject", "groupchannel", "groupspace",
-		"sender", "label", "name", "username", "tag",
-		"currenttime", "assistant", "user", "system", "messageid":
-		return true
-	}
-
-	lowerLine := strings.ToLower(sourceLine)
-	if strings.Contains(lowerLine, "untrusted metadata") || strings.Contains(lowerLine, "queued messages while agent was busy") {
+	// Auto-capture remains strict on name to avoid sender envelope bleed-through.
+	if k == "name" {
 		return true
 	}
 
