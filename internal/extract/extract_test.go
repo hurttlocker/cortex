@@ -168,6 +168,36 @@ func TestExtractKeyValues_NoMatches(t *testing.T) {
 	}
 }
 
+func TestExtractKeyValues_AutoCaptureSkipsSimpleColonNoise(t *testing.T) {
+	pipeline := NewPipeline()
+	text := "Current time: Saturday, February 14th\n**Decision:** Ship patch"
+	metadata := map[string]string{"source_file": "/tmp/cortex-capture-abc/auto-capture.md"}
+
+	facts := pipeline.extractKeyValues(text, metadata)
+	if len(facts) != 1 {
+		t.Fatalf("Expected 1 fact for auto-capture (decision only), got %d", len(facts))
+	}
+	if facts[0].Predicate != "decision" {
+		t.Fatalf("Expected predicate 'decision', got %q", facts[0].Predicate)
+	}
+	if facts[0].FactType != "decision" {
+		t.Fatalf("Expected fact type 'decision', got %q", facts[0].FactType)
+	}
+}
+
+func TestExtractKeyValues_NonAutoCaptureKeepsSimpleColon(t *testing.T) {
+	pipeline := NewPipeline()
+	text := "Current time: Saturday, February 14th"
+
+	facts := pipeline.extractKeyValues(text, map[string]string{"source_file": "memory/2026-02-20.md"})
+	if len(facts) != 1 {
+		t.Fatalf("Expected 1 fact for non-auto-capture simple colon, got %d", len(facts))
+	}
+	if facts[0].Predicate != "current time" {
+		t.Fatalf("Expected predicate 'current time', got %q", facts[0].Predicate)
+	}
+}
+
 // Test regex pattern extraction
 func TestExtractRegexPatterns_ISO8601Date(t *testing.T) {
 	pipeline := NewPipeline()

@@ -257,6 +257,7 @@ func (p *Pipeline) extractKeyValues(text string, metadata map[string]string) []E
 	var facts []ExtractedFact
 	lines := strings.Split(text, "\n")
 	subject := inferSubject(metadata)
+	autoCapture := isAutoCaptureSource(metadata)
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -273,6 +274,10 @@ func (p *Pipeline) extractKeyValues(text string, metadata map[string]string) []E
 
 				// Skip if key or value is empty
 				if key == "" || value == "" {
+					continue
+				}
+
+				if shouldSkipKVExtraction(pattern.name, key, value, line, autoCapture) {
 					continue
 				}
 
@@ -410,6 +415,73 @@ func (p *Pipeline) extractNaturalLanguagePatterns(text string, metadata map[stri
 	}
 
 	return facts
+}
+
+func isAutoCaptureSource(metadata map[string]string) bool {
+	if metadata == nil {
+		return false
+	}
+	path := strings.ToLower(strings.TrimSpace(metadata["source_file"]))
+	if path == "" {
+		return false
+	}
+	return strings.Contains(path, "auto-capture") || strings.Contains(path, "cortex-capture-")
+}
+
+func normalizeKVKeyForFilter(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.Trim(key, "\"'`[]{}()")
+	replacer := strings.NewReplacer("_", "", " ", "", "-", "")
+	key = replacer.Replace(key)
+	return key
+}
+
+func shouldSkipKVExtraction(patternName, key, value, sourceLine string, autoCapture bool) bool {
+	keyTrim := strings.TrimSpace(key)
+	if keyTrim == "" || strings.TrimSpace(value) == "" {
+		return true
+	}
+
+	if len(keyTrim) > 80 || strings.Count(keyTrim, " ") > 8 {
+		return true
+	}
+
+	if strings.HasPrefix(strings.TrimSpace(sourceLine), "{") || strings.HasPrefix(strings.TrimSpace(sourceLine), "}") {
+		return true
+	}
+
+	if strings.ContainsAny(keyTrim, "{}") {
+		return true
+	}
+
+	if !autoCapture {
+		return false
+	}
+
+	// In conversational auto-capture, simple colon lines are high-volume noise
+	// (Current time:, Sender:, assistant:, etc.). Keep stronger explicit patterns.
+	if patternName == "simple_colon" {
+		return true
+	}
+
+	k := normalizeKVKeyForFilter(keyTrim)
+	if k == "" {
+		return true
+	}
+
+	switch k {
+	case "conversationlabel", "groupsubject", "groupchannel", "groupspace",
+		"sender", "label", "name", "username", "tag",
+		"currenttime", "assistant", "user", "system", "messageid":
+		return true
+	}
+
+	lowerLine := strings.ToLower(sourceLine)
+	if strings.Contains(lowerLine, "untrusted metadata") || strings.Contains(lowerLine, "queued messages while agent was busy") {
+		return true
+	}
+
+	return false
 }
 
 func inferFactTypeFromKV(key, value, sourceLine string) string {
