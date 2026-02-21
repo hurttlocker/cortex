@@ -1160,3 +1160,46 @@ func TestSearch_DisableClassBoost(t *testing.T) {
 		t.Fatalf("expected boosted top class=rule, got %q", boosted[0].MemoryClass)
 	}
 }
+
+func TestCaptureNoisePenaltyMultiplierForResult(t *testing.T) {
+	wrapper := Result{
+		SourceFile: "/tmp/cortex-capture-abc/auto-capture.md",
+		Content:    "Conversation info (untrusted metadata): ...",
+		Score:      1.0,
+	}
+	if got := captureNoisePenaltyMultiplierForResult(wrapper); got != captureWrapperPenaltyMultiplier {
+		t.Fatalf("expected wrapper penalty %.2f, got %.2f", captureWrapperPenaltyMultiplier, got)
+	}
+
+	lowSignal := Result{
+		SourceFile: "/tmp/cortex-capture-abc/auto-capture.md",
+		Content:    "Fire the test",
+		Score:      1.0,
+	}
+	if got := captureNoisePenaltyMultiplierForResult(lowSignal); got != captureLowSignalPenaltyMultiplier {
+		t.Fatalf("expected low-signal penalty %.2f, got %.2f", captureLowSignalPenaltyMultiplier, got)
+	}
+
+	normal := Result{SourceFile: "memory/2026-02-20.md", Content: "Cortex sprint planning", Score: 1.0}
+	if got := captureNoisePenaltyMultiplierForResult(normal); got != 1.0 {
+		t.Fatalf("expected no penalty for normal memory, got %.2f", got)
+	}
+}
+
+func TestApplyCaptureNoisePenalty_ReordersResults(t *testing.T) {
+	results := []Result{
+		{MemoryID: 1, Score: 1.0, SourceFile: "/tmp/cortex-capture-1/auto-capture.md", Content: "Conversation info (untrusted metadata): wrapped"},
+		{MemoryID: 2, Score: 0.9, SourceFile: "memory/2026-02-20.md", Content: "Cortex retrieval tuning plan"},
+	}
+
+	penalized := applyCaptureNoisePenalty(results, false)
+	if len(penalized) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(penalized))
+	}
+	if penalized[0].MemoryID != 2 {
+		t.Fatalf("expected clean memory to rank first after penalty, got memory_id=%d", penalized[0].MemoryID)
+	}
+	if penalized[1].Score >= penalized[0].Score {
+		t.Fatalf("expected penalized score to remain lower: %f vs %f", penalized[1].Score, penalized[0].Score)
+	}
+}

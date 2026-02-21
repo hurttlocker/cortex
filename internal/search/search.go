@@ -40,6 +40,11 @@ var classBoostMultipliers = map[string]float64{
 	store.MemoryClassScratch:    0.90,
 }
 
+const (
+	captureWrapperPenaltyMultiplier   = 0.15
+	captureLowSignalPenaltyMultiplier = 0.05
+)
+
 // Mode specifies the search strategy.
 type Mode string
 
@@ -307,6 +312,8 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		results = applyClassBoost(results, opts.Explain)
 	}
 
+	results = applyCaptureNoisePenalty(results, opts.Explain)
+
 	if !opts.IncludeSuperseded {
 		results = e.filterSupersededMemories(ctx, results)
 	}
@@ -395,6 +402,60 @@ func applyClassBoost(results []Result, explain bool) []Result {
 		return results[i].Score > results[j].Score
 	})
 	return results
+}
+
+func applyCaptureNoisePenalty(results []Result, explain bool) []Result {
+	if len(results) == 0 {
+		return results
+	}
+
+	for i := range results {
+		multiplier := captureNoisePenaltyMultiplierForResult(results[i])
+		if multiplier >= 1.0 {
+			continue
+		}
+
+		results[i].Score *= multiplier
+		if explain {
+			ensureExplain(&results[i])
+			if results[i].Explain.Why == "" {
+				results[i].Explain.Why = fmt.Sprintf("capture noise penalty %.2fx", multiplier)
+			} else {
+				results[i].Explain.Why += fmt.Sprintf("; capture noise penalty %.2fx", multiplier)
+			}
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+	return results
+}
+
+func captureNoisePenaltyMultiplierForResult(r Result) float64 {
+	source := strings.ToLower(strings.TrimSpace(r.SourceFile))
+	if !strings.Contains(source, "auto-capture") && !strings.Contains(source, "cortex-capture-") {
+		return 1.0
+	}
+
+	content := strings.ToLower(r.Content)
+	if content == "" {
+		return 1.0
+	}
+
+	if strings.Contains(content, "conversation info (untrusted metadata)") ||
+		strings.Contains(content, "sender (untrusted metadata)") ||
+		strings.Contains(content, "<cortex-memories>") ||
+		strings.Contains(content, "<relevant-memories>") ||
+		strings.Contains(content, "[queued messages while agent was busy]") {
+		return captureWrapperPenaltyMultiplier
+	}
+
+	if strings.Contains(content, "heartbeat_ok") || strings.Contains(content, "fire the test") {
+		return captureLowSignalPenaltyMultiplier
+	}
+
+	return 1.0
 }
 
 // filterSupersededMemories excludes memories where all linked facts are superseded.
