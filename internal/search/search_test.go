@@ -1297,3 +1297,62 @@ func TestMergeWeightedScores_HybridMetadataPriorReorders(t *testing.T) {
 		t.Fatalf("expected curated memory to rank first, got memory_id=%d", merged[0].MemoryID)
 	}
 }
+
+func TestApplyWrapperNoiseSuppression_DefaultQuery(t *testing.T) {
+	results := []Result{
+		{MemoryID: 1, SourceFile: "/tmp/cortex-capture-x/auto-capture.md", Content: "Conversation info (untrusted metadata): ...", Score: 1},
+		{MemoryID: 2, SourceFile: "memory/2026-02-20.md", Content: "Spear customer ops automation", Score: 0.8},
+	}
+	filtered := applyWrapperNoiseSuppression("Spear customer ops automation", results, false)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 result after suppression, got %d", len(filtered))
+	}
+	if filtered[0].MemoryID != 2 {
+		t.Fatalf("expected non-wrapper result to remain, got memory_id=%d", filtered[0].MemoryID)
+	}
+}
+
+func TestApplyOffTopicLowSignalSuppression(t *testing.T) {
+	results := []Result{
+		{MemoryID: 1, SourceFile: "/tmp/cortex-capture-x/auto-capture.md", Content: "Fire the test", Score: 1},
+		{MemoryID: 2, SourceFile: "memory/2026-02-20.md", Content: "Spear customer ops automation", Score: 0.8},
+	}
+	filtered := applyOffTopicLowSignalSuppression("Spear customer ops automation", results, false)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 result after off-topic suppression, got %d", len(filtered))
+	}
+	if filtered[0].MemoryID != 2 {
+		t.Fatalf("expected non-low-signal result to remain, got memory_id=%d", filtered[0].MemoryID)
+	}
+}
+
+func TestApplyWrapperNoiseSuppression_MetadataQueryBypass(t *testing.T) {
+	results := []Result{{MemoryID: 1, SourceFile: "/tmp/cortex-capture-x/auto-capture.md", Content: "Conversation info (untrusted metadata): ...", Score: 1}}
+	filtered := applyWrapperNoiseSuppression("auto-capture metadata issue", results, false)
+	if len(filtered) != 1 {
+		t.Fatalf("expected metadata query to bypass suppression")
+	}
+}
+
+func TestApplyLexicalOverlapFilter(t *testing.T) {
+	results := []Result{
+		{MemoryID: 1, Content: "Q prefers Sonnet for coding tasks", SourceFile: "USER.md"},
+		{MemoryID: 2, Content: "Random unrelated text", SourceFile: "notes.md"},
+	}
+	filtered := applyLexicalOverlapFilter("Q prefers Sonnet for coding tasks", results, false)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 overlapping result, got %d", len(filtered))
+	}
+	if filtered[0].MemoryID != 1 {
+		t.Fatalf("expected overlapping memory_id=1, got %d", filtered[0].MemoryID)
+	}
+}
+
+func TestDetectIntentBucket(t *testing.T) {
+	if got := detectIntentBucket("Crypto Session Range Breakout V23"); got != "trading" {
+		t.Fatalf("expected trading bucket, got %q", got)
+	}
+	if got := detectIntentBucket("Spear customer ops automation"); got != "spear" {
+		t.Fatalf("expected spear bucket, got %q", got)
+	}
+}

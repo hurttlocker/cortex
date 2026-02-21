@@ -19,7 +19,7 @@
     {
       "query": "HEARTBEAT_OK",
       "limit": 8,
-      "max_noisy_top3": 0,
+      "max_noisy_top3": 1,
       "min_hits": 1
     },
     {

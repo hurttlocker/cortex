@@ -44,6 +44,9 @@ const (
 	captureWrapperPenaltyMultiplier    = 0.15
 	captureLowSignalPenaltyMultiplier  = 0.05
 	maxLowSignalIntentSuppressedReport = 3
+	maxLexicalFilterSuppressedReport   = 3
+	intentPriorStrongBoost             = 1.15
+	intentPriorMildBoost               = 1.07
 )
 
 var lowSignalIntentQueries = map[string]struct{}{
@@ -53,6 +56,24 @@ var lowSignalIntentQueries = map[string]struct{}{
 	"heartbeat ok":  {},
 	"heartbeat_ok":  {},
 }
+
+var (
+	tradingIntentTokens = map[string]struct{}{
+		"trading": {}, "orb": {}, "breakout": {}, "qqq": {}, "spy": {}, "crypto": {}, "coinbase": {}, "v23": {}, "options": {},
+	}
+	spearIntentTokens = map[string]struct{}{
+		"spear": {}, "customer": {}, "rustdesk": {}, "ops": {},
+	}
+	opsIntentTokens = map[string]struct{}{
+		"openclaw": {}, "gateway": {}, "cron": {}, "timeout": {}, "audit": {}, "model": {}, "cortex": {},
+	}
+	profileIntentTokens = map[string]struct{}{
+		"cashcoldgame": {}, "wedding": {}, "sonnet": {}, "q": {},
+	}
+	wrapperInspectionTokens = map[string]struct{}{
+		"metadata": {}, "untrusted": {}, "auto": {}, "capture": {}, "conversation": {},
+	}
+)
 
 // Mode specifies the search strategy.
 type Mode string
@@ -321,8 +342,12 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		results = applyClassBoost(results, opts.Explain)
 	}
 
+	results = applyIntentBucketPriors(query, results, opts.Explain)
 	results = applyCaptureNoisePenalty(results, opts.Explain)
 	results = applyLowSignalIntentSuppression(query, results, opts.Explain)
+	results = applyOffTopicLowSignalSuppression(query, results, opts.Explain)
+	results = applyWrapperNoiseSuppression(query, results, opts.Explain)
+	results = applyLexicalOverlapFilter(query, results, opts.Explain)
 
 	if !opts.IncludeSuperseded {
 		results = e.filterSupersededMemories(ctx, results)
@@ -458,6 +483,96 @@ func captureNoisePenaltyMultiplierForResult(r Result) float64 {
 	return 1.0
 }
 
+func applyIntentBucketPriors(query string, results []Result, explain bool) []Result {
+	if len(results) == 0 {
+		return results
+	}
+
+	bucket := detectIntentBucket(query)
+	if bucket == "" {
+		return results
+	}
+
+	for i := range results {
+		multiplier, reason := intentPriorForResult(bucket, results[i])
+		if multiplier == 1.0 {
+			continue
+		}
+		results[i].Score *= multiplier
+		if explain {
+			ensureExplain(&results[i])
+			msg := fmt.Sprintf("intent prior %.2fx (%s)", multiplier, reason)
+			if results[i].Explain.Why == "" {
+				results[i].Explain.Why = msg
+			} else {
+				results[i].Explain.Why += "; " + msg
+			}
+		}
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+	return results
+}
+
+func detectIntentBucket(query string) string {
+	tokens := queryTokenSet(query)
+	switch {
+	case hasAnyToken(tokens, tradingIntentTokens):
+		return "trading"
+	case hasAnyToken(tokens, spearIntentTokens):
+		return "spear"
+	case hasAnyToken(tokens, opsIntentTokens):
+		return "ops"
+	case hasAnyToken(tokens, profileIntentTokens):
+		return "profile"
+	default:
+		return ""
+	}
+}
+
+func intentPriorForResult(bucket string, r Result) (float64, string) {
+	source := strings.ToLower(strings.TrimSpace(r.SourceFile))
+	content := strings.ToLower(r.Content)
+	project := strings.ToLower(strings.TrimSpace(r.Project))
+
+	containsAny := func(needles []string, haystack string) bool {
+		for _, n := range needles {
+			if strings.Contains(haystack, n) {
+				return true
+			}
+		}
+		return false
+	}
+
+	switch bucket {
+	case "trading":
+		if project == "trading" {
+			return intentPriorStrongBoost, "trading project"
+		}
+		if strings.Contains(source, "trading") || containsAny([]string{"orb", "breakout", "crypto", "v23", "qqq", "spy"}, content) {
+			return intentPriorMildBoost, "trading context"
+		}
+	case "spear":
+		if strings.Contains(source, "spear") || containsAny([]string{"spear", "rustdesk", "customer ops", "customer"}, content) {
+			return intentPriorStrongBoost, "spear context"
+		}
+	case "ops":
+		if strings.Contains(source, "/docs/") || containsAny([]string{"openclaw", "gateway", "cron", "timeout", "model", "audit"}, content) {
+			return intentPriorMildBoost, "ops context"
+		}
+	case "profile":
+		if strings.HasSuffix(source, "/user.md") || strings.HasSuffix(source, "/memory.md") {
+			return intentPriorMildBoost, "profile source"
+		}
+		if containsAny([]string{"cashcoldgame", "wedding", "sonnet", "q "}, content) {
+			return intentPriorMildBoost, "profile context"
+		}
+	}
+	return 1.0, ""
+}
+
 func applyLowSignalIntentSuppression(query string, results []Result, explain bool) []Result {
 	if len(results) == 0 || !isLowSignalIntentQuery(query) {
 		return results
@@ -501,6 +616,43 @@ func shouldSuppressForLowSignalIntent(r Result) bool {
 		return false
 	}
 	return isWrapperNoiseContent(r.Content) || isLowSignalCaptureContent(r.Content)
+}
+
+func applyOffTopicLowSignalSuppression(query string, results []Result, explain bool) []Result {
+	if len(results) == 0 || isLowSignalIntentQuery(query) {
+		return results
+	}
+
+	filtered := make([]Result, 0, len(results))
+	suppressed := 0
+	for _, r := range results {
+		if isLowSignalCaptureContent(r.Content) {
+			suppressed++
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	if len(filtered) == 0 {
+		return results
+	}
+
+	if explain && suppressed > 0 {
+		limit := suppressed
+		if limit > maxLowSignalIntentSuppressedReport {
+			limit = maxLowSignalIntentSuppressedReport
+		}
+		for i := 0; i < len(filtered) && i < limit; i++ {
+			ensureExplain(&filtered[i])
+			msg := fmt.Sprintf("off-topic low-signal suppression removed %d result(s)", suppressed)
+			if filtered[i].Explain.Why == "" {
+				filtered[i].Explain.Why = msg
+			} else {
+				filtered[i].Explain.Why += "; " + msg
+			}
+		}
+	}
+
+	return filtered
 }
 
 func isAutoCaptureSourceFile(sourceFile string) bool {
@@ -551,6 +703,128 @@ func isLowSignalIntentQuery(query string) bool {
 	}
 	if _, ok := lowSignalIntentQueries[norm]; ok {
 		return true
+	}
+	return false
+}
+
+func queryTokenSet(query string) map[string]struct{} {
+	norm := normalizeIntentText(query)
+	out := map[string]struct{}{}
+	if norm == "" {
+		return out
+	}
+	for _, tok := range strings.Fields(norm) {
+		if len(tok) < 2 {
+			continue
+		}
+		out[tok] = struct{}{}
+	}
+	return out
+}
+
+func hasAnyToken(queryTokens map[string]struct{}, lookup map[string]struct{}) bool {
+	for tok := range queryTokens {
+		if _, ok := lookup[tok]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func queryWantsWrapperInspection(query string) bool {
+	tokens := queryTokenSet(query)
+	if len(tokens) == 0 {
+		return false
+	}
+	return hasAnyToken(tokens, wrapperInspectionTokens)
+}
+
+func applyWrapperNoiseSuppression(query string, results []Result, explain bool) []Result {
+	if len(results) == 0 || queryWantsWrapperInspection(query) {
+		return results
+	}
+
+	filtered := make([]Result, 0, len(results))
+	suppressed := 0
+	for _, r := range results {
+		if isAutoCaptureSourceFile(r.SourceFile) && isWrapperNoiseContent(r.Content) {
+			suppressed++
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	if len(filtered) == 0 {
+		return results
+	}
+
+	if explain && suppressed > 0 {
+		limit := suppressed
+		if limit > maxLowSignalIntentSuppressedReport {
+			limit = maxLowSignalIntentSuppressedReport
+		}
+		for i := 0; i < len(filtered) && i < limit; i++ {
+			ensureExplain(&filtered[i])
+			msg := fmt.Sprintf("wrapper-noise suppression removed %d result(s)", suppressed)
+			if filtered[i].Explain.Why == "" {
+				filtered[i].Explain.Why = msg
+			} else {
+				filtered[i].Explain.Why += "; " + msg
+			}
+		}
+	}
+
+	return filtered
+}
+
+func applyLexicalOverlapFilter(query string, results []Result, explain bool) []Result {
+	if len(results) == 0 {
+		return results
+	}
+
+	tokens := queryTokenSet(query)
+	if len(tokens) == 0 || len(tokens) > 6 {
+		return results
+	}
+
+	filtered := make([]Result, 0, len(results))
+	suppressed := 0
+	for _, r := range results {
+		if hasResultTokenOverlap(r, tokens) {
+			filtered = append(filtered, r)
+		} else {
+			suppressed++
+		}
+	}
+	if len(filtered) == 0 {
+		return results
+	}
+
+	if explain && suppressed > 0 {
+		limit := suppressed
+		if limit > maxLexicalFilterSuppressedReport {
+			limit = maxLexicalFilterSuppressedReport
+		}
+		for i := 0; i < len(filtered) && i < limit; i++ {
+			ensureExplain(&filtered[i])
+			msg := fmt.Sprintf("lexical-overlap filter removed %d result(s)", suppressed)
+			if filtered[i].Explain.Why == "" {
+				filtered[i].Explain.Why = msg
+			} else {
+				filtered[i].Explain.Why += "; " + msg
+			}
+		}
+	}
+
+	return filtered
+}
+
+func hasResultTokenOverlap(r Result, queryTokens map[string]struct{}) bool {
+	combined := strings.Join([]string{r.Content, r.SourceSection, r.SourceFile, r.Project}, " ")
+	resultTokens := queryTokenSet(combined)
+	for tok := range queryTokens {
+		if _, ok := resultTokens[tok]; ok {
+			return true
+		}
 	}
 	return false
 }

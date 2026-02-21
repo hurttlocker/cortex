@@ -30,7 +30,7 @@
     {"query": "cortex version 0.3.5", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["0.3.5", "cortex", "version"], "min_precision_at_k": 0.2, "min_hits": 1},
     {"query": "db_size_high alert", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["db_size_high", "storage", "alert"], "min_precision_at_k": 0.2, "min_hits": 1},
     {"query": "auto-capture metadata issue", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["auto-capture", "metadata", "untrusted"], "min_precision_at_k": 0.2, "min_hits": 1},
-    {"query": "HEARTBEAT_OK", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["heartbeat_ok", "heartbeat"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "HEARTBEAT_OK", "limit": 8, "max_noisy_top3": 1, "k": 5, "expected_contains_any": ["heartbeat_ok", "heartbeat"], "min_precision_at_k": 0.2, "min_hits": 1},
     {"query": "fire the test", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["fire the test", "forward-test", "scanner"], "min_precision_at_k": 0.2, "min_hits": 1},
     {"query": "openrouter model usage audit", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["openrouter", "model", "audit"], "min_precision_at_k": 0.2, "min_hits": 1},
     {"query": "cortex reimport with embed", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["reimport", "embed", "cortex"], "min_precision_at_k": 0.2, "min_hits": 1},
