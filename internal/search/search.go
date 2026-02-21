@@ -1226,6 +1226,13 @@ func (e *Engine) searchHybrid(ctx context.Context, query string, opts Options) (
 //     high semantic similarity will rank highest
 const hybridAlpha = 0.3 // BM25 weight. Semantic weight = 1 - hybridAlpha
 
+const (
+	hybridCuratedSourceBoost  = 1.06
+	hybridAutoCapturePenalty  = 0.92
+	hybridWrapperNoisePenalty = 0.35
+	hybridLowSignalPenalty    = 0.55
+)
+
 func mergeWeightedScores(bm25Results, semanticResults []Result, limit int, explain bool) []Result {
 	// Normalize scores within each result set to 0-1 range
 	bm25Norm := normalizeResultScores(bm25Results)
@@ -1271,6 +1278,9 @@ func mergeWeightedScores(bm25Results, semanticResults []Result, limit int, expla
 		semanticContribution := (1 - hybridAlpha) * entry.semantic
 		fusedScore := bm25Contribution + semanticContribution
 
+		prior, priorReason := hybridMetadataPrior(entry.result)
+		fusedScore *= prior
+
 		entry.result.Score = fusedScore
 		entry.result.MatchType = "hybrid"
 
@@ -1285,6 +1295,13 @@ func mergeWeightedScores(bm25Results, semanticResults []Result, limit int, expla
 			entry.result.Explain.RankComponents.HybridSemanticNormalized = floatPtr(entry.semantic)
 			entry.result.Explain.RankComponents.HybridBM25Contribution = floatPtr(bm25Contribution)
 			entry.result.Explain.RankComponents.HybridSemanticContribution = floatPtr(semanticContribution)
+			if priorReason != "" {
+				if entry.result.Explain.Why == "" {
+					entry.result.Explain.Why = priorReason
+				} else {
+					entry.result.Explain.Why += "; " + priorReason
+				}
+			}
 		}
 
 		merged = append(merged, entry.result)
@@ -1300,6 +1317,41 @@ func mergeWeightedScores(bm25Results, semanticResults []Result, limit int, expla
 	}
 
 	return merged
+}
+
+func hybridMetadataPrior(r Result) (float64, string) {
+	multiplier := 1.0
+	reasons := make([]string, 0, 2)
+
+	source := strings.ToLower(strings.TrimSpace(r.SourceFile))
+	if strings.Contains(source, "/clawd/memory/") || strings.HasSuffix(source, "/memory.md") || strings.HasSuffix(source, "/user.md") {
+		multiplier *= hybridCuratedSourceBoost
+		reasons = append(reasons, "curated-source boost")
+	}
+
+	if isAutoCaptureSourceFile(r.SourceFile) {
+		multiplier *= hybridAutoCapturePenalty
+		reasons = append(reasons, "auto-capture prior")
+		if isWrapperNoiseContent(r.Content) {
+			multiplier *= hybridWrapperNoisePenalty
+			reasons = append(reasons, "wrapper-noise penalty")
+		} else if isLowSignalCaptureContent(r.Content) {
+			multiplier *= hybridLowSignalPenalty
+			reasons = append(reasons, "low-signal penalty")
+		}
+	}
+
+	if multiplier < 0.05 {
+		multiplier = 0.05
+	}
+	if multiplier > 1.25 {
+		multiplier = 1.25
+	}
+
+	if len(reasons) == 0 || multiplier == 1.0 {
+		return multiplier, ""
+	}
+	return multiplier, fmt.Sprintf("hybrid metadata prior %.2fx (%s)", multiplier, strings.Join(reasons, ", "))
 }
 
 // normalizeResultScores returns min-max normalized scores (0-1) for a result set.

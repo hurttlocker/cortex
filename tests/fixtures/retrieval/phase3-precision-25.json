@@ -1,0 +1,39 @@
+{
+  "name": "phase3-precision-25",
+  "description": "25-query precision@k + noise harness for retrieval tuning.",
+  "noise_markers": [
+    "(untrusted metadata)",
+    "<cortex-memories>",
+    "<relevant-memories>",
+    "[queued messages while agent was busy]",
+    "HEARTBEAT_OK",
+    "Fire the test"
+  ],
+  "queries": [
+    {"query": "Q prefers Sonnet for coding tasks", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["sonnet", "coding"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "never push live create PRs only", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["pr", "push live", "merge"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "OpenClaw gateway restart command", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["gateway", "restart", "openclaw"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "Cortex confidence decay Ebbinghaus", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["confidence", "decay", "ebbinghaus"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "Spear customer ops automation", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["spear", "customer", "ops"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "Coinbase Agentic Wallet", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["coinbase", "wallet", "agentic"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "ORB Opening Range Breakout", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["orb", "opening range", "breakout"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "Crypto Session Range Breakout V23", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["v23", "session range", "breakout"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "Mission Control dashboard", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["dashboard", "mission control", "localhost:3001"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "MISTER YouTube pipeline", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["youtube", "pipeline", "render"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "Telegram voice notes SteffanNeural", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["steffanneural", "voice", "edge-tts"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "QMD search collections", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["qmd", "collections", "search"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "memory_search before cortex", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["memory_search", "cortex", "search order"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "clawdex security check skill install", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["clawdex", "security", "skill"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "wedding planning master checklist", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["wedding", "checklist", "google doc"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "Q account cashcoldgame", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["cashcoldgame", "followers", "x"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "agent timeout 1800", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["timeout", "1800", "agents"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "cortex version 0.3.5", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["0.3.5", "cortex", "version"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "db_size_high alert", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["db_size_high", "storage", "alert"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "auto-capture metadata issue", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["auto-capture", "metadata", "untrusted"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "HEARTBEAT_OK", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["heartbeat_ok", "heartbeat"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "fire the test", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["fire the test", "forward-test", "scanner"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "openrouter model usage audit", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["openrouter", "model", "audit"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "cortex reimport with embed", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["reimport", "embed", "cortex"], "min_precision_at_k": 0.2, "min_hits": 1},
+    {"query": "trading analysis pipeline", "limit": 8, "max_noisy_top3": 0, "k": 5, "expected_contains_any": ["trading-analysis", "pipeline", "cron"], "min_precision_at_k": 0.2, "min_hits": 1}
+  ]
+}

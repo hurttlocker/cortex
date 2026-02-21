@@ -1264,3 +1264,36 @@ func TestSearch_LowSignalIntentSuppressesAutoCaptureNoise(t *testing.T) {
 		}
 	}
 }
+
+func TestHybridMetadataPrior_PenalizesWrapperAutoCapture(t *testing.T) {
+	r := Result{
+		SourceFile: "/tmp/cortex-capture-xyz/auto-capture.md",
+		Content:    "Conversation info (untrusted metadata): ...",
+	}
+	m, reason := hybridMetadataPrior(r)
+	if m >= 0.5 {
+		t.Fatalf("expected strong penalty, got %.3f", m)
+	}
+	if !strings.Contains(reason, "wrapper-noise penalty") {
+		t.Fatalf("expected wrapper-noise reason, got %q", reason)
+	}
+}
+
+func TestMergeWeightedScores_HybridMetadataPriorReorders(t *testing.T) {
+	bm25 := []Result{
+		{MemoryID: 1, Score: 1, SourceFile: "/tmp/cortex-capture-xyz/auto-capture.md", Content: "Conversation info (untrusted metadata): ..."},
+		{MemoryID: 2, Score: 1, SourceFile: "memory/2026-02-20.md", Content: "Run tests before merge"},
+	}
+	semantic := []Result{
+		{MemoryID: 1, Score: 1, SourceFile: "/tmp/cortex-capture-xyz/auto-capture.md", Content: "Conversation info (untrusted metadata): ..."},
+		{MemoryID: 2, Score: 1, SourceFile: "memory/2026-02-20.md", Content: "Run tests before merge"},
+	}
+
+	merged := mergeWeightedScores(bm25, semantic, 2, false)
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 merged results, got %d", len(merged))
+	}
+	if merged[0].MemoryID != 2 {
+		t.Fatalf("expected curated memory to rank first, got memory_id=%d", merged[0].MemoryID)
+	}
+}
