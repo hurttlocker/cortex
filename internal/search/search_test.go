@@ -1203,3 +1203,64 @@ func TestApplyCaptureNoisePenalty_ReordersResults(t *testing.T) {
 		t.Fatalf("expected penalized score to remain lower: %f vs %f", penalized[1].Score, penalized[0].Score)
 	}
 }
+
+func TestIsLowSignalIntentQuery(t *testing.T) {
+	cases := []struct {
+		query string
+		want  bool
+	}{
+		{query: "Fire the test", want: true},
+		{query: "HEARTBEAT_OK", want: true},
+		{query: "run test", want: true},
+		{query: "cortex sprint retrieval tuning", want: false},
+	}
+
+	for _, tc := range cases {
+		if got := isLowSignalIntentQuery(tc.query); got != tc.want {
+			t.Fatalf("isLowSignalIntentQuery(%q)=%v, want %v", tc.query, got, tc.want)
+		}
+	}
+}
+
+func TestApplyLowSignalIntentSuppression_RemovesNoisyAutoCapture(t *testing.T) {
+	results := []Result{
+		{MemoryID: 1, Score: 1.0, SourceFile: "/tmp/cortex-capture-1/auto-capture.md", Content: "Conversation info (untrusted metadata): wrapped"},
+		{MemoryID: 2, Score: 0.9, SourceFile: "memory/2026-02-20.md", Content: "Run integration tests before merge"},
+	}
+
+	filtered := applyLowSignalIntentSuppression("Fire the test", results, false)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 result after suppression, got %d", len(filtered))
+	}
+	if filtered[0].MemoryID != 2 {
+		t.Fatalf("expected clean memory to remain, got memory_id=%d", filtered[0].MemoryID)
+	}
+}
+
+func TestSearch_LowSignalIntentSuppressesAutoCaptureNoise(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, _ = s.AddMemory(ctx, &store.Memory{
+		Content:    "Conversation info (untrusted metadata): ...\nFire the test",
+		SourceFile: "/tmp/cortex-capture-123/auto-capture.md",
+	})
+	_, _ = s.AddMemory(ctx, &store.Memory{
+		Content:    "Fire the test suite before deploy",
+		SourceFile: "memory/2026-02-20.md",
+	})
+
+	engine := NewEngine(s)
+	results, err := engine.Search(ctx, "Fire the test", Options{Mode: ModeKeyword, Limit: 10})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected non-empty results")
+	}
+	for _, r := range results {
+		if isAutoCaptureSourceFile(r.SourceFile) && isWrapperNoiseContent(r.Content) {
+			t.Fatalf("expected wrapper-heavy auto-capture result to be suppressed, got memory_id=%d", r.MemoryID)
+		}
+	}
+}

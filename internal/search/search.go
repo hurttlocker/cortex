@@ -41,9 +41,18 @@ var classBoostMultipliers = map[string]float64{
 }
 
 const (
-	captureWrapperPenaltyMultiplier   = 0.15
-	captureLowSignalPenaltyMultiplier = 0.05
+	captureWrapperPenaltyMultiplier    = 0.15
+	captureLowSignalPenaltyMultiplier  = 0.05
+	maxLowSignalIntentSuppressedReport = 3
 )
+
+var lowSignalIntentQueries = map[string]struct{}{
+	"fire the test": {},
+	"run test":      {},
+	"run the test":  {},
+	"heartbeat ok":  {},
+	"heartbeat_ok":  {},
+}
 
 // Mode specifies the search strategy.
 type Mode string
@@ -313,6 +322,7 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	}
 
 	results = applyCaptureNoisePenalty(results, opts.Explain)
+	results = applyLowSignalIntentSuppression(query, results, opts.Explain)
 
 	if !opts.IncludeSuperseded {
 		results = e.filterSupersededMemories(ctx, results)
@@ -433,29 +443,116 @@ func applyCaptureNoisePenalty(results []Result, explain bool) []Result {
 }
 
 func captureNoisePenaltyMultiplierForResult(r Result) float64 {
-	source := strings.ToLower(strings.TrimSpace(r.SourceFile))
-	if !strings.Contains(source, "auto-capture") && !strings.Contains(source, "cortex-capture-") {
+	if !isAutoCaptureSourceFile(r.SourceFile) {
 		return 1.0
 	}
 
-	content := strings.ToLower(r.Content)
-	if content == "" {
-		return 1.0
-	}
-
-	if strings.Contains(content, "conversation info (untrusted metadata)") ||
-		strings.Contains(content, "sender (untrusted metadata)") ||
-		strings.Contains(content, "<cortex-memories>") ||
-		strings.Contains(content, "<relevant-memories>") ||
-		strings.Contains(content, "[queued messages while agent was busy]") {
+	if isWrapperNoiseContent(r.Content) {
 		return captureWrapperPenaltyMultiplier
 	}
 
-	if strings.Contains(content, "heartbeat_ok") || strings.Contains(content, "fire the test") {
+	if isLowSignalCaptureContent(r.Content) {
 		return captureLowSignalPenaltyMultiplier
 	}
 
 	return 1.0
+}
+
+func applyLowSignalIntentSuppression(query string, results []Result, explain bool) []Result {
+	if len(results) == 0 || !isLowSignalIntentQuery(query) {
+		return results
+	}
+
+	filtered := make([]Result, 0, len(results))
+	suppressed := 0
+	for _, r := range results {
+		if shouldSuppressForLowSignalIntent(r) {
+			suppressed++
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+
+	if len(filtered) == 0 {
+		return results // fail-safe: never return empty solely due to suppression.
+	}
+
+	if explain && suppressed > 0 {
+		limit := suppressed
+		if limit > maxLowSignalIntentSuppressedReport {
+			limit = maxLowSignalIntentSuppressedReport
+		}
+		for i := 0; i < len(filtered) && i < limit; i++ {
+			ensureExplain(&filtered[i])
+			msg := fmt.Sprintf("low-signal intent suppression removed %d noisy capture result(s)", suppressed)
+			if filtered[i].Explain.Why == "" {
+				filtered[i].Explain.Why = msg
+			} else {
+				filtered[i].Explain.Why += "; " + msg
+			}
+		}
+	}
+
+	return filtered
+}
+
+func shouldSuppressForLowSignalIntent(r Result) bool {
+	if !isAutoCaptureSourceFile(r.SourceFile) {
+		return false
+	}
+	return isWrapperNoiseContent(r.Content) || isLowSignalCaptureContent(r.Content)
+}
+
+func isAutoCaptureSourceFile(sourceFile string) bool {
+	source := strings.ToLower(strings.TrimSpace(sourceFile))
+	return strings.Contains(source, "auto-capture") || strings.Contains(source, "cortex-capture-")
+}
+
+func isWrapperNoiseContent(content string) bool {
+	c := strings.ToLower(content)
+	if c == "" {
+		return false
+	}
+	return strings.Contains(c, "conversation info (untrusted metadata)") ||
+		strings.Contains(c, "sender (untrusted metadata)") ||
+		strings.Contains(c, "<cortex-memories>") ||
+		strings.Contains(c, "<relevant-memories>") ||
+		strings.Contains(c, "[queued messages while agent was busy]")
+}
+
+func normalizeIntentText(s string) string {
+	parts := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(s)), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	})
+	return strings.Join(parts, " ")
+}
+
+func isLowSignalCaptureContent(content string) bool {
+	norm := normalizeIntentText(content)
+	if norm == "" {
+		return false
+	}
+	for phrase := range lowSignalIntentQueries {
+		pnorm := normalizeIntentText(phrase)
+		if pnorm == "" {
+			continue
+		}
+		if strings.Contains(norm, pnorm) {
+			return true
+		}
+	}
+	return false
+}
+
+func isLowSignalIntentQuery(query string) bool {
+	norm := normalizeIntentText(query)
+	if norm == "" {
+		return false
+	}
+	if _, ok := lowSignalIntentQueries[norm]; ok {
+		return true
+	}
+	return false
 }
 
 // filterSupersededMemories excludes memories where all linked facts are superseded.
