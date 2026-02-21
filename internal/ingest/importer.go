@@ -11,14 +11,14 @@ import (
 )
 
 var (
-	tokenSplitRE                     = regexp.MustCompile(`[^a-z0-9]+`)
-	importantTagRE                   = regexp.MustCompile(`(?i)(#[ ]?important|\[important\]|important:|!important)`)
-	captureConversationBodyRE        = regexp.MustCompile(`(?s)###\s*User\s*(.*?)\s*###\s*Assistant\s*(.*)`)
-	captureOneLinerAckPatternRE      = regexp.MustCompile(`^(ok|okay|yes|yep|got it|sounds good|sure|thanks|thank you|cool|heartbeat ok|fire the test|run test|do it)$`)
-	captureMemoryContextBlockRE      = regexp.MustCompile(`(?is)<cortex-memories>[\s\S]*?</cortex-memories>|<relevant-memories>[\s\S]*?</relevant-memories>`)
-	captureUntrustedMetadataBlockRE  = regexp.MustCompile("(?is)(Conversation info|Sender)\\s*\\(untrusted metadata\\):\\s*```(?:json)?[\\s\\S]*?```")
-	captureQueuedEnvelopeLineRE      = regexp.MustCompile(`(?im)^\[Queued messages while agent was busy\]\s*$`)
-	captureQueuedSeparatorRE         = regexp.MustCompile(`(?im)^---\s*\nQueued\s*#\d+\s*$`)
+	tokenSplitRE                    = regexp.MustCompile(`[^a-z0-9]+`)
+	importantTagRE                  = regexp.MustCompile(`(?i)(#[ ]?important|\[important\]|important:|!important)`)
+	captureConversationBodyRE       = regexp.MustCompile(`(?s)###\s*User\s*(.*?)\s*###\s*Assistant\s*(.*)`)
+	captureOneLinerAckPatternRE     = regexp.MustCompile(`^(ok|okay|yes|yep|got it|sounds good|sure|thanks|thank you|cool|heartbeat ok|fire the test|run test|do it)$`)
+	captureMemoryContextBlockRE     = regexp.MustCompile(`(?is)<cortex-memories>[\s\S]*?</cortex-memories>|<relevant-memories>[\s\S]*?</relevant-memories>`)
+	captureUntrustedMetadataBlockRE = regexp.MustCompile("(?is)(Conversation info|Sender)\\s*\\(untrusted metadata\\):\\s*```(?:json)?[\\s\\S]*?```")
+	captureQueuedEnvelopeLineRE     = regexp.MustCompile(`(?im)^\[Queued messages while agent was busy\]\s*$`)
+	captureQueuedSeparatorRE        = regexp.MustCompile(`(?im)^---\s*\nQueued\s*#\d+\s*$`)
 )
 
 func sanitizeCaptureBoilerplate(text string) string {
