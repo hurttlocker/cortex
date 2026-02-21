@@ -1,0 +1,796 @@
+{
+  "name": "reason-eval-set-v1",
+  "version": "2026-02-21",
+  "description": "First-pass quality harness for cortex reason (issue #31 closure): 30 realistic prompts with signal-based scoring expectations.",
+  "defaults": {
+    "preset": "weekly-dive",
+    "embed": "ollama/nomic-embed-text",
+    "reason_args": {
+      "recursive": true,
+      "max_iterations": 8,
+      "max_depth": 1,
+      "max_context": 8000
+    }
+  },
+  "dimension_weights": {
+    "actionability": 0.3,
+    "factual_grounding": 0.3,
+    "contradiction_handling": 0.15,
+    "usefulness": 0.25
+  },
+  "thresholds": {
+    "case_min_overall": 0.65,
+    "suite_min_pass_rate": 0.7,
+    "dimension_min_average": {
+      "actionability": 0.6,
+      "factual_grounding": 0.55,
+      "contradiction_handling": 0.5,
+      "usefulness": 0.65
+    }
+  },
+  "cases": [
+    {
+      "id": "rq-001",
+      "preset": "daily-digest",
+      "prompt": "Summarize what changed today in the retrieval-provenance work and give the top 3 next steps with owners.",
+      "reason_args": {
+        "recursive": false
+      },
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["next", "owner", "priority", "step", "timeline"],
+          "min_hits": 2,
+          "min_score": 0.6
+        },
+        "factual_grounding": {
+          "must_include_any": ["source", "memory", "fact", "confidence", "evidence"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false
+        },
+        "usefulness": {
+          "must_include_any": ["summary", "impact", "risk", "decision"],
+          "min_hits": 2,
+          "min_words": 100
+        }
+      }
+    },
+    {
+      "id": "rq-002",
+      "preset": "daily-digest",
+      "prompt": "What blockers are currently slowing shipping velocity, and what should we do in the next 24 hours?",
+      "reason_args": {
+        "recursive": false
+      },
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["blocker", "next", "fix", "owner", "today"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["evidence", "source", "memory", "fact"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false
+        },
+        "usefulness": {
+          "must_include_any": ["priority", "impact", "risk"],
+          "min_hits": 2,
+          "min_words": 90
+        }
+      }
+    },
+    {
+      "id": "rq-003",
+      "preset": "daily-digest",
+      "prompt": "Give me a standup-style update: done, in progress, and next, based on current memory.",
+      "reason_args": {
+        "recursive": false
+      },
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["next", "in progress", "done", "owner", "follow-up"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["memory", "source", "fact", "confidence"],
+          "min_hits": 1
+        },
+        "contradiction_handling": {
+          "required": false
+        },
+        "usefulness": {
+          "must_include_any": ["summary", "priority", "impact"],
+          "min_hits": 2,
+          "min_words": 90
+        }
+      }
+    },
+    {
+      "id": "rq-004",
+      "preset": "daily-digest",
+      "prompt": "If I only have 30 minutes, what are the highest leverage actions to reduce risk in this branch?",
+      "reason_args": {
+        "recursive": false
+      },
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["highest", "leverage", "action", "risk", "priority"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["source", "fact", "evidence", "memory"],
+          "min_hits": 1
+        },
+        "contradiction_handling": {
+          "required": false
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "trade-off", "recommendation"],
+          "min_hits": 2,
+          "min_words": 80
+        }
+      }
+    },
+    {
+      "id": "rq-005",
+      "preset": "daily-digest",
+      "prompt": "What did we learn from recent retrieval-noise burn-down work that should be carried into reason quality eval?",
+      "reason_args": {
+        "recursive": false
+      },
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["carry", "next", "apply", "recommend", "checklist"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["phase", "result", "source", "fact", "evidence"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false
+        },
+        "usefulness": {
+          "must_include_any": ["lesson", "impact", "risk", "decision"],
+          "min_hits": 2,
+          "min_words": 100
+        }
+      }
+    },
+    {
+      "id": "rq-006",
+      "preset": "daily-digest",
+      "prompt": "Provide a concise end-of-day report with explicit recommendations and any uncertainty we should track.",
+      "reason_args": {
+        "recursive": false
+      },
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["recommend", "next", "owner", "priority", "follow-up"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["confidence", "source", "memory", "fact"],
+          "min_hits": 1
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["uncertain", "cannot verify", "confidence", "conflict"],
+          "min_hits": 1,
+          "min_score": 0.5
+        },
+        "usefulness": {
+          "must_include_any": ["summary", "risk", "impact"],
+          "min_hits": 2,
+          "min_words": 90
+        }
+      }
+    },
+    {
+      "id": "rq-007",
+      "preset": "fact-audit",
+      "prompt": "Audit stale facts that could mislead weekly-dive summaries and propose reinforcement priorities.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["reinforce", "priority", "next", "owner", "plan"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["stale", "confidence", "fact", "source", "memory"],
+          "min_hits": 3,
+          "min_score": 0.6
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["stale", "uncertain", "conflict", "inconsistent"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "decision", "recommendation"],
+          "min_hits": 2,
+          "min_words": 120
+        }
+      }
+    },
+    {
+      "id": "rq-008",
+      "preset": "fact-audit",
+      "prompt": "Which facts around default reason models look outdated, and what should be superseded?",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["supersede", "update", "recommend", "next"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["model", "fact", "source", "confidence", "evidence"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["outdated", "conflict", "contradict", "mismatch"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "priority"],
+          "min_hits": 2,
+          "min_words": 110
+        }
+      }
+    },
+    {
+      "id": "rq-009",
+      "preset": "fact-audit",
+      "prompt": "Identify low-confidence facts about CI thresholds and suggest which ones need verification first.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["verify", "first", "priority", "next", "owner"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["low-confidence", "confidence", "fact", "threshold", "source"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["uncertain", "cannot verify", "inconsistent", "conflict"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["risk", "impact", "recommendation"],
+          "min_hits": 2,
+          "min_words": 100
+        }
+      }
+    },
+    {
+      "id": "rq-010",
+      "preset": "fact-audit",
+      "prompt": "Before compaction, which facts should we reinforce to preserve critical operational memory?",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["reinforce", "before", "critical", "step", "priority"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["fact", "confidence", "memory", "source"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false
+        },
+        "usefulness": {
+          "must_include_any": ["risk", "impact", "decision", "timeline"],
+          "min_hits": 2,
+          "min_words": 100
+        }
+      }
+    },
+    {
+      "id": "rq-011",
+      "preset": "fact-audit",
+      "prompt": "Find facts with weak provenance and propose a remediation path to improve trust in outputs.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["remediation", "fix", "next", "owner", "plan"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["provenance", "source", "fact", "evidence", "confidence"],
+          "min_hits": 3,
+          "min_score": 0.6
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["weak", "uncertain", "cannot verify", "conflict"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "recommendation", "decision"],
+          "min_hits": 2,
+          "min_words": 120
+        }
+      }
+    },
+    {
+      "id": "rq-012",
+      "preset": "fact-audit",
+      "prompt": "What fact quality anti-patterns are most likely to cause hallucinated reasoning, and how do we prevent them?",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["prevent", "guardrail", "next", "recommend", "policy"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["fact", "quality", "evidence", "source", "confidence"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["hallucinated", "conflict", "inconsistent", "uncertain"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "mitigation", "recommendation"],
+          "min_hits": 2,
+          "min_words": 120
+        }
+      }
+    },
+    {
+      "id": "rq-013",
+      "preset": "conflict-check",
+      "prompt": "Detect conflicts between README model defaults and code-level defaults, then propose a resolution path.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["resolution", "owner", "timeline", "next", "update"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["readme", "code", "source", "fact", "evidence"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["conflict", "mismatch", "contradict", "resolve", "reconcile"],
+          "min_hits": 2,
+          "min_score": 0.6
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "decision", "recommendation"],
+          "min_hits": 2,
+          "min_words": 120
+        }
+      }
+    },
+    {
+      "id": "rq-014",
+      "preset": "conflict-check",
+      "prompt": "Find contradictions in merge policy guidance (PR-only, no direct pushes) across memory and docs.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["enforce", "policy", "owner", "next", "fix"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["policy", "source", "memory", "fact"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["contradiction", "conflict", "inconsistent", "resolve"],
+          "min_hits": 2
+        },
+        "usefulness": {
+          "must_include_any": ["risk", "impact", "recommendation", "decision"],
+          "min_hits": 2,
+          "min_words": 110
+        }
+      }
+    },
+    {
+      "id": "rq-015",
+      "preset": "conflict-check",
+      "prompt": "Where do local-first and cloud-first model recommendations conflict, and what should be the default rule?",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["default", "rule", "recommend", "next", "policy"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["model", "source", "evidence", "fact", "confidence"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["conflict", "trade-off", "however", "reconcile", "resolve"],
+          "min_hits": 2
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "decision", "recommendation"],
+          "min_hits": 2,
+          "min_words": 120
+        }
+      }
+    },
+    {
+      "id": "rq-016",
+      "preset": "conflict-check",
+      "prompt": "Check whether reason telemetry expectations in docs conflict with actual telemetry payload fields.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["fix", "owner", "next", "update", "validate"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["telemetry", "field", "source", "evidence", "json"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["conflict", "mismatch", "inconsistent", "resolve"],
+          "min_hits": 2
+        },
+        "usefulness": {
+          "must_include_any": ["risk", "impact", "recommendation", "decision"],
+          "min_hits": 2,
+          "min_words": 100
+        }
+      }
+    },
+    {
+      "id": "rq-017",
+      "preset": "conflict-check",
+      "prompt": "Identify contradictory guidance between AGENTS and TOOLS conventions that could degrade response quality.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["align", "owner", "next", "policy", "cleanup"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["agents", "tools", "source", "fact", "evidence"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["contradict", "conflict", "inconsistent", "reconcile"],
+          "min_hits": 2
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "recommendation", "priority"],
+          "min_hits": 2,
+          "min_words": 110
+        }
+      }
+    },
+    {
+      "id": "rq-018",
+      "preset": "conflict-check",
+      "prompt": "What inconsistencies exist in issue #31 closeout notes, and how should we resolve them before merge?",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["before merge", "resolve", "owner", "next", "timeline"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["issue", "source", "fact", "evidence", "memory"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["inconsist", "conflict", "mismatch", "resolve"],
+          "min_hits": 2,
+          "min_score": 0.6
+        },
+        "usefulness": {
+          "must_include_any": ["risk", "impact", "decision", "recommendation"],
+          "min_hits": 2,
+          "min_words": 110
+        }
+      }
+    },
+    {
+      "id": "rq-019",
+      "preset": "weekly-dive",
+      "prompt": "Deep-dive the final 15% gap to issue #31 outcomes and propose a sequence to close it.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["sequence", "next", "priority", "owner", "timeline"],
+          "min_hits": 3,
+          "min_score": 0.6
+        },
+        "factual_grounding": {
+          "must_include_any": ["issue #31", "source", "memory", "fact", "confidence"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["gap", "risk", "unknown", "uncertain", "trade-off"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["summary", "impact", "decision", "recommendation"],
+          "min_hits": 2,
+          "min_words": 130
+        }
+      }
+    },
+    {
+      "id": "rq-020",
+      "preset": "weekly-dive",
+      "prompt": "Analyze how recursive reasoning changed cost, quality, and latency trade-offs since launch.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["recommend", "next", "optimize", "priority", "plan"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["cost", "latency", "quality", "telemetry", "evidence"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["trade-off", "however", "conflict", "uncertain"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "decision", "recommendation"],
+          "min_hits": 2,
+          "min_words": 130
+        }
+      }
+    },
+    {
+      "id": "rq-021",
+      "preset": "weekly-dive",
+      "prompt": "Design a lightweight architecture for nightly reason quality checks that won't slow contributor flow.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["architecture", "nightly", "next", "owner", "rollout"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["ci", "nightly", "source", "evidence", "telemetry"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["trade-off", "risk", "conflict", "mitigation"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "decision", "recommendation", "timeline"],
+          "min_hits": 2,
+          "min_words": 130
+        }
+      }
+    },
+    {
+      "id": "rq-022",
+      "preset": "weekly-dive",
+      "prompt": "Compare local-model nightly evaluation vs cloud interactive evaluation and recommend default routing rules.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["default", "routing", "recommend", "next", "policy"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["local", "cloud", "cost", "latency", "evidence"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["trade-off", "however", "conflict", "uncertain"],
+          "min_hits": 2
+        },
+        "usefulness": {
+          "must_include_any": ["risk", "impact", "decision", "recommendation"],
+          "min_hits": 2,
+          "min_words": 130
+        }
+      }
+    },
+    {
+      "id": "rq-023",
+      "preset": "weekly-dive",
+      "prompt": "What metrics should define success for reason quality, and what thresholds should gate regressions?",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["metric", "threshold", "gate", "next", "owner"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["quality", "telemetry", "evidence", "baseline", "source"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "decision", "recommendation"],
+          "min_hits": 2,
+          "min_words": 120
+        }
+      }
+    },
+    {
+      "id": "rq-024",
+      "preset": "weekly-dive",
+      "prompt": "Plan the next sprint to improve reason answer quality while minimizing CI flakiness.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["sprint", "next", "owner", "timeline", "priority"],
+          "min_hits": 3,
+          "min_score": 0.6
+        },
+        "factual_grounding": {
+          "must_include_any": ["quality", "ci", "evidence", "source", "baseline"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["flakiness", "risk", "trade-off", "mitigation"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "decision", "recommendation", "risk"],
+          "min_hits": 2,
+          "min_words": 130
+        }
+      }
+    },
+    {
+      "id": "rq-025",
+      "preset": "agent-review",
+      "prompt": "Review recent agent output quality: where was it strong, and where did it fail to be actionable?",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["actionable", "next", "improve", "owner", "fix"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["output", "evidence", "source", "memory", "fact"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["strong", "weak", "however", "conflict", "gap"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "recommendation", "decision"],
+          "min_hits": 2,
+          "min_words": 120
+        }
+      }
+    },
+    {
+      "id": "rq-026",
+      "preset": "agent-review",
+      "prompt": "Where did assistant responses become verbose but weakly grounded, and how should we tighten behavior?",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["tighten", "next", "policy", "owner", "guardrail"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["grounded", "source", "evidence", "confidence", "fact"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["verbose", "weak", "however", "trade-off", "uncertain"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["risk", "impact", "recommendation", "decision"],
+          "min_hits": 2,
+          "min_words": 120
+        }
+      }
+    },
+    {
+      "id": "rq-027",
+      "preset": "agent-review",
+      "prompt": "Evaluate whether uncertainty is communicated clearly when evidence is incomplete.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["communicate", "improve", "next", "policy", "checklist"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["evidence", "confidence", "unknown", "source", "fact"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["uncertain", "cannot verify", "incomplete", "conflict"],
+          "min_hits": 1,
+          "min_score": 0.55
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "recommendation", "decision"],
+          "min_hits": 2,
+          "min_words": 110
+        }
+      }
+    },
+    {
+      "id": "rq-028",
+      "preset": "agent-review",
+      "prompt": "Assess correction handling quality: when mistakes were found, did follow-through actions happen?",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["follow-through", "action", "next", "owner", "verify"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["mistake", "evidence", "source", "memory", "fact"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["mistake", "correct", "however", "gap", "conflict"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "recommendation", "decision"],
+          "min_hits": 2,
+          "min_words": 110
+        }
+      }
+    },
+    {
+      "id": "rq-029",
+      "preset": "agent-review",
+      "prompt": "Review whether mode-selection guidance (one-shot vs recursive) is being applied correctly.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["mode", "rule", "next", "owner", "enforce"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["one-shot", "recursive", "telemetry", "evidence", "source"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["misapplied", "conflict", "trade-off", "resolve"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["impact", "risk", "recommendation", "decision"],
+          "min_hits": 2,
+          "min_words": 110
+        }
+      }
+    },
+    {
+      "id": "rq-030",
+      "preset": "agent-review",
+      "prompt": "Produce a practical rubric for high-quality reason responses and identify the weakest dimension right now.",
+      "expected_signals": {
+        "actionability": {
+          "must_include_any": ["rubric", "improve", "next", "priority", "owner"],
+          "min_hits": 2
+        },
+        "factual_grounding": {
+          "must_include_any": ["quality", "evidence", "source", "memory", "confidence"],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": ["weakest", "gap", "however", "risk", "conflict"],
+          "min_hits": 1
+        },
+        "usefulness": {
+          "must_include_any": ["summary", "impact", "recommendation", "decision"],
+          "min_hits": 2,
+          "min_words": 120
+        }
+      }
+    }
+  ]
+}

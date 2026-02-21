@@ -107,10 +107,64 @@ func inferSubject(metadata map[string]string) string {
 	return ""
 }
 
+func stripAutoCaptureScaffold(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	inFence := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+
+		if strings.HasPrefix(lower, "```") {
+			if inFence {
+				inFence = false
+				continue
+			}
+			if len(out) > 0 {
+				prev := strings.ToLower(strings.TrimSpace(out[len(out)-1]))
+				if strings.Contains(prev, "untrusted metadata") {
+					inFence = true
+					continue
+				}
+			}
+		}
+		if inFence {
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(lower, "## conversation capture"):
+			continue
+		case strings.HasPrefix(lower, "channel:"):
+			continue
+		case strings.HasPrefix(lower, "### user"):
+			continue
+		case strings.HasPrefix(lower, "### assistant"):
+			continue
+		case strings.HasPrefix(lower, "current time:"):
+			continue
+		case strings.Contains(lower, "(untrusted metadata)"):
+			continue
+		}
+
+		out = append(out, line)
+	}
+
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
 // Extract runs extraction on the input text and returns structured facts.
 // Uses both rule-based extraction (Tier 1) and optional LLM extraction (Tier 2).
 func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string]string) ([]ExtractedFact, error) {
 	var facts []ExtractedFact
+
+	if isAutoCaptureSource(metadata) {
+		text = stripAutoCaptureScaffold(text)
+	}
 
 	// Tier 1: Rule-based extraction
 	// 1. Extract key-value patterns (with type inference)
@@ -257,6 +311,8 @@ func (p *Pipeline) extractKeyValues(text string, metadata map[string]string) []E
 	var facts []ExtractedFact
 	lines := strings.Split(text, "\n")
 	subject := inferSubject(metadata)
+	autoCapture := isAutoCaptureSource(metadata)
+	transcriptLike := isTranscriptLikeContent(text, metadata)
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -273,6 +329,10 @@ func (p *Pipeline) extractKeyValues(text string, metadata map[string]string) []E
 
 				// Skip if key or value is empty
 				if key == "" || value == "" {
+					continue
+				}
+
+				if shouldSkipKVExtraction(pattern.name, key, value, line, autoCapture, transcriptLike) {
 					continue
 				}
 
@@ -410,6 +470,120 @@ func (p *Pipeline) extractNaturalLanguagePatterns(text string, metadata map[stri
 	}
 
 	return facts
+}
+
+func isAutoCaptureSource(metadata map[string]string) bool {
+	if metadata == nil {
+		return false
+	}
+	path := strings.ToLower(strings.TrimSpace(metadata["source_file"]))
+	if path == "" {
+		return false
+	}
+	return strings.Contains(path, "auto-capture") || strings.Contains(path, "cortex-capture-")
+}
+
+var transcriptRoleLineRE = regexp.MustCompile(`(?im)^\s*(assistant|user|system)\s*:`)
+
+func isTranscriptLikeContent(text string, metadata map[string]string) bool {
+	if isAutoCaptureSource(metadata) {
+		return true
+	}
+
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "<cortex-memories>") ||
+		strings.Contains(lower, "(untrusted metadata)") ||
+		strings.Contains(lower, "conversation info (untrusted metadata)") ||
+		strings.Contains(lower, "sender (untrusted metadata)") ||
+		strings.Contains(lower, "[message_id:") ||
+		strings.Contains(lower, "[queued messages while agent was busy]") {
+		return true
+	}
+
+	if len(transcriptRoleLineRE.FindAllStringIndex(text, -1)) >= 2 {
+		return true
+	}
+
+	return false
+}
+
+func normalizeKVKeyForFilter(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.Trim(key, "\"'`[]{}()")
+	replacer := strings.NewReplacer("_", "", " ", "", "-", "")
+	key = replacer.Replace(key)
+	return key
+}
+
+func shouldSkipKVExtraction(patternName, key, value, sourceLine string, autoCapture, transcriptLike bool) bool {
+	keyTrim := strings.TrimSpace(key)
+	if keyTrim == "" || strings.TrimSpace(value) == "" {
+		return true
+	}
+
+	if len(keyTrim) > 80 || strings.Count(keyTrim, " ") > 8 {
+		return true
+	}
+
+	lineTrim := strings.TrimSpace(sourceLine)
+	if strings.HasPrefix(lineTrim, "{") || strings.HasPrefix(lineTrim, "}") {
+		return true
+	}
+
+	if strings.ContainsAny(keyTrim, "{}") {
+		return true
+	}
+
+	k := normalizeKVKeyForFilter(keyTrim)
+	if k == "" {
+		return true
+	}
+
+	lowerLine := strings.ToLower(sourceLine)
+	if strings.Contains(lowerLine, "untrusted metadata") || strings.Contains(lowerLine, "queued messages while agent was busy") {
+		return true
+	}
+
+	if transcriptLike {
+		// Transcript wrappers and role lines generate large amounts of low-signal KV noise.
+		switch k {
+		case "conversationlabel", "groupsubject", "groupchannel", "groupspace",
+			"sender", "label", "username", "tag", "currenttime", "messageid",
+			"assistant", "user", "system":
+			return true
+		}
+
+		if strings.HasPrefix(strings.ToLower(lineTrim), "assistant:") ||
+			strings.HasPrefix(strings.ToLower(lineTrim), "user:") ||
+			strings.HasPrefix(strings.ToLower(lineTrim), "system:") {
+			return true
+		}
+
+		// JSON metadata envelopes should not emit KV facts.
+		if strings.HasPrefix(lineTrim, "\"") && strings.Contains(lineTrim, "\":") {
+			return true
+		}
+	}
+
+	if !autoCapture {
+		return false
+	}
+
+	// In conversational auto-capture, only keep explicit markdown key-value styles.
+	// Free-form separators (simple colon / arrow / em-dash / equals) are too noisy.
+	switch patternName {
+	case "bold_colon_bullet", "bold_colon", "bullet_colon":
+		// allowed
+	default:
+		return true
+	}
+
+	// Auto-capture remains strict on name to avoid sender envelope bleed-through.
+	if k == "name" {
+		return true
+	}
+
+	return false
 }
 
 func inferFactTypeFromKV(key, value, sourceLine string) string {

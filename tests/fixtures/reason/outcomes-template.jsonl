@@ -1,0 +1,3 @@
+{"timestamp":"2026-02-21T06:00:00Z","prompt_id":"rq-001","model":"openrouter/google/gemini-3-flash-preview","accepted_without_edits":true,"action_taken":true,"useful":true,"notes":"Used directly for planning next sprint tasks"}
+{"timestamp":"2026-02-21T06:05:00Z","prompt_id":"rq-017","model":"openrouter/google/gemini-3-flash-preview","accepted_without_edits":false,"action_taken":true,"useful":true,"notes":"Needed minor edits before sending to team"}
+{"timestamp":"2026-02-21T06:10:00Z","prompt_id":"rq-025","model":"openrouter/google/gemini-3-flash-preview","accepted_without_edits":false,"action_taken":false,"useful":false,"notes":"Too generic; no clear resolution path"}

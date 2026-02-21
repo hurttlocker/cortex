@@ -19,6 +19,17 @@ type Engine struct {
 	configDir    string // ~/.cortex
 }
 
+const responseQualityContract = `Output format requirements (MANDATORY):
+1) Use markdown with these exact section headers:
+   - ## Summary
+   - ## Evidence
+   - ## Conflicts & Trade-offs
+   - ## Next Actions
+2) In "## Next Actions", provide 3-5 bullets. Each bullet must include labels:
+   Priority:, Owner:, Timeline:, Recommendation:, Impact:
+3) If evidence is incomplete or uncertain, explicitly state "Uncertain" in Conflicts & Trade-offs and add a verification action.
+4) Be concise, specific, and decision-ready.`
+
 // EngineConfig configures the reason engine.
 type EngineConfig struct {
 	SearchEngine *search.Engine
@@ -137,8 +148,14 @@ func (e *Engine) Reason(ctx context.Context, opts ReasonOptions) (*ReasonResult,
 	userPrompt := expandTemplate(preset.Template, fullContext, query)
 
 	// 6. Call LLM
+	systemPrompt := strings.TrimSpace(preset.System)
+	if systemPrompt != "" {
+		systemPrompt += "\n\n"
+	}
+	systemPrompt += responseQualityContract
+
 	messages := []ChatMessage{
-		{Role: "system", Content: preset.System},
+		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
 	}
 
@@ -149,8 +166,10 @@ func (e *Engine) Reason(ctx context.Context, opts ReasonOptions) (*ReasonResult,
 	}
 	llmTime := time.Since(llmStart)
 
+	finalContent := enforceResponseQualityContract(llmResult.Content, query)
+
 	return &ReasonResult{
-		Content:      llmResult.Content,
+		Content:      finalContent,
 		Preset:       presetName,
 		Query:        query,
 		Project:      opts.Project,

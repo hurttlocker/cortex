@@ -184,21 +184,22 @@ func (e *Engine) reasonRecursiveAtDepth(ctx context.Context, opts RecursiveOptio
 		initialContext += "\n\n--- Extracted Facts ---\n" + factsStr
 	}
 
-	// Build system prompt: combine preset system + recursive protocol
+	// Build system prompt: combine preset system + recursive protocol + response contract
 	systemPrompt := recursiveSystemPrompt
 	if preset.System != "" {
 		systemPrompt = preset.System + "\n\n" + recursiveSystemPrompt
 	}
+	systemPrompt += "\n\n" + responseQualityContract
 
 	// Build the conversation history for the recursive loop
+	analysisPrompt := expandTemplate(preset.Template, initialContext, query)
 	messages := []ChatMessage{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: fmt.Sprintf(
-			"## Query\n%s\n\n## Initial Context (from memory search, %d results)\n%s\n\n"+
-				"Review this context. If sufficient, respond with FINAL(your complete answer). "+
-				"If you need more information, use SEARCH(different terms) to find it. "+
-				"Remember: your response MUST end with an action call.",
-			query, memoriesUsed, initialContext,
+			"## Query\n%s\n\n## Task\n%s\n\n"+
+				"Use actions (SEARCH/FACTS/PEEK/SUB_QUERY) as needed, then end with FINAL(your complete answer). "+
+				"Do not stop at partial notes. FINAL must satisfy the required section format and include concrete source/evidence, uncertainty/trade-offs, and owner/timeline recommendations.",
+			query, analysisPrompt,
 		)},
 	}
 
@@ -209,7 +210,7 @@ func (e *Engine) reasonRecursiveAtDepth(ctx context.Context, opts RecursiveOptio
 	var totalLLMTime time.Duration
 	var finalContent string
 	totalCalls := 0
-	seenSearches := map[string]bool{query: true} // Don't repeat initial query
+	seenSearches := map[string]bool{normalizeSearchArgument(query): true} // Don't repeat initial query
 	iteration := 0
 
 	// === THE RECURSIVE LOOP ===
@@ -262,19 +263,21 @@ func (e *Engine) reasonRecursiveAtDepth(ctx context.Context, opts RecursiveOptio
 
 		case ActionSearch:
 			// Run a new search with different terms
-			if seenSearches[argument] {
-				// LLM is repeating itself — force FINAL
+			searchKey := normalizeSearchArgument(argument)
+			if seenSearches[searchKey] {
 				if opts.Verbose {
-					fmt.Printf("  ⚠️ Duplicate search, forcing FINAL\n")
+					fmt.Printf("  ⚠️ Duplicate search, requesting a different query\n")
 				}
-				// Add the response text before the action as the final answer
-				finalContent = extractPreActionText(response)
-				if finalContent == "" {
-					finalContent = response
-				}
-				goto done
+				messages = append(messages,
+					ChatMessage{Role: "assistant", Content: response},
+					ChatMessage{Role: "user", Content: fmt.Sprintf(
+						"⚠️ SEARCH(%q) was already used. Use a different search angle, or finalize now with FINAL(complete structured answer).",
+						argument,
+					)},
+				)
+				continue
 			}
-			seenSearches[argument] = true
+			seenSearches[searchKey] = true
 
 			actionStart := time.Now()
 			newResults, err := e.searchEngine.Search(ctx, argument, searchOpts)
@@ -495,6 +498,8 @@ func (e *Engine) reasonRecursiveAtDepth(ctx context.Context, opts RecursiveOptio
 	}
 
 done:
+	finalContent = enforceResponseQualityContract(finalContent, query)
+
 	return &RecursiveResult{
 		ReasonResult: ReasonResult{
 			Content:      finalContent,
@@ -598,6 +603,11 @@ func fuzzyMatch(query, text string) bool {
 		}
 	}
 	return len(words) > 0 && float64(matches)/float64(len(words)) >= 0.5
+}
+
+func normalizeSearchArgument(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func truncateArg(s string, max int) string {

@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 
-import { cosineSimilarity, dedupeRecallResults, isLowSignalMessage } from "./hygiene.ts";
+import { cosineSimilarity, dedupeRecallResults, isLowSignalMessage, sanitizeCaptureMessage } from "./hygiene.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -794,7 +794,6 @@ const cortexPlugin = {
         try {
           // Extract user and assistant messages from this turn
           let userText = "";
-          let userTextRaw = "";
           let assistantText = "";
           let messageCount = 0;
 
@@ -814,16 +813,15 @@ const cortexPlugin = {
                 .join("\n");
             }
 
+            const sanitized = sanitizeCaptureMessage(text);
+
             if (role === "user") {
-              if (text.trim().length > 0) {
-                userTextRaw = text;
-              }
-              if (shouldCapture(text, cfg.captureMaxChars)) {
-                userText = text;
+              if (shouldCapture(sanitized, cfg.captureMaxChars)) {
+                userText = sanitized;
                 messageCount++;
               }
-            } else if (role === "assistant" && text.length > 20) {
-              assistantText = text;
+            } else if (role === "assistant" && sanitized.length > 20) {
+              assistantText = sanitized;
               messageCount++;
             }
           }
@@ -871,7 +869,7 @@ const cortexPlugin = {
 
           metadata.timestamp_end = new Date().toISOString();
 
-          const safeUser = userText || userTextRaw || "(no user message)";
+          const safeUser = userText || "(no user message)";
           const safeAssistant = assistantText || "(no assistant message)";
           const exchange = formatCapturedExchange(safeUser, safeAssistant, metadata.channel);
 

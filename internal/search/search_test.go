@@ -1160,3 +1160,199 @@ func TestSearch_DisableClassBoost(t *testing.T) {
 		t.Fatalf("expected boosted top class=rule, got %q", boosted[0].MemoryClass)
 	}
 }
+
+func TestCaptureNoisePenaltyMultiplierForResult(t *testing.T) {
+	wrapper := Result{
+		SourceFile: "/tmp/cortex-capture-abc/auto-capture.md",
+		Content:    "Conversation info (untrusted metadata): ...",
+		Score:      1.0,
+	}
+	if got := captureNoisePenaltyMultiplierForResult(wrapper); got != captureWrapperPenaltyMultiplier {
+		t.Fatalf("expected wrapper penalty %.2f, got %.2f", captureWrapperPenaltyMultiplier, got)
+	}
+
+	lowSignal := Result{
+		SourceFile: "/tmp/cortex-capture-abc/auto-capture.md",
+		Content:    "Fire the test",
+		Score:      1.0,
+	}
+	if got := captureNoisePenaltyMultiplierForResult(lowSignal); got != captureLowSignalPenaltyMultiplier {
+		t.Fatalf("expected low-signal penalty %.2f, got %.2f", captureLowSignalPenaltyMultiplier, got)
+	}
+
+	normal := Result{SourceFile: "memory/2026-02-20.md", Content: "Cortex sprint planning", Score: 1.0}
+	if got := captureNoisePenaltyMultiplierForResult(normal); got != 1.0 {
+		t.Fatalf("expected no penalty for normal memory, got %.2f", got)
+	}
+}
+
+func TestApplyCaptureNoisePenalty_ReordersResults(t *testing.T) {
+	results := []Result{
+		{MemoryID: 1, Score: 1.0, SourceFile: "/tmp/cortex-capture-1/auto-capture.md", Content: "Conversation info (untrusted metadata): wrapped"},
+		{MemoryID: 2, Score: 0.9, SourceFile: "memory/2026-02-20.md", Content: "Cortex retrieval tuning plan"},
+	}
+
+	penalized := applyCaptureNoisePenalty(results, false)
+	if len(penalized) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(penalized))
+	}
+	if penalized[0].MemoryID != 2 {
+		t.Fatalf("expected clean memory to rank first after penalty, got memory_id=%d", penalized[0].MemoryID)
+	}
+	if penalized[1].Score >= penalized[0].Score {
+		t.Fatalf("expected penalized score to remain lower: %f vs %f", penalized[1].Score, penalized[0].Score)
+	}
+}
+
+func TestIsLowSignalIntentQuery(t *testing.T) {
+	cases := []struct {
+		query string
+		want  bool
+	}{
+		{query: "Fire the test", want: true},
+		{query: "HEARTBEAT_OK", want: true},
+		{query: "run test", want: true},
+		{query: "cortex sprint retrieval tuning", want: false},
+	}
+
+	for _, tc := range cases {
+		if got := isLowSignalIntentQuery(tc.query); got != tc.want {
+			t.Fatalf("isLowSignalIntentQuery(%q)=%v, want %v", tc.query, got, tc.want)
+		}
+	}
+}
+
+func TestApplyLowSignalIntentSuppression_RemovesNoisyAutoCapture(t *testing.T) {
+	results := []Result{
+		{MemoryID: 1, Score: 1.0, SourceFile: "/tmp/cortex-capture-1/auto-capture.md", Content: "Conversation info (untrusted metadata): wrapped"},
+		{MemoryID: 2, Score: 0.9, SourceFile: "memory/2026-02-20.md", Content: "Run integration tests before merge"},
+	}
+
+	filtered := applyLowSignalIntentSuppression("Fire the test", results, false)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 result after suppression, got %d", len(filtered))
+	}
+	if filtered[0].MemoryID != 2 {
+		t.Fatalf("expected clean memory to remain, got memory_id=%d", filtered[0].MemoryID)
+	}
+}
+
+func TestSearch_LowSignalIntentSuppressesAutoCaptureNoise(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, _ = s.AddMemory(ctx, &store.Memory{
+		Content:    "Conversation info (untrusted metadata): ...\nFire the test",
+		SourceFile: "/tmp/cortex-capture-123/auto-capture.md",
+	})
+	_, _ = s.AddMemory(ctx, &store.Memory{
+		Content:    "Fire the test suite before deploy",
+		SourceFile: "memory/2026-02-20.md",
+	})
+
+	engine := NewEngine(s)
+	results, err := engine.Search(ctx, "Fire the test", Options{Mode: ModeKeyword, Limit: 10})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected non-empty results")
+	}
+	for _, r := range results {
+		if isAutoCaptureSourceFile(r.SourceFile) && isWrapperNoiseContent(r.Content) {
+			t.Fatalf("expected wrapper-heavy auto-capture result to be suppressed, got memory_id=%d", r.MemoryID)
+		}
+	}
+}
+
+func TestHybridMetadataPrior_PenalizesWrapperAutoCapture(t *testing.T) {
+	r := Result{
+		SourceFile: "/tmp/cortex-capture-xyz/auto-capture.md",
+		Content:    "Conversation info (untrusted metadata): ...",
+	}
+	m, reason := hybridMetadataPrior(r)
+	if m >= 0.5 {
+		t.Fatalf("expected strong penalty, got %.3f", m)
+	}
+	if !strings.Contains(reason, "wrapper-noise penalty") {
+		t.Fatalf("expected wrapper-noise reason, got %q", reason)
+	}
+}
+
+func TestMergeWeightedScores_HybridMetadataPriorReorders(t *testing.T) {
+	bm25 := []Result{
+		{MemoryID: 1, Score: 1, SourceFile: "/tmp/cortex-capture-xyz/auto-capture.md", Content: "Conversation info (untrusted metadata): ..."},
+		{MemoryID: 2, Score: 1, SourceFile: "memory/2026-02-20.md", Content: "Run tests before merge"},
+	}
+	semantic := []Result{
+		{MemoryID: 1, Score: 1, SourceFile: "/tmp/cortex-capture-xyz/auto-capture.md", Content: "Conversation info (untrusted metadata): ..."},
+		{MemoryID: 2, Score: 1, SourceFile: "memory/2026-02-20.md", Content: "Run tests before merge"},
+	}
+
+	merged := mergeWeightedScores(bm25, semantic, 2, false)
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 merged results, got %d", len(merged))
+	}
+	if merged[0].MemoryID != 2 {
+		t.Fatalf("expected curated memory to rank first, got memory_id=%d", merged[0].MemoryID)
+	}
+}
+
+func TestApplyWrapperNoiseSuppression_DefaultQuery(t *testing.T) {
+	results := []Result{
+		{MemoryID: 1, SourceFile: "/tmp/cortex-capture-x/auto-capture.md", Content: "Conversation info (untrusted metadata): ...", Score: 1},
+		{MemoryID: 2, SourceFile: "memory/2026-02-20.md", Content: "Spear customer ops automation", Score: 0.8},
+	}
+	filtered := applyWrapperNoiseSuppression("Spear customer ops automation", results, false)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 result after suppression, got %d", len(filtered))
+	}
+	if filtered[0].MemoryID != 2 {
+		t.Fatalf("expected non-wrapper result to remain, got memory_id=%d", filtered[0].MemoryID)
+	}
+}
+
+func TestApplyOffTopicLowSignalSuppression(t *testing.T) {
+	results := []Result{
+		{MemoryID: 1, SourceFile: "/tmp/cortex-capture-x/auto-capture.md", Content: "Fire the test", Score: 1},
+		{MemoryID: 2, SourceFile: "memory/2026-02-20.md", Content: "Spear customer ops automation", Score: 0.8},
+	}
+	filtered := applyOffTopicLowSignalSuppression("Spear customer ops automation", results, false)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 result after off-topic suppression, got %d", len(filtered))
+	}
+	if filtered[0].MemoryID != 2 {
+		t.Fatalf("expected non-low-signal result to remain, got memory_id=%d", filtered[0].MemoryID)
+	}
+}
+
+func TestApplyWrapperNoiseSuppression_MetadataQueryBypass(t *testing.T) {
+	results := []Result{{MemoryID: 1, SourceFile: "/tmp/cortex-capture-x/auto-capture.md", Content: "Conversation info (untrusted metadata): ...", Score: 1}}
+	filtered := applyWrapperNoiseSuppression("auto-capture metadata issue", results, false)
+	if len(filtered) != 1 {
+		t.Fatalf("expected metadata query to bypass suppression")
+	}
+}
+
+func TestApplyLexicalOverlapFilter(t *testing.T) {
+	results := []Result{
+		{MemoryID: 1, Content: "Q prefers Sonnet for coding tasks", SourceFile: "USER.md"},
+		{MemoryID: 2, Content: "Random unrelated text", SourceFile: "notes.md"},
+	}
+	filtered := applyLexicalOverlapFilter("Q prefers Sonnet for coding tasks", results, false)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 overlapping result, got %d", len(filtered))
+	}
+	if filtered[0].MemoryID != 1 {
+		t.Fatalf("expected overlapping memory_id=1, got %d", filtered[0].MemoryID)
+	}
+}
+
+func TestDetectIntentBucket(t *testing.T) {
+	if got := detectIntentBucket("Crypto Session Range Breakout V23"); got != "trading" {
+		t.Fatalf("expected trading bucket, got %q", got)
+	}
+	if got := detectIntentBucket("Spear customer ops automation"); got != "spear" {
+		t.Fatalf("expected spear bucket, got %q", got)
+	}
+}

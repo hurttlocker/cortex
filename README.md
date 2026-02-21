@@ -452,6 +452,36 @@ For hardware-specific recommendations and benchmark workflow, see **[docs/LOCAL-
 export CORTEX_REASON_TELEMETRY=off
 ```
 
+### ✅ Reason quality eval pack (CI / nightly)
+
+Run the first-pass quality harness (30 realistic prompts, signal-based scoring on actionability, grounding, contradiction handling, usefulness):
+
+```bash
+python3 scripts/reason_quality_eval.py \
+  --binary ./cortex \
+  --fixture tests/fixtures/reason/eval-set-v1.json \
+  --model google/gemini-3-flash-preview \
+  --embed ollama/nomic-embed-text \
+  --output /tmp/reason-quality-report.json
+```
+
+- Exits non-zero when suite thresholds fail (safe for CI gates).
+- For nightly local runs, swap `--model` to an Ollama model (for example: `--model phi4-mini`).
+
+Add reliability guardrail checks (Track 2):
+
+```bash
+python3 scripts/reason_guardrail_gate.py \
+  --report /tmp/reason-quality-report.json
+```
+
+Add outcome-loop KPI rollups (Track 3):
+
+```bash
+python3 scripts/reason_outcome_rollup.py \
+  --input tests/fixtures/reason/outcomes-template.jsonl
+```
+
 ### ⚙️ Codex rollout operating mode
 
 Use this as the default decision rule while Codex rollout is active:
