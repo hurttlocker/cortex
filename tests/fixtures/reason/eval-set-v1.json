@@ -4,6 +4,7 @@
   "description": "First-pass quality harness for cortex reason (issue #31 closure): 30 realistic prompts with signal-based scoring expectations.",
   "defaults": {
     "preset": "weekly-dive",
+    "embed": "ollama/nomic-embed-text",
     "reason_args": {
       "recursive": true,
       "max_iterations": 8,

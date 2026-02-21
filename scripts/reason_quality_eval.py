@@ -634,7 +634,7 @@ def main() -> int:
         preset = args.preset or case.get("preset") or defaults.get("preset")
         project = args.project or case.get("project") or defaults.get("project")
         model = args.model or case.get("model")
-        embed = args.embed or case.get("embed")
+        embed = args.embed or case.get("embed") or defaults.get("embed")
         reason_args = merge_reason_args(fixture_reason_defaults, case.get("reason_args", {}))
 
         if args.verbose:
@@ -667,7 +667,8 @@ def main() -> int:
             continue
 
         payload = run["payload"]
-        content = payload.get("content", "")
+        content = payload.get("content") or payload.get("answer") or ""
+        empty_content = isinstance(content, str) and content.strip() == "" and int(payload.get("tokens_out") or 0) > 0
         scored = evaluate_case(case, content, weights, case_min_overall)
 
         for dim in DIMENSIONS:
@@ -691,6 +692,8 @@ def main() -> int:
                 "tokens_out": payload.get("tokens_out"),
                 "duration_ns": payload.get("duration"),
                 "elapsed_ms": run.get("elapsed_ms"),
+                "response_chars": len(content),
+                "empty_content": empty_content,
             }
         )
 

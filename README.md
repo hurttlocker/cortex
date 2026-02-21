@@ -468,6 +468,20 @@ python3 scripts/reason_quality_eval.py \
 - Exits non-zero when suite thresholds fail (safe for CI gates).
 - For nightly local runs, swap `--model` to an Ollama model (for example: `--model phi4-mini`).
 
+Add reliability guardrail checks (Track 2):
+
+```bash
+python3 scripts/reason_guardrail_gate.py \
+  --report /tmp/reason-quality-report.json
+```
+
+Add outcome-loop KPI rollups (Track 3):
+
+```bash
+python3 scripts/reason_outcome_rollup.py \
+  --input tests/fixtures/reason/outcomes-template.jsonl
+```
+
 ### ⚙️ Codex rollout operating mode
 
 Use this as the default decision rule while Codex rollout is active:

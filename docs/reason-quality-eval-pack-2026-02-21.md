@@ -136,3 +136,50 @@ python3 scripts/reason_quality_eval.py \
 Exit code is non-zero when suite thresholds fail (CI-friendly).
 
 For nightly/local models, swap `--model` to an Ollama model (e.g., `phi4-mini`) and keep the same fixture.
+
+---
+
+## Track 2 — Reliability guardrails (post-eval gate)
+
+Use a stricter guardrail gate on top of the eval report:
+
+```bash
+python3 scripts/reason_guardrail_gate.py \
+  --report /tmp/reason-quality-report.json \
+  --min-pass-rate 0.80 \
+  --min-overall 0.72 \
+  --min-grounding 0.62 \
+  --min-actionability 0.65 \
+  --min-usefulness 0.68 \
+  --max-error-rate 0.05 \
+  --max-empty-content-rate 0.02 \
+  --max-hard-failure-rate 0.10
+```
+
+This catches failure modes that can slip past average pass-rate checks:
+- too many empty/blank model responses
+- too many hard per-dimension failures
+- grounding/actionability quality drift
+
+---
+
+## Track 3 — Outcome loop (product KPI layer)
+
+Log human outcome feedback as JSONL and roll up weekly KPI metrics:
+
+- Template: `tests/fixtures/reason/outcomes-template.jsonl`
+- Required fields: `prompt_id`, `accepted_without_edits`, `action_taken`
+
+```bash
+python3 scripts/reason_outcome_rollup.py \
+  --input tests/fixtures/reason/outcomes-template.jsonl \
+  --min-samples 20 \
+  --min-accept-rate 0.70 \
+  --min-action-rate 0.55 \
+  --min-useful-rate 0.65
+```
+
+Primary KPI targets toward Issue #31 closure:
+1. **Accepted-without-edits rate**
+2. **Action-taken rate**
+3. Useful-rate (optional but recommended)

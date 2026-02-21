@@ -35,6 +35,24 @@ jobs:
             --model openrouter/google/gemini-3-flash-preview \
             --timeout-sec 300
 
+      - name: Reliability guardrail gate (Track 2)
+        if: ${{ secrets.OPENROUTER_API_KEY != '' }}
+        run: |
+          latest_json=$(ls -1t tests/output/reason-eval/reason-quality-eval-*.json | head -n 1)
+          python3 scripts/reason_guardrail_gate.py \
+            --report "$latest_json" \
+            --output tests/output/reason-eval/reason-guardrail-gate.json
+
+      - name: Outcome KPI rollup (Track 3 template run)
+        run: |
+          python3 scripts/reason_outcome_rollup.py \
+            --input tests/fixtures/reason/outcomes-template.jsonl \
+            --min-samples 1 \
+            --min-accept-rate 0 \
+            --min-action-rate 0 \
+            --min-useful-rate 0 \
+            --output tests/output/reason-eval/reason-outcome-rollup.json
+
       - name: Dry-run eval plan (fallback when no API key)
         if: ${{ secrets.OPENROUTER_API_KEY == '' }}
         run: |
