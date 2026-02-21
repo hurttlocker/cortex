@@ -6,6 +6,23 @@ All notable changes to this project will be documented in this file.
 
 - No unreleased entries yet.
 
+## [0.3.6] - 2026-02-21
+
+### Added
+- Reason quality evaluation pack (`scripts/reason_quality_eval.py`) with 30-case fixture coverage and artifact-friendly output modes.
+- Reliability guardrail gate (`scripts/reason_guardrail_gate.py`) and outcome KPI rollup (`scripts/reason_outcome_rollup.py`).
+- Deterministic response quality contract enforcement for reason outputs (`internal/reason/quality_contract.go`).
+
+### Changed
+- Reason engine and recursive mode now enforce structured output sections (`Summary`, `Evidence`, `Conflicts & Trade-offs`, `Next Actions`) before returning content.
+- Recursive reason initialization now uses expanded preset templates for stronger task framing and more consistent outputs.
+- Duplicate search handling in recursive reason now asks for a new search angle instead of force-finalizing early.
+- Eval scoring weights were rebalanced to reduce keyword brittleness and better reward actionable, structured responses.
+
+### Validation
+- Full 30-case reason quality run: **29/30 pass** (`0.9667` pass rate), avg overall `0.9395`.
+- Track 2 reason guardrail: **PASS** (all checks green, hard failure rate `0.0333`).
+
 ## [0.3.5] - 2026-02-20
 
 ### Added
