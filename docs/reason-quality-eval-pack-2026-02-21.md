@@ -1,105 +1,124 @@
-# Reason Quality Eval Pack (v1)
+# Reason Quality Evaluation Pack (First Pass)
 
 Date: 2026-02-21  
-Branch target: `feat/104-retrieval-provenance-closure`
+Branch: `feat/104-retrieval-provenance-closure`  
+Scope: close final quality gap toward issue #31 outcomes with a repeatable, low-friction evaluation harness.
 
-## Purpose
+## Objective
 
-Close the final quality gap after retrieval improvements with a repeatable, deterministic evaluation harness for `cortex reason`.
+Add a practical quality gate for `cortex reason` that is:
+
+- **Fast enough for CI/nightly** (scriptable, JSON output, thresholded exit code)
+- **Focused on answer quality** (not just latency/cost)
+- **Grounded in issue #31 goals** (reasoned synthesis from memory with explicit uncertainty handling)
 
 This pack ships:
 
-1. `tests/fixtures/reason/eval-set-v1.json` (40 prompts)
-2. `scripts/reason_quality_eval.py`
-3. Optional nightly workflow for trend artifacts
+1. `tests/fixtures/reason/eval-set-v1.json` — 30 realistic prompts + expected quality signals.
+2. `scripts/reason_quality_eval.py` — executes prompts via `cortex reason --json`, scores responses, emits pass/fail + summary metrics.
+3. README usage snippet for CI/nightly execution.
 
 ---
 
-## Fixture schema (v1)
+## Scoring rubric (0-3 per dimension)
 
-Path: `tests/fixtures/reason/eval-set-v1.json`
+Each response is scored on four dimensions, then combined into a weighted overall score.
 
-- **40 prompts** across:
-  - `daily-digest` (8)
-  - `weekly-dive` (8)
-  - `fact-audit` (8)
-  - `conflict-check` (8)
-  - `agent-review` (8)
-- Each prompt contains `expected_signals` for all four metrics (signal-based, not strict exact text).
+### 1) Actionability
 
-Top-level fields:
+**Question:** Does the answer produce concrete next moves?
 
-- `thresholds.overall_pass_score`
-- `thresholds.pass_rate_min`
-- `thresholds.metric_minimums`
-- `weights`
-- `defaults.reason_args`
-- `prompts[]`
+| Score | Description |
+|---|---|
+| 0 | No actionable guidance; generic narrative only |
+| 1 | Some implied action, but missing prioritization/ownership |
+| 2 | Clear actions with prioritization OR sequencing |
+| 3 | Specific, prioritized actions with owner/timeline-style cues |
+
+**Signals used (heuristic):** next-step verbs, priority language, owner/timeline markers, structured bullets.
 
 ---
 
-## Scoring rubric
+### 2) Factual grounding / citation behavior
 
-All scoring is deterministic and heuristic-based (no secondary model grader).
+**Question:** Does the answer ground claims in memory-derived evidence?
 
-### 1) `grounding_score`
+| Score | Description |
+|---|---|
+| 0 | Unsupported assertions; no evidence language |
+| 1 | Sparse grounding cues (mentions “source/fact” without clear linkage) |
+| 2 | Repeated evidence/provenance cues; confidence-aware framing appears |
+| 3 | Strong grounding, explicit evidence/citation-style references, calibrated confidence |
 
-Checks two things:
-
-- **Evidence presence**: grounding terms, source/citation-like references, and non-zero memory/fact usage
-- **Relevance**: lexical overlap between prompt keywords and response content
-
-### 2) `actionability_score`
-
-Checks whether answer provides clear next moves:
-
-- action-oriented signal hits (next step / owner / timeline / priority)
-- structured checklist/bullets
-- ownership or time cues
-
-### 3) `contradiction_handling_score`
-
-When required by prompt (or inferred from prompt wording), checks for:
-
-- explicit conflict/uncertainty recognition
-- resolve/verify/reconcile language
-
-If not required, this metric is marked non-blocking for that prompt.
-
-### 4) `concise_clarity_score`
-
-Checks response quality for operator readability:
-
-- target length window (`min_words`/`max_words`)
-- structure (headings + bullets)
-- sentence-length sanity
-- concise/summary signal terms
+**Signals used (heuristic):** source/fact/memory/provenance terms, confidence tags (`[0.xx]`), file/line-like references, uncertainty calibration language.
 
 ---
 
-## Pass/fail thresholds
+### 3) Contradiction handling
 
-Defaults (fixture-controlled):
+**Question:** When conflicts/uncertainty exist, does the answer identify and resolve them responsibly?
 
-- **Overall prompt pass floor:** `0.70`
-- **Suite pass rate floor:** `0.75`
-- **Metric minimums:**
-  - grounding: `0.60`
-  - actionability: `0.62`
-  - contradiction handling: `0.58`
-  - concise clarity: `0.65`
+| Score | Description |
+|---|---|
+| 0 | Ignores obvious conflict or uncertainty |
+| 1 | Mentions conflict but gives no reconciliation path |
+| 2 | Identifies conflict + partial reconciliation/verification plan |
+| 3 | Explicit conflict framing + concrete reconcile/verify/supersede path |
 
-A prompt fails if:
+**Signals used (heuristic):** conflict/inconsistency markers, “however/trade-off” language, and explicit reconcile/verify actions.
 
-- overall score below floor, or
-- any required metric is below minimum.
+> Note: For prompts where contradiction handling is not required, the script marks this dimension as not-required and does not hard-fail the case on it.
 
-A suite fails if:
+---
 
-- pass rate is below threshold, or
-- average overall score is below threshold, or
-- any metric average is below minimum, or
-- `--fail-on-errors` and any prompt command errors.
+### 4) Usefulness
+
+**Question:** Is the answer decision-useful (not just plausible)?
+
+| Score | Description |
+|---|---|
+| 0 | Too vague/short to be useful |
+| 1 | Partially useful but lacks structure or specifics |
+| 2 | Useful, structured response with practical context |
+| 3 | High decision utility: structured, specific, and risk/impact aware |
+
+**Signals used (heuristic):** minimum word count, sections/bullets, specificity (numbers/thresholds), and presence of summary-impact-risk/recommendation language.
+
+---
+
+## Aggregation + pass criteria
+
+Default weights (v1):
+
+- Actionability: **0.30**
+- Factual grounding: **0.30**
+- Contradiction handling: **0.15**
+- Usefulness: **0.25**
+
+Default thresholds (fixture-controlled):
+
+- **Per-case overall minimum:** `0.65`
+- **Suite minimum pass rate:** `0.70`
+- **Suite dimension minimum averages:**
+  - actionability `>= 0.60`
+  - factual_grounding `>= 0.55`
+  - contradiction_handling `>= 0.50`
+  - usefulness `>= 0.65`
+
+A case fails if:
+
+- overall score is below case threshold, or
+- any **required** dimension is below its dimension minimum.
+
+---
+
+## Fixture design notes (v1)
+
+- 30 prompts across built-in reason presets (`daily-digest`, `fact-audit`, `conflict-check`, `weekly-dive`, `agent-review`)
+- Each case defines expected signals (keywords, minimum signal hits, min word count, optional per-dimension min score)
+- Mixes concise and deep-analysis tasks to cover one-shot and recursive behavior
+
+This is intentionally a **first-pass heuristic harness** (not a ground-truth semantic judge). It is meant to catch quality drift early and provide trendable signals for iterative tuning.
 
 ---
 
@@ -109,72 +128,11 @@ A suite fails if:
 python3 scripts/reason_quality_eval.py \
   --binary ./cortex \
   --fixture tests/fixtures/reason/eval-set-v1.json \
-  --output-dir tests/output/reason-eval \
-  --model openrouter/google/gemini-3-flash-preview \
-  --timeout-sec 300
+  --model google/gemini-3-flash-preview \
+  --embed ollama/nomic-embed-text \
+  --output /tmp/reason-quality-report.json
 ```
 
-Useful flags:
+Exit code is non-zero when suite thresholds fail (CI-friendly).
 
-- `--max-prompts 10` (quick smoke run)
-- `--preset weekly-dive` (force one preset)
-- `--project <name>`
-- `--embed ollama/nomic-embed-text`
-- `--print-json`
-- `--fail-on-errors`
-
-Outputs:
-
-- JSON report: `tests/output/reason-eval/reason-quality-eval-<timestamp>.json`
-- Markdown report: `tests/output/reason-eval/reason-quality-eval-<timestamp>.md`
-
----
-
-## Baseline results template
-
-Use this section to capture first accepted baseline:
-
-```md
-## Baseline Run — YYYY-MM-DD HH:MM UTC
-
-- Command:
-  - `python3 scripts/reason_quality_eval.py ...`
-- Fixture version:
-  - `reason-quality-eval-pack-v1`
-- Model:
-  - `<provider/model>`
-- Prompt count:
-  - `40`
-
-### Summary
-- Suite passed: `<true|false>`
-- Pass rate: `<x.xx>`
-- Average overall score: `<x.xx>`
-
-### Metric averages
-- grounding_score: `<x.xx>`
-- actionability_score: `<x.xx>`
-- contradiction_handling_score: `<x.xx>`
-- concise_clarity_score: `<x.xx>`
-
-### Notes
-- `<major misses / regressions>`
-- `<follow-up actions>`
-
-### Artifacts
-- JSON: `<path or artifact link>`
-- Markdown: `<path or artifact link>`
-```
-
----
-
-## Optional CI/nightly trend tracking
-
-Workflow file: `.github/workflows/reason-quality-eval-nightly.yml`
-
-Behavior:
-
-- Runs on nightly schedule + manual dispatch
-- Builds `cortex`
-- Executes eval pack (or dry-run when model key is unavailable)
-- Uploads JSON/Markdown artifacts for trend history
+For nightly/local models, swap `--model` to an Ollama model (e.g., `phi4-mini`) and keep the same fixture.

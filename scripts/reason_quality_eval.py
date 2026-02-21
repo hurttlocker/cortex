@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Reason Quality Eval Pack (v1).
+"""First-pass reason quality evaluation pack for `cortex reason`.
 
-Runs `cortex reason` across fixture prompts and computes deterministic heuristic metrics:
-- grounding_score (evidence presence + relevance)
-- actionability_score (clear next steps)
-- contradiction_handling_score
-- concise_clarity_score
+Runs a fixture of prompts against the local cortex CLI, scores each answer on:
+- actionability
+- factual grounding / citation behavior
+- contradiction handling
+- usefulness
 
-Outputs both JSON and Markdown reports with pass/fail summary.
+Outputs a JSON report with per-case pass/fail and suite summary metrics.
 """
 
 from __future__ import annotations
@@ -18,299 +18,472 @@ import re
 import statistics
 import subprocess
 import sys
-from dataclasses import dataclass
-from datetime import datetime, timezone
+import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, List, Tuple
 
-METRICS = [
-    "grounding_score",
-    "actionability_score",
-    "contradiction_handling_score",
-    "concise_clarity_score",
+DIMENSIONS = [
+    "actionability",
+    "factual_grounding",
+    "contradiction_handling",
+    "usefulness",
 ]
 
-DEFAULT_WEIGHTS: Dict[str, float] = {
-    "grounding_score": 0.30,
-    "actionability_score": 0.30,
-    "contradiction_handling_score": 0.20,
-    "concise_clarity_score": 0.20,
+METRIC_ALIASES = {
+    "actionability": "actionability",
+    "actionability_score": "actionability",
+    "factual_grounding": "factual_grounding",
+    "grounding": "factual_grounding",
+    "grounding_score": "factual_grounding",
+    "contradiction_handling": "contradiction_handling",
+    "contradiction_handling_score": "contradiction_handling",
+    "usefulness": "usefulness",
+    "concise_clarity": "usefulness",
+    "concise_clarity_score": "usefulness",
 }
 
-DEFAULT_MINIMUMS: Dict[str, float] = {
-    "grounding_score": 0.60,
-    "actionability_score": 0.60,
-    "contradiction_handling_score": 0.55,
-    "concise_clarity_score": 0.60,
+DEFAULT_WEIGHTS = {
+    "actionability": 0.30,
+    "factual_grounding": 0.30,
+    "contradiction_handling": 0.15,
+    "usefulness": 0.25,
 }
 
-DEFAULT_OVERALL_PASS = 0.70
-DEFAULT_PASS_RATE = 0.75
+DEFAULT_MIN_SCORES = {
+    "actionability": 0.55,
+    "factual_grounding": 0.50,
+    "contradiction_handling": 0.50,
+    "usefulness": 0.60,
+}
 
-DEFAULT_GROUNDING_TERMS = ["source", "memory", "fact", "evidence", "confidence", "provenance"]
-DEFAULT_ACTION_TERMS = ["next step", "priority", "owner", "timeline", "recommend", "plan"]
-DEFAULT_CONTRADICTION_TERMS = ["conflict", "contradiction", "inconsistent", "trade-off", "verify", "uncertain"]
-DEFAULT_CLARITY_TERMS = ["summary", "clear", "concise", "key points", "bullets"]
+ACTION_TERMS = [
+    "next step",
+    "next steps",
+    "recommend",
+    "recommendation",
+    "do this",
+    "ship",
+    "implement",
+    "fix",
+    "owner",
+    "timeline",
+    "priority",
+    "follow-up",
+    "mitigation",
+]
 
-STOPWORDS = {
-    "the",
-    "and",
-    "for",
-    "that",
-    "with",
-    "this",
+GROUNDING_TERMS = [
+    "source",
+    "sources",
+    "fact",
+    "facts",
+    "memory",
+    "memories",
+    "confidence",
+    "evidence",
+    "according",
     "from",
-    "into",
-    "what",
-    "when",
-    "where",
-    "which",
-    "should",
-    "have",
-    "has",
-    "are",
-    "was",
-    "were",
-    "will",
-    "would",
-    "your",
-    "about",
-    "across",
-    "today",
-    "week",
-    "than",
-    "then",
-    "them",
-    "they",
-    "them",
-    "over",
-    "only",
-    "also",
-}
+    "based on",
+    "provenance",
+]
 
-WORD_RE = re.compile(r"\b[a-zA-Z0-9][a-zA-Z0-9_\-'/]*\b")
+CONTRADICTION_TERMS = [
+    "contradiction",
+    "contradict",
+    "conflict",
+    "inconsistent",
+    "mismatch",
+    "however",
+    "on the other hand",
+    "trade-off",
+    "uncertain",
+    "cannot verify",
+]
+
+RESOLUTION_TERMS = [
+    "resolve",
+    "reconcile",
+    "supersede",
+    "verify",
+    "confirm",
+    "deprecate",
+    "follow up",
+]
+
+USEFULNESS_TERMS = [
+    "summary",
+    "impact",
+    "risk",
+    "recommendation",
+    "decision",
+    "priority",
+    "why",
+    "because",
+]
+
+CONTRADICTION_PROMPT_HINT = re.compile(
+    r"\b(conflict|contradict|inconsistent|mismatch|trade[- ]off|disagree)\b",
+    re.IGNORECASE,
+)
+
+WORD_RE = re.compile(r"\b\w+\b")
 BULLET_RE = re.compile(r"(?m)^\s*(?:[-*]|\d+\.)\s+")
-HEADING_RE = re.compile(r"(?m)^\s*(?:#{1,4}\s+|\*\*[^*]+\*\*)")
-SOURCE_RE = re.compile(r"(?i)(source\s*:|memory/[^\s#]+#L\d+|[\w./-]+\.(?:md|json|go|py):\d+)")
-SENTENCE_SPLIT_RE = re.compile(r"[.!?]+\s+")
-CONTRADICTION_HINT_RE = re.compile(r"\b(conflict|contradict|mismatch|inconsisten|trade-?off|disagree|uncertain)\b", re.IGNORECASE)
-OWNER_TIME_RE = re.compile(r"\b(owner|by\s+\w+|today|tomorrow|this\s+week|next\s+week|deadline|due)\b", re.IGNORECASE)
-
-
-@dataclass
-class RunResult:
-    returncode: int
-    elapsed_ms: int
-    cmd: List[str]
-    stdout: str
-    stderr: str
-    payload: Dict[str, Any] | None = None
+HEADING_RE = re.compile(r"(?m)^\s*(?:#{1,3}\s+|\*\*[^*]+\*\*)")
+DATE_OWNER_RE = re.compile(
+    r"\b(owner|who|by\s+\w+|today|tomorrow|this week|next week|next sprint|due)\b",
+    re.IGNORECASE,
+)
+CONFIDENCE_RE = re.compile(r"\[[01]\.\d{2}\]")
+FILE_LINE_RE = re.compile(r"\b[\w./-]+\.(?:md|txt|json|yaml|yml|go|py):\d+\b", re.IGNORECASE)
+NUMERIC_SPEC_RE = re.compile(r"\b\d+(?:\.\d+)?%?\b")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run reason quality eval pack and emit JSON + Markdown reports")
-    parser.add_argument("--binary", default="./cortex", help="Path to cortex binary")
-    parser.add_argument("--fixture", default="tests/fixtures/reason/eval-set-v1.json", help="Fixture JSON path")
-    parser.add_argument("--output-dir", default="tests/output/reason-eval", help="Directory for timestamped reports")
-    parser.add_argument("--json-output", help="Optional explicit JSON output path")
-    parser.add_argument("--markdown-output", help="Optional explicit Markdown output path")
-    parser.add_argument("--db", help="Optional cortex DB path")
-    parser.add_argument("--model", help="Model override passthrough to cortex reason")
-    parser.add_argument("--embed", help="Embedding provider/model passthrough")
-    parser.add_argument("--preset", help="Preset override for all prompts")
-    parser.add_argument("--project", help="Project override for all prompts")
-    parser.add_argument("--timeout-sec", type=int, default=300, help="Per-prompt timeout")
-    parser.add_argument("--max-prompts", type=int, default=0, help="Run only first N prompts")
-    parser.add_argument("--fail-on-errors", action="store_true", help="Mark suite failed when any prompt command errors")
-    parser.add_argument("--print-json", action="store_true", help="Print full JSON report to stdout")
-    parser.add_argument("--dry-run", action="store_true", help="Validate fixture and print execution plan without running")
-    parser.add_argument("--verbose", action="store_true", help="Print progress to stderr")
-    return parser.parse_args()
+    ap = argparse.ArgumentParser(description="Reason quality evaluation harness")
+    ap.add_argument("--binary", default="./cortex", help="Path to cortex binary")
+    ap.add_argument(
+        "--fixture",
+        default="tests/fixtures/reason/eval-set-v1.json",
+        help="Reason eval fixture JSON",
+    )
+    ap.add_argument("--db", help="Optional cortex DB path")
+    ap.add_argument("--model", help="Override model (provider/model or local model)")
+    ap.add_argument("--embed", help="Optional embed provider/model")
+    ap.add_argument("--preset", help="Override preset for all cases")
+    ap.add_argument("--project", help="Override project for all cases")
+    ap.add_argument("--max-cases", type=int, default=0, help="Run only first N cases")
+    ap.add_argument("--max-prompts", type=int, default=0, help="Alias for --max-cases")
+    ap.add_argument("--timeout-sec", type=int, default=240, help="Per-case timeout")
+    ap.add_argument("--output", help="Optional report output path")
+    ap.add_argument("--output-dir", help="Optional directory to write timestamped JSON+Markdown reports")
+    ap.add_argument("--dry-run", action="store_true", help="Validate fixture and print plan only")
+    ap.add_argument(
+        "--case-min-overall",
+        type=float,
+        help="Override per-case minimum overall score threshold",
+    )
+    ap.add_argument(
+        "--suite-min-pass-rate",
+        type=float,
+        help="Override suite minimum pass rate threshold",
+    )
+    ap.add_argument(
+        "--fail-on-errors",
+        action="store_true",
+        help="Fail suite if any command/runtime errors occur",
+    )
+    ap.add_argument("--verbose", action="store_true", help="Progress logging to stderr")
+    return ap.parse_args()
 
 
-def clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
-    return max(lo, min(hi, value))
+def normalize_metric_key(key: str) -> str:
+    return METRIC_ALIASES.get(key, key)
 
 
-def to_words(text: str) -> List[str]:
-    return [w.lower() for w in WORD_RE.findall(text)]
-
-
-def unique_hits(text: str, terms: Iterable[str]) -> List[str]:
-    lower = text.lower()
-    found = []
-    for term in terms:
-        t = term.lower()
-        if t and t in lower:
-            found.append(term)
-    return sorted(set(found))
-
-
-def relevance_overlap(prompt: str, response: str) -> float:
-    p_tokens = [t for t in to_words(prompt) if len(t) > 3 and t not in STOPWORDS]
-    if not p_tokens:
-        return 0.0
-    r_set = set(to_words(response))
-    overlap = len({t for t in p_tokens if t in r_set})
-    return clamp(overlap / float(len(set(p_tokens))))
-
-
-def get_metric_signal(case: Dict[str, Any], key: str, default_terms: List[str]) -> Dict[str, Any]:
-    expected = case.get("expected_signals", {})
-    signal = expected.get(key, {})
-    out = dict(signal)
-    out.setdefault("must_include_any", default_terms)
-    out.setdefault("min_hits", 1)
+def normalize_metric_map(values: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for k, v in (values or {}).items():
+        out[normalize_metric_key(str(k))] = v
     return out
 
 
-def metric_minimum(case: Dict[str, Any], metric: str, fixture_mins: Dict[str, float]) -> float:
-    expected = case.get("expected_signals", {})
-    by_metric = expected.get(metric.replace("_score", ""), {})
-    if "min_score" in by_metric:
-        return float(by_metric["min_score"])
-    return float(fixture_mins.get(metric, DEFAULT_MINIMUMS[metric]))
+def load_fixture(path: Path) -> Dict[str, Any]:
+    data = json.loads(path.read_text())
+
+    if "cases" not in data and "prompts" in data:
+        data["cases"] = data["prompts"]
+
+    if "cases" not in data or not isinstance(data["cases"], list):
+        raise ValueError("fixture must contain a 'cases' array (or legacy 'prompts' array)")
+    if len(data["cases"]) == 0:
+        raise ValueError("fixture has no cases")
+
+    return data
 
 
-def contradiction_required(case: Dict[str, Any], signal: Dict[str, Any]) -> bool:
-    if "required" in signal:
-        return bool(signal["required"])
-    return bool(CONTRADICTION_HINT_RE.search(case.get("prompt", "")))
+def normalize_text(s: str) -> str:
+    return s.lower()
 
 
-def score_grounding(case: Dict[str, Any], text: str, payload: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
-    signal = get_metric_signal(case, "grounding", DEFAULT_GROUNDING_TERMS)
-    terms = signal["must_include_any"]
-    min_hits = max(1, int(signal.get("min_hits", 1)))
+def unique_hits(text: str, terms: List[str]) -> List[str]:
+    seen = []
+    t = normalize_text(text)
+    for term in terms:
+        if term.lower() in t:
+            seen.append(term)
+    return sorted(set(seen))
 
+
+def keyword_score(text: str, cfg: Dict[str, Any], fallback_terms: List[str]) -> Tuple[float, Dict[str, Any]]:
+    terms = cfg.get("must_include_any", fallback_terms)
+    min_hits = max(1, int(cfg.get("min_hits", 1)))
     hits = unique_hits(text, terms)
-    citation_hits = len(SOURCE_RE.findall(text))
-    memories_used = int(payload.get("memories_used", 0) or 0)
-    facts_used = int(payload.get("facts_used", 0) or 0)
-
-    evidence_presence = 0.0
-    evidence_presence += 0.50 * clamp(len(hits) / float(min_hits))
-    evidence_presence += 0.25 * clamp(citation_hits / 1.0)
-    evidence_presence += 0.15 * (1.0 if memories_used > 0 else 0.0)
-    evidence_presence += 0.10 * (1.0 if facts_used > 0 else 0.0)
-
-    relevance = relevance_overlap(case.get("prompt", ""), text)
-    score = clamp(0.60 * evidence_presence + 0.40 * relevance)
-
+    score = min(1.0, len(hits) / float(min_hits))
     return score, {
-        "signal_hits": hits,
-        "signal_hit_count": len(hits),
-        "signal_min_hits": min_hits,
-        "citation_hits": citation_hits,
-        "memories_used": memories_used,
-        "facts_used": facts_used,
-        "evidence_presence": round(evidence_presence, 4),
-        "relevance": round(relevance, 4),
+        "hits": hits,
+        "hit_count": len(hits),
+        "min_hits": min_hits,
+        "terms": terms,
     }
 
 
-def score_actionability(case: Dict[str, Any], text: str) -> Tuple[float, Dict[str, Any]]:
-    signal = get_metric_signal(case, "actionability", DEFAULT_ACTION_TERMS)
-    terms = signal["must_include_any"]
-    min_hits = max(1, int(signal.get("min_hits", 1)))
+def to_rubric(score: float) -> int:
+    if score >= 0.85:
+        return 3
+    if score >= 0.65:
+        return 2
+    if score >= 0.40:
+        return 1
+    return 0
 
-    hits = unique_hits(text, terms)
+
+def score_actionability(text: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    kw, kw_detail = keyword_score(text, cfg, ACTION_TERMS)
+    t = normalize_text(text)
+
     bullets = len(BULLET_RE.findall(text))
-    owner_time = bool(OWNER_TIME_RE.search(text))
+    action_hits = len(unique_hits(text, ACTION_TERMS))
+    has_owner_or_time = bool(DATE_OWNER_RE.search(t))
 
-    term_score = clamp(len(hits) / float(min_hits))
-    structure_score = 1.0 if bullets >= 3 else 0.65 if bullets >= 1 else 0.20
-    ownership_score = 1.0 if owner_time else 0.0
+    heur = 0.0
+    heur += 0.35 if bullets >= 2 else 0.20 if bullets == 1 else 0.0
+    heur += 0.35 if action_hits >= 3 else 0.20 if action_hits > 0 else 0.0
+    heur += 0.30 if has_owner_or_time else 0.0
+    heur = min(1.0, heur)
 
-    score = clamp(0.55 * term_score + 0.30 * structure_score + 0.15 * ownership_score)
-
-    return score, {
-        "signal_hits": hits,
-        "signal_hit_count": len(hits),
-        "signal_min_hits": min_hits,
-        "bullet_lines": bullets,
-        "owner_or_timeline_detected": owner_time,
+    score = 0.60 * kw + 0.40 * heur
+    return {
+        "score": round(score, 4),
+        "rubric_score": to_rubric(score),
+        "details": {
+            **kw_detail,
+            "keyword_score": round(kw, 4),
+            "heuristic_score": round(heur, 4),
+            "bullet_lines": bullets,
+            "action_term_hits": action_hits,
+            "owner_or_time_detected": has_owner_or_time,
+        },
     }
 
 
-def score_contradiction(case: Dict[str, Any], text: str) -> Tuple[float, bool, Dict[str, Any]]:
-    signal = get_metric_signal(case, "contradiction_handling", DEFAULT_CONTRADICTION_TERMS)
-    terms = signal["must_include_any"]
-    min_hits = max(1, int(signal.get("min_hits", 1)))
-    required = contradiction_required(case, signal)
+def score_factual_grounding(text: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    kw, kw_detail = keyword_score(text, cfg, GROUNDING_TERMS)
+    t = normalize_text(text)
 
+    confidence_tags = len(CONFIDENCE_RE.findall(text))
+    file_line_mentions = len(FILE_LINE_RE.findall(text))
+    provenance_hits = len(unique_hits(text, ["source", "fact", "memory", "evidence", "provenance"]))
+    uncertainty_hits = len(unique_hits(text, ["confidence", "likely", "uncertain", "unknown", "cannot verify"]))
+
+    heur = 0.0
+    heur += 0.50 if (confidence_tags + file_line_mentions) >= 2 else 0.30 if (confidence_tags + file_line_mentions) >= 1 else 0.0
+    heur += 0.30 if provenance_hits >= 2 else 0.15 if provenance_hits == 1 else 0.0
+    heur += 0.20 if uncertainty_hits >= 1 else 0.0
+    heur = min(1.0, heur)
+
+    score = 0.65 * kw + 0.35 * heur
+    return {
+        "score": round(score, 4),
+        "rubric_score": to_rubric(score),
+        "details": {
+            **kw_detail,
+            "keyword_score": round(kw, 4),
+            "heuristic_score": round(heur, 4),
+            "confidence_tags": confidence_tags,
+            "file_line_mentions": file_line_mentions,
+            "provenance_hits": provenance_hits,
+            "uncertainty_hits": uncertainty_hits,
+            "contains_from_phrase": "from" in t,
+        },
+    }
+
+
+def contradiction_required(prompt: str, cfg: Dict[str, Any]) -> bool:
+    if "required" in cfg:
+        return bool(cfg["required"])
+    return bool(CONTRADICTION_PROMPT_HINT.search(prompt))
+
+
+def score_contradiction_handling(prompt: str, text: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    required = contradiction_required(prompt, cfg)
     if not required:
-        return 1.0, False, {"required": False, "note": "not required for this prompt"}
+        return {
+            "score": 1.0,
+            "rubric_score": 3,
+            "required": False,
+            "details": {"mode": "not-required"},
+        }
 
-    hits = unique_hits(text, terms)
-    uncertainty_hits = unique_hits(text, ["uncertain", "cannot verify", "needs verification", "confidence"])
-    resolution_hits = unique_hits(text, ["resolve", "reconcile", "verify", "supersede", "mitigation"])
+    kw, kw_detail = keyword_score(text, cfg, CONTRADICTION_TERMS)
+    contradiction_hits = len(unique_hits(text, CONTRADICTION_TERMS))
+    resolution_hits = len(unique_hits(text, RESOLUTION_TERMS))
+    uncertainty_hits = len(unique_hits(text, ["uncertain", "cannot verify", "unknown", "confidence"]))
 
-    term_score = clamp(len(hits) / float(min_hits))
-    uncertainty_score = clamp(len(uncertainty_hits) / 1.0)
-    resolution_score = clamp(len(resolution_hits) / 1.0)
+    heur = 0.0
+    heur += 0.50 if resolution_hits >= 1 else 0.20
+    heur += 0.30 if uncertainty_hits >= 1 else 0.0
+    heur += 0.20 if contradiction_hits >= 2 else 0.10 if contradiction_hits == 1 else 0.0
+    heur = min(1.0, heur)
 
-    score = clamp(0.50 * term_score + 0.25 * uncertainty_score + 0.25 * resolution_score)
-    return score, True, {
+    score = 0.70 * kw + 0.30 * heur
+    return {
+        "score": round(score, 4),
+        "rubric_score": to_rubric(score),
         "required": True,
-        "signal_hits": hits,
-        "signal_hit_count": len(hits),
-        "signal_min_hits": min_hits,
-        "uncertainty_hits": uncertainty_hits,
-        "resolution_hits": resolution_hits,
+        "details": {
+            **kw_detail,
+            "keyword_score": round(kw, 4),
+            "heuristic_score": round(heur, 4),
+            "contradiction_hits": contradiction_hits,
+            "resolution_hits": resolution_hits,
+            "uncertainty_hits": uncertainty_hits,
+        },
     }
 
 
-def score_concise_clarity(case: Dict[str, Any], text: str) -> Tuple[float, Dict[str, Any]]:
-    signal = get_metric_signal(case, "concise_clarity", DEFAULT_CLARITY_TERMS)
-    terms = signal["must_include_any"]
-    min_hits = max(1, int(signal.get("min_hits", 1)))
-    min_words = int(signal.get("min_words", 80))
-    max_words = int(signal.get("max_words", 280))
+def score_usefulness(text: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    kw, kw_detail = keyword_score(text, cfg, USEFULNESS_TERMS)
 
-    words = to_words(text)
-    word_count = len(words)
-    hits = unique_hits(text, terms)
-
-    if min_words <= word_count <= max_words:
-        length_score = 1.0
-    elif word_count < min_words:
-        length_score = clamp(word_count / float(max(1, min_words)))
-    else:
-        length_score = clamp(max_words / float(max(1, word_count)))
+    words = len(WORD_RE.findall(text))
+    min_words = max(40, int(cfg.get("min_words", 100)))
+    word_score = min(1.0, words / float(min_words))
 
     headings = len(HEADING_RE.findall(text))
     bullets = len(BULLET_RE.findall(text))
-    structure_score = 1.0 if headings >= 1 and bullets >= 1 else 0.75 if bullets >= 1 else 0.45
+    specificity = len(NUMERIC_SPEC_RE.findall(text))
+    summary_hits = len(unique_hits(text, ["summary", "recommend", "risk", "impact", "decision"]))
 
-    sentences = [s.strip() for s in SENTENCE_SPLIT_RE.split(text.strip()) if s.strip()]
-    avg_sentence_words = statistics.fmean([len(to_words(s)) for s in sentences]) if sentences else 0.0
-    sentence_score = 1.0 if avg_sentence_words and avg_sentence_words <= 22 else 0.75 if avg_sentence_words <= 30 else 0.45
+    heur = 0.0
+    heur += 0.25 if headings >= 1 else 0.0
+    heur += 0.25 if bullets >= 3 else 0.10 if bullets >= 1 else 0.0
+    heur += 0.25 if specificity >= 2 else 0.10 if specificity >= 1 else 0.0
+    heur += 0.25 if summary_hits >= 2 else 0.10 if summary_hits == 1 else 0.0
+    heur = min(1.0, heur)
 
-    term_score = clamp(len(hits) / float(min_hits))
-
-    score = clamp(0.35 * length_score + 0.30 * structure_score + 0.20 * sentence_score + 0.15 * term_score)
-    return score, {
-        "signal_hits": hits,
-        "signal_hit_count": len(hits),
-        "signal_min_hits": min_hits,
-        "word_count": word_count,
-        "min_words": min_words,
-        "max_words": max_words,
-        "headings": headings,
-        "bullet_lines": bullets,
-        "avg_sentence_words": round(avg_sentence_words, 2),
-        "length_score": round(length_score, 4),
-        "structure_score": round(structure_score, 4),
-        "sentence_score": round(sentence_score, 4),
+    score = 0.40 * word_score + 0.35 * kw + 0.25 * heur
+    return {
+        "score": round(score, 4),
+        "rubric_score": to_rubric(score),
+        "details": {
+            **kw_detail,
+            "keyword_score": round(kw, 4),
+            "word_score": round(word_score, 4),
+            "heuristic_score": round(heur, 4),
+            "word_count": words,
+            "min_words": min_words,
+            "headings": headings,
+            "bullet_lines": bullets,
+            "specificity_tokens": specificity,
+        },
     }
 
 
-def parse_reason_payload(stdout: str) -> Dict[str, Any]:
-    try:
-        return json.loads(stdout)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid JSON from cortex reason: {exc}") from exc
+def signal_cfg(signals: Dict[str, Any], dim: str) -> Dict[str, Any]:
+    candidates = [dim]
+    if dim == "factual_grounding":
+        candidates.extend(["grounding", "grounding_score", "factual_grounding_score"])
+    elif dim == "usefulness":
+        candidates.extend(["concise_clarity", "concise_clarity_score", "usefulness_score"])
+    elif dim == "actionability":
+        candidates.append("actionability_score")
+    elif dim == "contradiction_handling":
+        candidates.append("contradiction_handling_score")
+
+    for key in candidates:
+        if key in signals and isinstance(signals[key], dict):
+            return signals[key]
+    return {}
+
+
+def evaluate_case(
+    case: Dict[str, Any],
+    content: str,
+    weights: Dict[str, float],
+    case_min_overall: float,
+) -> Dict[str, Any]:
+    signals = case.get("expected_signals", {})
+
+    dims: Dict[str, Dict[str, Any]] = {}
+    dims["actionability"] = score_actionability(content, signal_cfg(signals, "actionability"))
+    dims["factual_grounding"] = score_factual_grounding(content, signal_cfg(signals, "factual_grounding"))
+    dims["contradiction_handling"] = score_contradiction_handling(
+        case.get("prompt", ""), content, signal_cfg(signals, "contradiction_handling")
+    )
+    dims["usefulness"] = score_usefulness(content, signal_cfg(signals, "usefulness"))
+
+    weighted_total = 0.0
+    weight_sum = 0.0
+    hard_failures = []
+
+    for dim in DIMENSIONS:
+        w = float(weights.get(dim, DEFAULT_WEIGHTS[dim]))
+        weight_sum += w
+        weighted_total += dims[dim]["score"] * w
+
+        cfg = signal_cfg(signals, dim)
+        required = dims[dim].get("required", True)
+        min_score = float(cfg.get("min_score", DEFAULT_MIN_SCORES[dim]))
+        passed_dim = (not required) or (dims[dim]["score"] >= min_score)
+        dims[dim]["min_score"] = min_score
+        dims[dim]["passed"] = bool(passed_dim)
+        if required and not passed_dim:
+            hard_failures.append({"dimension": dim, "score": dims[dim]["score"], "min": min_score})
+
+    overall = weighted_total / weight_sum if weight_sum > 0 else 0.0
+    passed = overall >= case_min_overall and len(hard_failures) == 0
+
+    return {
+        "overall_score": round(overall, 4),
+        "overall_rubric_score": to_rubric(overall),
+        "case_min_overall": case_min_overall,
+        "passed": passed,
+        "hard_failures": hard_failures,
+        "dimension_scores": dims,
+    }
+
+
+def merge_reason_args(defaults: Dict[str, Any], case: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(defaults)
+    out.update(case)
+    return out
+
+
+def render_markdown_report(report: Dict[str, Any]) -> str:
+    summary = report.get("summary", {})
+    lines = []
+    lines.append(f"# Reason Quality Eval Report — {report.get('fixture', 'unknown')}")
+    lines.append("")
+    lines.append(f"- Started: `{report.get('started_at')}`")
+    lines.append(f"- Finished: `{report.get('finished_at')}`")
+    lines.append(f"- Suite passed: **{summary.get('passed')}**")
+    lines.append(f"- Pass rate: **{summary.get('pass_rate')}**")
+    lines.append(f"- Avg overall score: **{summary.get('average_overall_score')}**")
+    lines.append("")
+    lines.append("## Dimension averages")
+    for dim, value in (summary.get("dimension_averages") or {}).items():
+        lines.append(f"- `{dim}`: **{value}**")
+    lines.append("")
+
+    failures = [r for r in report.get("results", []) if not r.get("passed")]
+    lines.append(f"## Failures ({len(failures)})")
+    if not failures:
+        lines.append("- None")
+    else:
+        for r in failures[:20]:
+            rid = r.get("id", "unknown")
+            if "error" in r:
+                lines.append(f"- `{rid}` error: {r.get('error')}")
+            else:
+                lines.append(
+                    f"- `{rid}` overall={r.get('overall_score')} hard_failures={len(r.get('hard_failures', []))}"
+                )
+    lines.append("")
+    lines.append("## Top sample results")
+    for r in report.get("results", [])[:10]:
+        rid = r.get("id", "unknown")
+        lines.append(f"- `{rid}` passed={r.get('passed')} overall={r.get('overall_score', 'n/a')}")
+
+    return "\n".join(lines) + "\n"
 
 
 def run_reason(
@@ -323,7 +496,7 @@ def run_reason(
     embed: str | None,
     reason_args: Dict[str, Any],
     timeout_sec: int,
-) -> RunResult:
+) -> Dict[str, Any]:
     cmd = [binary]
     if db:
         cmd.extend(["--db", db])
@@ -350,322 +523,248 @@ def run_reason(
     if "max_tokens" in reason_args:
         cmd.extend(["--max-tokens", str(reason_args["max_tokens"])])
 
-    started = datetime.now(tz=timezone.utc)
+    started = time.time()
+    cp = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout_sec)
+    elapsed_ms = int((time.time() - started) * 1000)
+
+    result: Dict[str, Any] = {
+        "cmd": cmd,
+        "elapsed_ms": elapsed_ms,
+        "returncode": cp.returncode,
+        "stdout": cp.stdout,
+        "stderr": cp.stderr,
+    }
+
+    if cp.returncode != 0:
+        return result
+
     try:
-        cp = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout_sec)
-    except subprocess.TimeoutExpired as exc:
-        elapsed = int((datetime.now(tz=timezone.utc) - started).total_seconds() * 1000)
-        return RunResult(
-            returncode=124,
-            elapsed_ms=elapsed,
-            cmd=cmd,
-            stdout=exc.stdout or "",
-            stderr=f"timeout after {timeout_sec}s",
-            payload=None,
-        )
+        payload = json.loads(cp.stdout)
+    except json.JSONDecodeError as exc:
+        result["returncode"] = 2
+        result["stderr"] = f"failed to parse JSON output: {exc}"
+        return result
 
-    elapsed = int((datetime.now(tz=timezone.utc) - started).total_seconds() * 1000)
-    payload = None
-    if cp.returncode == 0:
-        try:
-            payload = parse_reason_payload(cp.stdout)
-        except ValueError as exc:
-            return RunResult(cp.returncode, elapsed, cmd, cp.stdout, str(exc), None)
-
-    return RunResult(cp.returncode, elapsed, cmd, cp.stdout, cp.stderr, payload)
-
-
-def evaluate_case(
-    case: Dict[str, Any],
-    payload: Dict[str, Any],
-    mins: Dict[str, float],
-    weights: Dict[str, float],
-    overall_pass_score: float,
-) -> Dict[str, Any]:
-    content = str(payload.get("content", ""))
-
-    grounding_score, grounding_detail = score_grounding(case, content, payload)
-    actionability_score, actionability_detail = score_actionability(case, content)
-    contradiction_score, contradiction_required_flag, contradiction_detail = score_contradiction(case, content)
-    concise_score, concise_detail = score_concise_clarity(case, content)
-
-    metrics = {
-        "grounding_score": grounding_score,
-        "actionability_score": actionability_score,
-        "contradiction_handling_score": contradiction_score,
-        "concise_clarity_score": concise_score,
-    }
-
-    weighted = 0.0
-    weight_sum = 0.0
-    for m in METRICS:
-        w = float(weights.get(m, DEFAULT_WEIGHTS[m]))
-        weight_sum += w
-        weighted += metrics[m] * w
-    overall = weighted / weight_sum if weight_sum else 0.0
-
-    metric_failures = []
-    for metric in METRICS:
-        if metric == "contradiction_handling_score" and not contradiction_required_flag:
-            continue
-        min_score = float(mins.get(metric, DEFAULT_MINIMUMS[metric]))
-        if metrics[metric] < min_score:
-            metric_failures.append({"metric": metric, "score": round(metrics[metric], 4), "min": min_score})
-
-    passed = (overall >= overall_pass_score) and not metric_failures
-
-    return {
-        "passed": passed,
-        "overall_score": round(overall, 4),
-        "metric_scores": {k: round(v, 4) for k, v in metrics.items()},
-        "metric_failures": metric_failures,
-        "details": {
-            "grounding": grounding_detail,
-            "actionability": actionability_detail,
-            "contradiction_handling": contradiction_detail,
-            "concise_clarity": concise_detail,
-        },
-        "reason_output_meta": {
-            "provider": payload.get("provider"),
-            "model": payload.get("model"),
-            "tokens_in": payload.get("tokens_in"),
-            "tokens_out": payload.get("tokens_out"),
-            "memories_used": payload.get("memories_used"),
-            "facts_used": payload.get("facts_used"),
-        },
-    }
-
-
-def render_markdown(report: Dict[str, Any], json_path: Path, md_path: Path) -> str:
-    s = report["summary"]
-    lines = []
-    lines.append("# Reason Quality Eval Report (v1)")
-    lines.append("")
-    lines.append(f"- **Generated:** {report['finished_at']}")
-    lines.append(f"- **Fixture:** `{report['fixture']}`")
-    lines.append(f"- **Prompts run:** {s['total_prompts']}")
-    lines.append(f"- **Suite passed:** {'✅ yes' if s['passed'] else '❌ no'}")
-    lines.append(f"- **Overall pass rate:** {s['pass_rate']:.2%} (threshold {s['thresholds']['pass_rate_min']:.2%})")
-    lines.append(f"- **Average overall score:** {s['average_overall_score']:.4f} (threshold {s['thresholds']['overall_pass_score']:.2f})")
-    lines.append("")
-    lines.append("## Metric Averages")
-    lines.append("")
-    lines.append("| Metric | Average | Minimum | Status |")
-    lines.append("|---|---:|---:|---|")
-    for metric in METRICS:
-        avg = s["metric_averages"].get(metric, 0.0)
-        minv = s["thresholds"]["metric_minimums"].get(metric, DEFAULT_MINIMUMS[metric])
-        status = "✅" if avg >= minv else "❌"
-        lines.append(f"| {metric} | {avg:.4f} | {minv:.4f} | {status} |")
-
-    lines.append("")
-    lines.append("## Prompt Outcomes")
-    lines.append("")
-    lines.append("| ID | Category | Pass | Overall | Grounding | Actionability | Contradiction | Concise/Clarity |")
-    lines.append("|---|---|---|---:|---:|---:|---:|---:|")
-    for item in report["results"]:
-        if "error" in item:
-            lines.append(
-                f"| {item['id']} | {item.get('category','-')} | ❌ | 0.0000 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |"
-            )
-            continue
-        m = item["metric_scores"]
-        status = "✅" if item.get("passed") else "❌"
-        lines.append(
-            f"| {item['id']} | {item.get('category','-')} | {status} | {item['overall_score']:.4f} | "
-            f"{m['grounding_score']:.4f} | {m['actionability_score']:.4f} | "
-            f"{m['contradiction_handling_score']:.4f} | {m['concise_clarity_score']:.4f} |"
-        )
-
-    lines.append("")
-    lines.append("## Artifacts")
-    lines.append("")
-    lines.append(f"- JSON: `{json_path}`")
-    lines.append(f"- Markdown: `{md_path}`")
-    lines.append("")
-    lines.append("## Notes")
-    lines.append("")
-    lines.append("- Scores are deterministic heuristics; no additional model grading is used.")
-    lines.append("- Prompt-level errors/timeouts are recorded and execution continues.")
-    return "\n".join(lines) + "\n"
-
-
-def load_fixture(path: Path) -> Dict[str, Any]:
-    data = json.loads(path.read_text())
-    prompts = data.get("prompts")
-    if not isinstance(prompts, list) or not prompts:
-        raise ValueError("fixture must contain a non-empty 'prompts' list")
-    for idx, p in enumerate(prompts):
-        if not p.get("id"):
-            raise ValueError(f"prompt at index {idx} missing 'id'")
-        if not p.get("prompt"):
-            raise ValueError(f"prompt {p.get('id', idx)} missing 'prompt'")
-        if not p.get("expected_signals"):
-            raise ValueError(f"prompt {p.get('id', idx)} missing 'expected_signals'")
-    return data
+    result["payload"] = payload
+    return result
 
 
 def main() -> int:
     args = parse_args()
     fixture_path = Path(args.fixture)
+
     fixture = load_fixture(fixture_path)
-
-    prompts = fixture["prompts"]
-    if args.max_prompts and args.max_prompts > 0:
-        prompts = prompts[: args.max_prompts]
-
-    if args.dry_run:
-        plan = {
-            "fixture": fixture.get("name", fixture_path.name),
-            "prompt_count": len(prompts),
-            "first_prompts": [
-                {
-                    "id": p["id"],
-                    "category": p.get("category"),
-                    "preset": args.preset or p.get("preset"),
-                    "prompt": p.get("prompt"),
-                }
-                for p in prompts[:5]
-            ],
-        }
-        print(json.dumps(plan, indent=2))
-        return 0
+    defaults = fixture.get("defaults", {})
+    fixture_reason_defaults = defaults.get("reason_args", {})
 
     weights = dict(DEFAULT_WEIGHTS)
-    weights.update(fixture.get("weights", {}))
+    fixture_weights = fixture.get("dimension_weights", fixture.get("weights", {}))
+    weights.update(normalize_metric_map(fixture_weights))
 
     thresholds = fixture.get("thresholds", {})
-    overall_pass_score = float(thresholds.get("overall_pass_score", DEFAULT_OVERALL_PASS))
-    pass_rate_min = float(thresholds.get("pass_rate_min", DEFAULT_PASS_RATE))
-    metric_mins = dict(DEFAULT_MINIMUMS)
-    metric_mins.update(thresholds.get("metric_minimums", {}))
+    case_floor_default = thresholds.get("case_min_overall", thresholds.get("overall_pass_score", 0.65))
+    pass_rate_default = thresholds.get("suite_min_pass_rate", thresholds.get("pass_rate_min", 0.70))
 
-    defaults = fixture.get("defaults", {})
-    default_reason_args = defaults.get("reason_args", {}) if isinstance(defaults, dict) else {}
+    case_min_overall = (
+        args.case_min_overall
+        if args.case_min_overall is not None
+        else float(case_floor_default)
+    )
+    suite_min_pass_rate = (
+        args.suite_min_pass_rate
+        if args.suite_min_pass_rate is not None
+        else float(pass_rate_default)
+    )
+    suite_dim_mins_raw = thresholds.get("dimension_min_average", thresholds.get("metric_minimums", {}))
+    suite_dim_mins = normalize_metric_map(dict(suite_dim_mins_raw))
 
-    started_at = datetime.now(tz=timezone.utc)
+    all_cases = fixture["cases"]
+    max_cases = args.max_cases if args.max_cases and args.max_cases > 0 else args.max_prompts
+    cases = all_cases[: max_cases] if max_cases and max_cases > 0 else all_cases
+
+    started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    if args.dry_run:
+        report = {
+            "fixture": fixture.get("name", fixture_path.name),
+            "dry_run": True,
+            "total_cases": len(cases),
+            "sample_cases": [
+                {
+                    "id": c.get("id"),
+                    "preset": args.preset or c.get("preset") or defaults.get("preset"),
+                    "prompt": c.get("prompt") or c.get("query"),
+                    "reason_args": merge_reason_args(fixture_reason_defaults, c.get("reason_args", {})),
+                }
+                for c in cases[:5]
+            ],
+            "thresholds": {
+                "case_min_overall": case_min_overall,
+                "suite_min_pass_rate": suite_min_pass_rate,
+                "dimension_min_average": suite_dim_mins,
+            },
+        }
+        text = json.dumps(report, indent=2)
+        print(text)
+        if args.output:
+            Path(args.output).write_text(text)
+        if args.output_dir:
+            out_dir = Path(args.output_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+            (out_dir / f"reason-quality-eval-dry-run-{ts}.json").write_text(text)
+        return 0
+
     results: List[Dict[str, Any]] = []
+    dimension_rollup = {d: [] for d in DIMENSIONS}
 
-    for idx, case in enumerate(prompts, start=1):
+    for idx, case in enumerate(cases, start=1):
+        case_id = case.get("id", f"case-{idx:03d}")
+        prompt = case.get("prompt") or case.get("query")
+        if not prompt:
+            results.append(
+                {
+                    "id": case_id,
+                    "passed": False,
+                    "error": "missing prompt/query",
+                }
+            )
+            continue
+
+        preset = args.preset or case.get("preset") or defaults.get("preset")
+        project = args.project or case.get("project") or defaults.get("project")
+        model = args.model or case.get("model")
+        embed = args.embed or case.get("embed")
+        reason_args = merge_reason_args(fixture_reason_defaults, case.get("reason_args", {}))
+
         if args.verbose:
-            print(f"[{idx}/{len(prompts)}] {case['id']}", file=sys.stderr)
-
-        reason_args = dict(default_reason_args)
-        reason_args.update(case.get("reason_args", {}))
+            print(f"[{idx}/{len(cases)}] {case_id}", file=sys.stderr)
 
         run = run_reason(
             binary=args.binary,
             db=args.db,
-            prompt=case["prompt"],
-            preset=args.preset or case.get("preset") or defaults.get("preset"),
-            project=args.project if args.project is not None else case.get("project") or defaults.get("project"),
-            model=args.model or case.get("model") or defaults.get("model"),
-            embed=args.embed or case.get("embed") or defaults.get("embed"),
+            prompt=prompt,
+            preset=preset,
+            project=project,
+            model=model,
+            embed=embed,
             reason_args=reason_args,
             timeout_sec=args.timeout_sec,
         )
 
-        base = {
-            "id": case["id"],
-            "category": case.get("category", ""),
-            "preset": args.preset or case.get("preset") or defaults.get("preset"),
-            "prompt": case["prompt"],
-            "elapsed_ms": run.elapsed_ms,
-            "cmd": run.cmd,
-        }
-
-        if run.returncode != 0 or run.payload is None:
-            base.update(
+        if run.get("returncode") != 0:
+            results.append(
                 {
+                    "id": case_id,
+                    "prompt": prompt,
                     "passed": False,
-                    "error": (run.stderr or "cortex reason failed").strip(),
-                    "returncode": run.returncode,
+                    "error": run.get("stderr", "reason command failed").strip(),
+                    "returncode": run.get("returncode"),
+                    "elapsed_ms": run.get("elapsed_ms"),
+                    "cmd": run.get("cmd"),
                 }
             )
-            results.append(base)
             continue
 
-        eval_result = evaluate_case(case, run.payload, metric_mins, weights, overall_pass_score)
-        base.update(eval_result)
-        results.append(base)
+        payload = run["payload"]
+        content = payload.get("content", "")
+        scored = evaluate_case(case, content, weights, case_min_overall)
+
+        for dim in DIMENSIONS:
+            dimension_rollup[dim].append(scored["dimension_scores"][dim]["score"])
+
+        results.append(
+            {
+                "id": case_id,
+                "prompt": prompt,
+                "preset": preset,
+                "project": project,
+                "passed": scored["passed"],
+                "overall_score": scored["overall_score"],
+                "overall_rubric_score": scored["overall_rubric_score"],
+                "case_min_overall": scored["case_min_overall"],
+                "hard_failures": scored["hard_failures"],
+                "dimension_scores": scored["dimension_scores"],
+                "provider": payload.get("provider"),
+                "model": payload.get("model"),
+                "tokens_in": payload.get("tokens_in"),
+                "tokens_out": payload.get("tokens_out"),
+                "duration_ns": payload.get("duration"),
+                "elapsed_ms": run.get("elapsed_ms"),
+            }
+        )
 
     total = len(results)
     passed = sum(1 for r in results if r.get("passed"))
     errors = sum(1 for r in results if "error" in r)
     failed = total - passed
-    pass_rate = (passed / total) if total else 0.0
+    pass_rate = (passed / float(total)) if total else 0.0
 
-    metric_averages: Dict[str, float] = {}
-    metric_threshold_failures: List[Dict[str, Any]] = []
-    scored = [r for r in results if "metric_scores" in r]
+    avg_overall = 0.0
+    scored_overall = [float(r["overall_score"]) for r in results if "overall_score" in r]
+    if scored_overall:
+        avg_overall = statistics.fmean(scored_overall)
 
-    for metric in METRICS:
-        vals = [float(r["metric_scores"][metric]) for r in scored]
-        avg = statistics.fmean(vals) if vals else 0.0
-        metric_averages[metric] = round(avg, 4)
-        minv = float(metric_mins.get(metric, DEFAULT_MINIMUMS[metric]))
-        if avg < minv:
-            metric_threshold_failures.append({"metric": metric, "avg": round(avg, 4), "min": minv})
+    dim_avgs: Dict[str, float] = {}
+    dim_threshold_failures = []
+    for dim in DIMENSIONS:
+        vals = dimension_rollup[dim]
+        dim_avgs[dim] = statistics.fmean(vals) if vals else 0.0
+        min_avg = float(suite_dim_mins.get(dim, 0.0))
+        if min_avg > 0 and dim_avgs[dim] < min_avg:
+            dim_threshold_failures.append(
+                {
+                    "dimension": dim,
+                    "avg": round(dim_avgs[dim], 4),
+                    "min_avg": min_avg,
+                }
+            )
 
-    overall_scores = [float(r.get("overall_score", 0.0)) for r in scored]
-    average_overall_score = statistics.fmean(overall_scores) if overall_scores else 0.0
-
-    suite_passed = pass_rate >= pass_rate_min and average_overall_score >= overall_pass_score and not metric_threshold_failures
+    suite_passed = pass_rate >= suite_min_pass_rate and len(dim_threshold_failures) == 0
     if args.fail_on_errors and errors > 0:
         suite_passed = False
 
-    finished_at = datetime.now(tz=timezone.utc)
+    finished_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
     report = {
         "fixture": fixture.get("name", fixture_path.name),
         "fixture_version": fixture.get("version"),
-        "started_at": started_at.isoformat(),
-        "finished_at": finished_at.isoformat(),
+        "started_at": started_at,
+        "finished_at": finished_at,
         "summary": {
-            "passed": suite_passed,
-            "total_prompts": total,
-            "passed_prompts": passed,
-            "failed_prompts": failed,
-            "error_prompts": errors,
+            "total_cases": total,
+            "passed_cases": passed,
+            "failed_cases": failed,
+            "error_cases": errors,
             "pass_rate": round(pass_rate, 4),
-            "average_overall_score": round(average_overall_score, 4),
-            "metric_averages": metric_averages,
-            "metric_threshold_failures": metric_threshold_failures,
+            "average_overall_score": round(avg_overall, 4),
+            "dimension_averages": {k: round(v, 4) for k, v in dim_avgs.items()},
             "thresholds": {
-                "overall_pass_score": overall_pass_score,
-                "pass_rate_min": pass_rate_min,
-                "metric_minimums": metric_mins,
-                "fail_on_errors": bool(args.fail_on_errors),
+                "case_min_overall": case_min_overall,
+                "suite_min_pass_rate": suite_min_pass_rate,
+                "dimension_min_average": suite_dim_mins,
+                "fail_on_errors": args.fail_on_errors,
             },
+            "dimension_threshold_failures": dim_threshold_failures,
+            "passed": suite_passed,
         },
         "results": results,
     }
 
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    out_text = json.dumps(report, indent=2)
+    print(out_text)
 
-    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d-%H%M%S")
-    json_path = Path(args.json_output) if args.json_output else output_dir / f"reason-quality-eval-{stamp}.json"
-    md_path = Path(args.markdown_output) if args.markdown_output else output_dir / f"reason-quality-eval-{stamp}.md"
+    if args.output:
+        Path(args.output).write_text(out_text)
 
-    json_path.write_text(json.dumps(report, indent=2) + "\n")
-    md_path.write_text(render_markdown(report, json_path, md_path))
-
-    print(
-        json.dumps(
-            {
-                "suite_passed": suite_passed,
-                "total_prompts": total,
-                "pass_rate": round(pass_rate, 4),
-                "average_overall_score": round(average_overall_score, 4),
-                "json_report": str(json_path),
-                "markdown_report": str(md_path),
-            },
-            indent=2,
-        )
-    )
-
-    if args.print_json:
-        print(json.dumps(report, indent=2))
+    if args.output_dir:
+        out_dir = Path(args.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+        json_path = out_dir / f"reason-quality-eval-{ts}.json"
+        md_path = out_dir / f"reason-quality-eval-{ts}.md"
+        json_path.write_text(out_text)
+        md_path.write_text(render_markdown_report(report))
 
     return 0 if suite_passed else 1
 
