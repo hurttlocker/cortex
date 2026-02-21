@@ -1,0 +1,42 @@
+name: Retrieval Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '15 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  retrieval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build cortex binary
+        run: go build -o /tmp/cortex-ci ./cmd/cortex
+
+      - name: Run deterministic retrieval gate
+        run: |
+          python3 scripts/retrieval_ci_gate.py \
+            --binary /tmp/cortex-ci \
+            --fixture tests/fixtures/retrieval/ci-gate.json \
+            --corpus tests/fixtures/retrieval/ci-corpus \
+            --mode keyword \
+            --min-pass-rate 1.0 \
+            --min-avg-precision 1.0 \
+            --max-total-noisy-top3 3 \
+            --output /tmp/retrieval-ci-gate-report.json
+
+      - name: Upload retrieval gate report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-gate-${{ github.run_id }}
+          path: /tmp/retrieval-ci-gate-report.json
+          if-no-files-found: error
+          retention-days: 30

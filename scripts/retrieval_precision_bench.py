@@ -3,9 +3,10 @@ import argparse
 import json
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 
-def run_search(binary: str, db: str, query: str, limit: int):
+def run_search(binary: str, db: str, query: str, limit: int, mode: str, embed: Optional[str]):
     cmd = [
         binary,
         "--db",
@@ -13,13 +14,13 @@ def run_search(binary: str, db: str, query: str, limit: int):
         "search",
         query,
         "--mode",
-        "hybrid",
-        "--embed",
-        "ollama/nomic-embed-text",
+        mode,
         "--limit",
         str(limit),
         "--json",
     ]
+    if embed:
+        cmd.extend(["--embed", embed])
     out = subprocess.check_output(cmd, text=True)
     return json.loads(out)
 
@@ -37,16 +38,25 @@ def main():
     ap.add_argument("--binary", required=True, help="Path to cortex binary")
     ap.add_argument("--db", required=True, help="Path to cortex.db")
     ap.add_argument("--fixture", required=True, help="Fixture JSON path")
+    ap.add_argument("--mode", default="hybrid", choices=["keyword", "semantic", "hybrid", "bm25"], help="Search mode")
+    ap.add_argument("--embed", default="ollama/nomic-embed-text", help="Embedding provider/model (required for semantic/hybrid)")
     ap.add_argument("--output", help="Optional output JSON report")
     args = ap.parse_args()
 
     fixture = json.loads(Path(args.fixture).read_text())
     markers = fixture.get("noise_markers", [])
 
+    mode = "keyword" if args.mode == "bm25" else args.mode
+    embed = args.embed
+    if mode == "keyword":
+        embed = None
+
     report = {
         "fixture": fixture.get("name"),
         "binary": args.binary,
         "db": args.db,
+        "mode": mode,
+        "embed": embed,
         "summary": {
             "queries": 0,
             "passed": 0,
@@ -69,12 +79,12 @@ def main():
         expected_contains_any = spec.get("expected_contains_any", [])
         min_precision_at_k = float(spec.get("min_precision_at_k", 0.0))
 
-        hits = run_search(args.binary, args.db, q, limit)
+        hits = run_search(args.binary, args.db, q, limit, mode, embed)
 
         noisy_positions = []
         for i, r in enumerate(hits, start=1):
             content = (r.get("content") or "")
-            if any(m in content for m in markers):
+            if contains_any(content, markers):
                 noisy_positions.append(i)
 
         noisy_top3 = sum(1 for p in noisy_positions if p <= 3)
