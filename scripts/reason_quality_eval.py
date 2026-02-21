@@ -251,7 +251,7 @@ def score_actionability(text: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     heur += 0.30 if has_owner_or_time else 0.0
     heur = min(1.0, heur)
 
-    score = 0.60 * kw + 0.40 * heur
+    score = 0.35 * kw + 0.65 * heur
     return {
         "score": round(score, 4),
         "rubric_score": to_rubric(score),
@@ -325,7 +325,7 @@ def score_contradiction_handling(prompt: str, text: str, cfg: Dict[str, Any]) ->
     heur += 0.20 if contradiction_hits >= 2 else 0.10 if contradiction_hits == 1 else 0.0
     heur = min(1.0, heur)
 
-    score = 0.70 * kw + 0.30 * heur
+    score = 0.50 * kw + 0.50 * heur
     return {
         "score": round(score, 4),
         "rubric_score": to_rubric(score),
@@ -360,7 +360,7 @@ def score_usefulness(text: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     heur += 0.25 if summary_hits >= 2 else 0.10 if summary_hits == 1 else 0.0
     heur = min(1.0, heur)
 
-    score = 0.40 * word_score + 0.35 * kw + 0.25 * heur
+    score = 0.35 * word_score + 0.20 * kw + 0.45 * heur
     return {
         "score": round(score, 4),
         "rubric_score": to_rubric(score),
