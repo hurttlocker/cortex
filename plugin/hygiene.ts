@@ -2,8 +2,35 @@ export interface RecallResultLike {
   content: string;
 }
 
+const memoryContextBlockRE = /<(cortex-memories|relevant-memories)>[\s\S]*?<\/\1>/gi;
+const untrustedMetadataBlockRE = /(Conversation info|Sender)\s*\(untrusted metadata\):\s*```(?:json)?[\s\S]*?```/gi;
+const queuedEnvelopeLineRE = /^\[Queued messages while agent was busy\]\s*$/gim;
+const queuedSeparatorRE = /^---\s*\nQueued\s*#\d+\s*$/gim;
+
+/**
+ * Removes boilerplate wrappers that pollute capture quality but preserves the actual user ask.
+ */
+export function sanitizeCaptureMessage(text: string): string {
+  if (!text) return "";
+
+  let out = text;
+  out = out.replace(memoryContextBlockRE, " ");
+  out = out.replace(untrustedMetadataBlockRE, " ");
+  out = out.replace(queuedEnvelopeLineRE, " ");
+  out = out.replace(queuedSeparatorRE, " ");
+
+  // Collapse excessive whitespace while preserving paragraph boundaries.
+  out = out
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+
+  return out;
+}
+
 export function normalizeCaptureText(text: string): string {
-  return text
+  return sanitizeCaptureMessage(text)
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")

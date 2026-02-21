@@ -101,6 +101,14 @@ func TestShouldSkipLowSignalCapture(t *testing.T) {
 	if !shouldSkipLowSignalCapture("### User\nFire the test\n\n### Assistant\nSounds good", opts) {
 		t.Fatal("expected trivial command capture to be filtered")
 	}
+	envelopedLowSignal := "### User\nConversation info (untrusted metadata):\n```json\n{\"conversation_label\":\"Guild #reports\"}\n```\n\nSender (untrusted metadata):\n```json\n{\"name\":\"cashcoldgame\"}\n```\n\nFire the test\n\n### Assistant\nSounds good"
+	if !shouldSkipLowSignalCapture(envelopedLowSignal, opts) {
+		t.Fatal("expected metadata-wrapped trivial command capture to be filtered")
+	}
+	envelopedMeaningful := "### User\nConversation info (untrusted metadata):\n```json\n{\"conversation_label\":\"Guild #mister\"}\n```\n\nSender (untrusted metadata):\n```json\n{\"name\":\"cashcoldgame\"}\n```\n\nHow should we improve cortex retrieval precision this sprint?\n\n### Assistant\nLet's prioritize ingestion hygiene and ranking."
+	if shouldSkipLowSignalCapture(envelopedMeaningful, opts) {
+		t.Fatal("did not expect meaningful metadata-wrapped capture to be filtered")
+	}
 	if shouldSkipLowSignalCapture("### User\nQ prefers Sonnet for coding tasks\n\n### Assistant\nSaved", opts) {
 		t.Fatal("did not expect meaningful preference capture to be filtered")
 	}
