@@ -107,10 +107,64 @@ func inferSubject(metadata map[string]string) string {
 	return ""
 }
 
+func stripAutoCaptureScaffold(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	inFence := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+
+		if strings.HasPrefix(lower, "```") {
+			if inFence {
+				inFence = false
+				continue
+			}
+			if len(out) > 0 {
+				prev := strings.ToLower(strings.TrimSpace(out[len(out)-1]))
+				if strings.Contains(prev, "untrusted metadata") {
+					inFence = true
+					continue
+				}
+			}
+		}
+		if inFence {
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(lower, "## conversation capture"):
+			continue
+		case strings.HasPrefix(lower, "channel:"):
+			continue
+		case strings.HasPrefix(lower, "### user"):
+			continue
+		case strings.HasPrefix(lower, "### assistant"):
+			continue
+		case strings.HasPrefix(lower, "current time:"):
+			continue
+		case strings.Contains(lower, "(untrusted metadata)"):
+			continue
+		}
+
+		out = append(out, line)
+	}
+
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
 // Extract runs extraction on the input text and returns structured facts.
 // Uses both rule-based extraction (Tier 1) and optional LLM extraction (Tier 2).
 func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string]string) ([]ExtractedFact, error) {
 	var facts []ExtractedFact
+
+	if isAutoCaptureSource(metadata) {
+		text = stripAutoCaptureScaffold(text)
+	}
 
 	// Tier 1: Rule-based extraction
 	// 1. Extract key-value patterns (with type inference)
@@ -458,9 +512,12 @@ func shouldSkipKVExtraction(patternName, key, value, sourceLine string, autoCapt
 		return false
 	}
 
-	// In conversational auto-capture, simple colon lines are high-volume noise
-	// (Current time:, Sender:, assistant:, etc.). Keep stronger explicit patterns.
-	if patternName == "simple_colon" {
+	// In conversational auto-capture, only keep explicit markdown key-value styles.
+	// Free-form separators (simple colon / arrow / em-dash / equals) are too noisy.
+	switch patternName {
+	case "bold_colon_bullet", "bold_colon", "bullet_colon":
+		// allowed
+	default:
 		return true
 	}
 

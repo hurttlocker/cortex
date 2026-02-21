@@ -2,8 +2,27 @@ package extract
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
+
+func containsAny(s string, needles ...string) bool {
+	for _, n := range needles {
+		if strings.Contains(s, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAll(s string, needles ...string) bool {
+	for _, n := range needles {
+		if !strings.Contains(s, n) {
+			return false
+		}
+	}
+	return true
+}
 
 func TestNewPipeline(t *testing.T) {
 	pipeline := NewPipeline()
@@ -195,6 +214,69 @@ func TestExtractKeyValues_NonAutoCaptureKeepsSimpleColon(t *testing.T) {
 	}
 	if facts[0].Predicate != "current time" {
 		t.Fatalf("Expected predicate 'current time', got %q", facts[0].Predicate)
+	}
+}
+
+func TestStripAutoCaptureScaffold(t *testing.T) {
+	in := `## Conversation Capture — 2026-02-21T03:00:00Z
+Channel: discord
+
+### User
+Conversation info (untrusted metadata):
+	test
+
+the real user request
+
+### Assistant
+Current time: Saturday, February 14th, 2026 — 9:04 PM
+**Decision:** Ship patch`
+
+	out := stripAutoCaptureScaffold(in)
+	if out == "" {
+		t.Fatal("expected non-empty scaffold-stripped content")
+	}
+	if containsAny(out, "Conversation Capture", "untrusted metadata", "Current time:", "### User", "### Assistant") {
+		t.Fatalf("stripAutoCaptureScaffold left scaffold residue: %q", out)
+	}
+	if !containsAll(out, "the real user request", "**Decision:** Ship patch") {
+		t.Fatalf("stripAutoCaptureScaffold removed meaningful content: %q", out)
+	}
+}
+
+func TestExtract_AutoCaptureDropsScaffoldNoiseFacts(t *testing.T) {
+	pipeline := NewPipeline()
+	text := `## Conversation Capture — 2026-02-21T03:00:00Z
+
+### User
+Conversation info (untrusted metadata):
+	test
+
+Fire the test
+
+### Assistant
+Current time: Saturday, February 14th, 2026 — 9:04 PM
+**Decision:** Start P0-B extractor root fix now`
+
+	facts, err := pipeline.Extract(context.Background(), text, map[string]string{"source_file": "/tmp/cortex-capture-abc/auto-capture.md"})
+	if err != nil {
+		t.Fatalf("Extract error: %v", err)
+	}
+
+	for _, f := range facts {
+		if strings.Contains(strings.ToLower(f.Predicate), "current time") || strings.Contains(strings.ToLower(f.Predicate), "conversation") {
+			t.Fatalf("unexpected scaffold predicate in auto-capture facts: %+v", f)
+		}
+	}
+
+	foundDecision := false
+	for _, f := range facts {
+		if f.Predicate == "decision" && f.FactType == "decision" {
+			foundDecision = true
+			break
+		}
+	}
+	if !foundDecision {
+		t.Fatalf("expected decision fact to survive scaffold stripping, got facts=%+v", facts)
 	}
 }
 
