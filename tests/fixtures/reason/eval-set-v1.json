@@ -1,0 +1,2434 @@
+{
+  "name": "reason-quality-eval-pack-v1",
+  "version": "2026-02-21",
+  "description": "40-prompt signal-based eval set for cortex reason quality across five production presets.",
+  "thresholds": {
+    "overall_pass_score": 0.7,
+    "pass_rate_min": 0.75,
+    "metric_minimums": {
+      "grounding_score": 0.6,
+      "actionability_score": 0.62,
+      "contradiction_handling_score": 0.58,
+      "concise_clarity_score": 0.65
+    }
+  },
+  "weights": {
+    "grounding_score": 0.3,
+    "actionability_score": 0.3,
+    "contradiction_handling_score": 0.2,
+    "concise_clarity_score": 0.2
+  },
+  "defaults": {
+    "project": "",
+    "model": "",
+    "embed": "",
+    "reason_args": {
+      "recursive": false,
+      "max_iterations": 6,
+      "max_depth": 1,
+      "max_context": 8000
+    }
+  },
+  "prompts": [
+    {
+      "id": "rqe-001",
+      "category": "daily-digest",
+      "preset": "daily-digest",
+      "prompt": "Summarize today's retrieval-provenance progress and list the top 3 next steps with owners.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 90,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-002",
+      "category": "daily-digest",
+      "preset": "daily-digest",
+      "prompt": "What blockers are slowing delivery today, and what should we do in the next 24 hours?",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 90,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-003",
+      "category": "daily-digest",
+      "preset": "daily-digest",
+      "prompt": "Give a standup update: done, in progress, and next actions from current memory.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 90,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-004",
+      "category": "daily-digest",
+      "preset": "daily-digest",
+      "prompt": "If I have 30 minutes, what are the highest-leverage risk-reduction actions right now?",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 90,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-005",
+      "category": "daily-digest",
+      "preset": "daily-digest",
+      "prompt": "Create an end-of-day digest with decisions made, open loops, and immediate follow-ups.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 90,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-006",
+      "category": "daily-digest",
+      "preset": "daily-digest",
+      "prompt": "What changed in reason evaluation tooling today and what should ship first tomorrow morning?",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 90,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-007",
+      "category": "daily-digest",
+      "preset": "daily-digest",
+      "prompt": "Build a concise executive update for branch status, including uncertainty we should monitor.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 90,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-008",
+      "category": "daily-digest",
+      "preset": "daily-digest",
+      "prompt": "Provide a daily delivery report with measurable progress and the next operational checkpoint.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 90,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-009",
+      "category": "weekly-dive",
+      "preset": "weekly-dive",
+      "prompt": "Deep-dive the remaining quality gap after retrieval improvements and propose a sequence to close it.",
+      "reason_args": {
+        "recursive": true,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 120,
+          "max_words": 320
+        }
+      }
+    },
+    {
+      "id": "rqe-010",
+      "category": "weekly-dive",
+      "preset": "weekly-dive",
+      "prompt": "Analyze trade-offs between one-shot and recursive reason modes for quality, latency, and cost.",
+      "reason_args": {
+        "recursive": true,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 120,
+          "max_words": 320
+        }
+      }
+    },
+    {
+      "id": "rqe-011",
+      "category": "weekly-dive",
+      "preset": "weekly-dive",
+      "prompt": "Design a 2-week roadmap to improve reason quality while minimizing CI flakiness.",
+      "reason_args": {
+        "recursive": true,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 120,
+          "max_words": 320
+        }
+      }
+    },
+    {
+      "id": "rqe-012",
+      "category": "weekly-dive",
+      "preset": "weekly-dive",
+      "prompt": "What success metrics and thresholds should define reason-quality regressions going forward?",
+      "reason_args": {
+        "recursive": true,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 120,
+          "max_words": 320
+        }
+      }
+    },
+    {
+      "id": "rqe-013",
+      "category": "weekly-dive",
+      "preset": "weekly-dive",
+      "prompt": "Compare local-model nightly evals versus cloud interactive evals and recommend default routing rules.",
+      "reason_args": {
+        "recursive": true,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 120,
+          "max_words": 320
+        }
+      }
+    },
+    {
+      "id": "rqe-014",
+      "category": "weekly-dive",
+      "preset": "weekly-dive",
+      "prompt": "Synthesize this week's major reason-system changes and propose the next milestone criteria.",
+      "reason_args": {
+        "recursive": true,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 120,
+          "max_words": 320
+        }
+      }
+    },
+    {
+      "id": "rqe-015",
+      "category": "weekly-dive",
+      "preset": "weekly-dive",
+      "prompt": "Identify biggest risks to sustained answer quality over the next sprint and mitigation priorities.",
+      "reason_args": {
+        "recursive": true,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 120,
+          "max_words": 320
+        }
+      }
+    },
+    {
+      "id": "rqe-016",
+      "category": "weekly-dive",
+      "preset": "weekly-dive",
+      "prompt": "Produce a weekly strategy brief: what to keep, what to drop, and what to accelerate.",
+      "reason_args": {
+        "recursive": true,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 120,
+          "max_words": 320
+        }
+      }
+    },
+    {
+      "id": "rqe-017",
+      "category": "fact-audit",
+      "preset": "fact-audit",
+      "prompt": "Audit stale facts that could mislead weekly summaries and rank reinforcement priorities.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 110,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-018",
+      "category": "fact-audit",
+      "preset": "fact-audit",
+      "prompt": "Which model-default facts look outdated, and which facts should be superseded first?",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 110,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-019",
+      "category": "fact-audit",
+      "preset": "fact-audit",
+      "prompt": "Find low-confidence facts around evaluation thresholds and propose verification order.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 110,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-020",
+      "category": "fact-audit",
+      "preset": "fact-audit",
+      "prompt": "Before compaction, which operational facts should we reinforce to preserve continuity?",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 110,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-021",
+      "category": "fact-audit",
+      "preset": "fact-audit",
+      "prompt": "Identify weak-provenance facts and propose a remediation plan to improve trust.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 110,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-022",
+      "category": "fact-audit",
+      "preset": "fact-audit",
+      "prompt": "What fact-quality anti-patterns could produce hallucinated reasoning, and how do we prevent them?",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 110,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-023",
+      "category": "fact-audit",
+      "preset": "fact-audit",
+      "prompt": "Review extracted fact quality for retrieval-provenance closure and flag the top correction candidates.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 110,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-024",
+      "category": "fact-audit",
+      "preset": "fact-audit",
+      "prompt": "Create a fact-audit summary with concrete cleanup actions and ownership for each bucket.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 110,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-025",
+      "category": "conflict-check",
+      "preset": "conflict-check",
+      "prompt": "Detect conflicts between README guidance and implementation defaults, then propose a resolution path.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 100,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-026",
+      "category": "conflict-check",
+      "preset": "conflict-check",
+      "prompt": "Find contradictory model-routing recommendations across docs and recent notes.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 100,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-027",
+      "category": "conflict-check",
+      "preset": "conflict-check",
+      "prompt": "Identify mismatches between expected telemetry fields and observed reason outputs.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 100,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-028",
+      "category": "conflict-check",
+      "preset": "conflict-check",
+      "prompt": "Where do CI expectations and local run guidance conflict, and what should be the source of truth?",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 100,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-029",
+      "category": "conflict-check",
+      "preset": "conflict-check",
+      "prompt": "Check for policy inconsistencies in PR-only workflow language and recommend resolution ownership.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 100,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-030",
+      "category": "conflict-check",
+      "preset": "conflict-check",
+      "prompt": "What contradictions exist in issue closeout notes for reason quality work, and how should we reconcile them before merge?",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 100,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-031",
+      "category": "conflict-check",
+      "preset": "conflict-check",
+      "prompt": "Detect conflicting statements about required evaluation metrics and propose a canonical rubric.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 100,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-032",
+      "category": "conflict-check",
+      "preset": "conflict-check",
+      "prompt": "Map conflicts across retrieval, reason, and docs assumptions and provide a prioritized reconciliation plan.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 100,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-033",
+      "category": "agent-review",
+      "preset": "agent-review",
+      "prompt": "Review recent assistant outputs: where were they strong, and where did actionability drop?",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 100,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-034",
+      "category": "agent-review",
+      "preset": "agent-review",
+      "prompt": "Find examples where responses were verbose but weakly grounded, and define tighter response rules.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 100,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-035",
+      "category": "agent-review",
+      "preset": "agent-review",
+      "prompt": "Evaluate uncertainty communication quality when evidence is incomplete.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 95,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-036",
+      "category": "agent-review",
+      "preset": "agent-review",
+      "prompt": "Assess correction handling quality: were identified mistakes followed by concrete actions?",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 95,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-037",
+      "category": "agent-review",
+      "preset": "agent-review",
+      "prompt": "Review mode-selection decisions (one-shot vs recursive) and recommend behavior updates.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 95,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-038",
+      "category": "agent-review",
+      "preset": "agent-review",
+      "prompt": "Generate a practical quality rubric for reason responses and identify today's weakest dimension.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": true,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 100,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-039",
+      "category": "agent-review",
+      "preset": "agent-review",
+      "prompt": "Audit whether summaries are concise enough for operators while still preserving critical evidence.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 95,
+          "max_words": 260
+        }
+      }
+    },
+    {
+      "id": "rqe-040",
+      "category": "agent-review",
+      "preset": "agent-review",
+      "prompt": "Create an agent-quality scorecard with next-step coaching actions per dimension.",
+      "reason_args": {
+        "recursive": false,
+        "max_iterations": 6,
+        "max_depth": 1,
+        "max_context": 8000
+      },
+      "expected_signals": {
+        "grounding": {
+          "must_include_any": [
+            "source",
+            "memory",
+            "fact",
+            "evidence",
+            "confidence",
+            "provenance"
+          ],
+          "min_hits": 2
+        },
+        "actionability": {
+          "must_include_any": [
+            "next step",
+            "priority",
+            "owner",
+            "timeline",
+            "recommend",
+            "plan"
+          ],
+          "min_hits": 2
+        },
+        "contradiction_handling": {
+          "required": false,
+          "must_include_any": [
+            "conflict",
+            "contradiction",
+            "inconsistent",
+            "trade-off",
+            "verify",
+            "uncertain"
+          ],
+          "min_hits": 1
+        },
+        "concise_clarity": {
+          "must_include_any": [
+            "summary",
+            "clear",
+            "concise",
+            "key points",
+            "bullets"
+          ],
+          "min_hits": 1,
+          "min_words": 95,
+          "max_words": 260
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+name: Reason Quality Eval Nightly
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly at 07:20 UTC
+    - cron: '20 7 * * *'
+
+jobs:
+  reason-quality-eval:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build cortex binary
+        run: go build -o /tmp/cortex ./cmd/cortex
+
+      - name: Ensure output directory
+        run: mkdir -p tests/output/reason-eval
+
+      - name: Run nightly eval (if API key available)
+        if: ${{ secrets.OPENROUTER_API_KEY != '' }}
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          python3 scripts/reason_quality_eval.py \
+            --binary /tmp/cortex \
+            --fixture tests/fixtures/reason/eval-set-v1.json \
+            --output-dir tests/output/reason-eval \
+            --model openrouter/google/gemini-3-flash-preview \
+            --timeout-sec 300
+
+      - name: Dry-run eval plan (fallback when no API key)
+        if: ${{ secrets.OPENROUTER_API_KEY == '' }}
+        run: |
+          python3 scripts/reason_quality_eval.py \
+            --fixture tests/fixtures/reason/eval-set-v1.json \
+            --output-dir tests/output/reason-eval \
+            --dry-run > tests/output/reason-eval/reason-quality-eval-dry-run.json
+
+      - name: Upload reason quality artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: reason-quality-eval-${{ github.run_id }}
+          path: tests/output/reason-eval/
+          if-no-files-found: error
+          retention-days: 30
