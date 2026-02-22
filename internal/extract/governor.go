@@ -32,10 +32,10 @@ type GovernorConfig struct {
 // DefaultGovernorConfig returns the recommended default governor settings.
 func DefaultGovernorConfig() GovernorConfig {
 	return GovernorConfig{
-		MaxFactsPerMemory:  50,
-		MinObjectLength:    2,
-		MinPredicateLength: 2,
-		DropMarkdownJunk:   true,
+		MaxFactsPerMemory:   50,
+		MinObjectLength:     2,
+		MinPredicateLength:  2,
+		DropMarkdownJunk:    true,
 		DropGenericSubjects: true,
 	}
 }

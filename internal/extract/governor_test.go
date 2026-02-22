@@ -102,8 +102,8 @@ func TestGovernor_MinLengthFilters(t *testing.T) {
 	gov := NewGovernor(DefaultGovernorConfig())
 
 	facts := []ExtractedFact{
-		{Subject: "test", Predicate: "k", Object: "a value", FactType: "kv", Confidence: 0.9},       // pred too short
-		{Subject: "test", Predicate: "key", Object: "v", FactType: "kv", Confidence: 0.9},            // obj too short
+		{Subject: "test", Predicate: "k", Object: "a value", FactType: "kv", Confidence: 0.9},            // pred too short
+		{Subject: "test", Predicate: "key", Object: "v", FactType: "kv", Confidence: 0.9},                // obj too short
 		{Subject: "test", Predicate: "key", Object: "valid value here", FactType: "kv", Confidence: 0.9}, // good
 	}
 
