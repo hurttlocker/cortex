@@ -2,6 +2,7 @@ package observe
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -649,5 +650,45 @@ func TestBuildGrowthRecommendation(t *testing.T) {
 	}
 	if len(guidanceNoOp) == 0 {
 		t.Fatal("expected no-op guidance")
+	}
+}
+
+func TestGetGrowthReport_TopSourceFilesLimit(t *testing.T) {
+	engine := newTestEngine(t)
+	ctx := context.Background()
+
+	addTestMemory(t, engine, "A", "a.md")
+	addTestMemory(t, engine, "B", "b.md")
+	addTestMemory(t, engine, "C", "c.md")
+
+	report, err := engine.GetGrowthReport(ctx, GrowthReportOpts{TopSourceFiles: 2})
+	if err != nil {
+		t.Fatalf("GetGrowthReport failed: %v", err)
+	}
+	if len(report.Windows) == 0 {
+		t.Fatal("expected at least one window")
+	}
+	if got := len(report.Windows[0].TopMemorySources); got > 2 {
+		t.Fatalf("expected top source files limited to 2, got %d", got)
+	}
+}
+
+func TestGetGrowthReport_DefaultTopSourceFilesApplied(t *testing.T) {
+	engine := newTestEngine(t)
+	ctx := context.Background()
+
+	for i := 0; i < 12; i++ {
+		addTestMemory(t, engine, "x", fmt.Sprintf("src-%02d.md", i))
+	}
+
+	report, err := engine.GetGrowthReport(ctx, GrowthReportOpts{TopSourceFiles: 0})
+	if err != nil {
+		t.Fatalf("GetGrowthReport failed: %v", err)
+	}
+	if len(report.Windows) == 0 {
+		t.Fatal("expected at least one window")
+	}
+	if got := len(report.Windows[0].TopMemorySources); got != 10 {
+		t.Fatalf("expected default top source files 10, got %d", got)
 	}
 }

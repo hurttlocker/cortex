@@ -20,10 +20,30 @@ Review:
 ### Weekly (operator)
 ```bash
 cortex stats --json
+cortex stats --growth-report --json
 cortex stale 7
 cortex optimize --check-only
 ```
 Confirm whether growth is expected (imports, captures) vs noise churn.
+
+### Growth Forensics Loop (report-first)
+Use this before any maintenance pass so attribution is explicit and comparable:
+
+```bash
+# Before snapshot
+cortex stats --growth-report --json > /tmp/growth-before.json
+
+# Optional maintenance (only if recommendation indicates)
+cortex optimize
+
+# After snapshot
+cortex stats --growth-report --json > /tmp/growth-after.json
+```
+
+Record in the ops note:
+- recommendation (`no-op` or `maintenance-pass`)
+- top source contributors (before vs after)
+- fact-type mix shifts (before vs after)
 
 ## Thresholds
 
