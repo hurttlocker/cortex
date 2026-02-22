@@ -108,6 +108,11 @@ type Options struct {
 	DisableClassBoost bool     // Disable class-aware weighting (default: false)
 	Agent             string   // Filter by metadata agent_id (Issue #30)
 	Channel           string   // Filter by metadata channel (Issue #30)
+
+	// Metadata-aware ranking context (Issue #148)
+	// These don't filter — they boost results that match the calling context.
+	BoostAgent   string // Boost results from this agent (e.g., "main", "ace")
+	BoostChannel string // Boost results from this channel (e.g., "discord", "telegram")
 	After             string   // Filter memories imported after date YYYY-MM-DD (Issue #30)
 	Before            string   // Filter memories imported before date YYYY-MM-DD (Issue #30)
 	IncludeSuperseded bool     // Include memories backed only by superseded facts
@@ -196,6 +201,11 @@ type RankComponents struct {
 	HybridSemanticNormalized   *float64 `json:"hybrid_semantic_normalized,omitempty"`
 	HybridBM25Contribution     *float64 `json:"hybrid_bm25_contribution,omitempty"`
 	HybridSemanticContribution *float64 `json:"hybrid_semantic_contribution,omitempty"`
+
+	// Metadata-aware ranking (Issue #148)
+	AgentBoost   float64 `json:"agent_boost,omitempty"`
+	ChannelBoost float64 `json:"channel_boost,omitempty"`
+	RecencyBoost float64 `json:"recency_boost,omitempty"`
 }
 
 type confidenceDetail struct {
@@ -348,6 +358,10 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	results = applyOffTopicLowSignalSuppression(query, results, opts.Explain)
 	results = applyWrapperNoiseSuppression(query, results, opts.Explain)
 	results = applyLexicalOverlapFilter(query, results, opts.Explain)
+
+	// Metadata-aware ranking boosts (Issue #148)
+	results = applyMetadataBoosts(results, opts)
+	results = applyRecencyBoost(results, opts.Explain)
 
 	if !opts.IncludeSuperseded {
 		results = e.filterSupersededMemories(ctx, results)
@@ -827,6 +841,99 @@ func hasResultTokenOverlap(r Result, queryTokens map[string]struct{}) bool {
 		}
 	}
 	return false
+}
+
+// Metadata-aware ranking boost constants (Issue #148).
+const (
+	// Boost for results from the same agent as the querier.
+	metadataAgentBoost = 1.08
+
+	// Boost for results from the same channel as the querier.
+	metadataChannelBoost = 1.05
+
+	// Recency boost tiers: recent memories are more likely relevant.
+	recencyBoostToday     = 1.10
+	recencyBoostThisWeek  = 1.05
+	recencyBoostThisMonth = 1.02
+)
+
+// applyMetadataBoosts boosts results that match the calling agent/channel context.
+// This is ranking-only — no results are filtered out.
+func applyMetadataBoosts(results []Result, opts Options) []Result {
+	if opts.BoostAgent == "" && opts.BoostChannel == "" {
+		return results
+	}
+
+	for i := range results {
+		meta := results[i].Metadata
+		if meta == nil {
+			continue
+		}
+
+		if opts.BoostAgent != "" && strings.EqualFold(meta.AgentID, opts.BoostAgent) {
+			results[i].Score *= metadataAgentBoost
+			if opts.Explain {
+				ensureExplain(&results[i])
+				results[i].Explain.RankComponents.AgentBoost = metadataAgentBoost
+			}
+		}
+
+		if opts.BoostChannel != "" && strings.EqualFold(meta.Channel, opts.BoostChannel) {
+			results[i].Score *= metadataChannelBoost
+			if opts.Explain {
+				ensureExplain(&results[i])
+				results[i].Explain.RankComponents.ChannelBoost = metadataChannelBoost
+			}
+		}
+	}
+
+	// Re-sort by score descending
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
+	return results
+}
+
+// applyRecencyBoost gives a gentle boost to recent memories.
+// Memories from today get the most boost, this week gets moderate, this month gets mild.
+func applyRecencyBoost(results []Result, explain bool) []Result {
+	now := time.Now()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	weekStart := todayStart.AddDate(0, 0, -7)
+	monthStart := todayStart.AddDate(0, -1, 0)
+
+	for i := range results {
+		importedAt := results[i].ImportedAt
+		if importedAt.IsZero() {
+			continue
+		}
+
+		var boost float64
+		switch {
+		case importedAt.After(todayStart) || importedAt.Equal(todayStart):
+			boost = recencyBoostToday
+		case importedAt.After(weekStart):
+			boost = recencyBoostThisWeek
+		case importedAt.After(monthStart):
+			boost = recencyBoostThisMonth
+		default:
+			continue // No boost for older memories
+		}
+
+		results[i].Score *= boost
+		if explain {
+			ensureExplain(&results[i])
+			results[i].Explain.RankComponents.RecencyBoost = boost
+		}
+	}
+
+	// Re-sort by score descending
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
+	return results
 }
 
 // filterSupersededMemories excludes memories where all linked facts are superseded.

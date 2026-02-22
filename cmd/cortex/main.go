@@ -496,6 +496,8 @@ func runSearch(args []string) error {
 	channelFlag := ""
 	afterFlag := ""
 	beforeFlag := ""
+	boostAgentFlag := ""
+	boostChannelFlag := ""
 	showMetadata := false
 	explain := false
 	includeSuperseded := false
@@ -536,6 +538,16 @@ func runSearch(args []string) error {
 			beforeFlag = strings.TrimPrefix(args[i], "--before=")
 		case args[i] == "--show-metadata":
 			showMetadata = true
+		case args[i] == "--boost-agent" && i+1 < len(args):
+			i++
+			boostAgentFlag = args[i]
+		case strings.HasPrefix(args[i], "--boost-agent="):
+			boostAgentFlag = strings.TrimPrefix(args[i], "--boost-agent=")
+		case args[i] == "--boost-channel" && i+1 < len(args):
+			i++
+			boostChannelFlag = args[i]
+		case strings.HasPrefix(args[i], "--boost-channel="):
+			boostChannelFlag = strings.TrimPrefix(args[i], "--boost-channel=")
 		case args[i] == "--explain":
 			explain = true
 		case args[i] == "--include-superseded":
@@ -664,6 +676,8 @@ func runSearch(args []string) error {
 		Before:            beforeFlag,
 		IncludeSuperseded: includeSuperseded,
 		Explain:           explain,
+		BoostAgent:        boostAgentFlag,
+		BoostChannel:      boostChannelFlag,
 	}
 
 	results, err := engine.Search(ctx, query, opts)
