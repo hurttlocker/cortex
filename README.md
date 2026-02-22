@@ -551,6 +551,8 @@ Generates a publication-ready markdown report with summary table, per-preset bre
 
 ```bash
 cortex stats        # Overview: counts, freshness, growth trends (24h/7d), storage, alerts
+cortex stats --growth-report          # 24h/7d growth composition + recommendation
+cortex stats --growth-report --json   # machine-readable growth composition
 cortex stale        # What's fading — reinforce, delete, or skip
 cortex conflicts    # Contradictions among active facts (compact grouped output)
 cortex conflicts --verbose  # Full per-conflict detail (no compacting)

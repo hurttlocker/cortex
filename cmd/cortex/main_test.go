@@ -926,3 +926,46 @@ func TestRunCodexRolloutReportCLI_HelpExitZero(t *testing.T) {
 		t.Fatalf("unexpected stderr output: %s", errOut.String())
 	}
 }
+
+func TestRunStats_GrowthReportJSON(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	t.Setenv("CORTEX_DB", dbPath)
+	globalDBPath = ""
+	globalReadOnly = false
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	ctx := context.Background()
+	memoryID, err := s.AddMemory(ctx, &store.Memory{Content: "growth test", SourceFile: "notes.md"})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+	_, err = s.AddFact(ctx, &store.Fact{MemoryID: memoryID, Subject: "user", Predicate: "city", Object: "Philly", FactType: "kv", Confidence: 0.9, DecayRate: 0.01})
+	if err != nil {
+		t.Fatalf("add fact: %v", err)
+	}
+	s.Close()
+
+	var runErr error
+	out := captureStdout(func() {
+		runErr = runStats([]string{"--growth-report", "--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runStats growth-report failed: %v", runErr)
+	}
+	if !strings.Contains(out, `"windows"`) || !strings.Contains(out, `"recommendation"`) {
+		t.Fatalf("unexpected growth report JSON output: %s", out)
+	}
+}
+
+func TestRunStats_UnknownFlag(t *testing.T) {
+	err := runStats([]string{"--not-a-real-flag"})
+	if err == nil {
+		t.Fatal("expected error for unknown stats flag")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
