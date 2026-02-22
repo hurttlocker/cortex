@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://via.placeholder.com/120x120.png?text=🧠" alt="Cortex Logo" width="120" height="120">
+  <img src="docs/assets/cortex-logo-redpink.jpg" alt="Cortex Logo" width="120" height="120">
 </p>
 
 <h1 align="center">Cortex</h1>
