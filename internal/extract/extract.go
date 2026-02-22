@@ -52,6 +52,7 @@ type Pipeline struct {
 	regexPatterns []*regexPattern
 	llmConfig     *LLMConfig // Optional LLM configuration
 	llmClient     *LLMClient // Optional LLM client
+	governor      *Governor  // Quality governor (filters + caps)
 }
 
 // kvPattern represents a key-value pattern to match.
@@ -68,12 +69,23 @@ type regexPattern struct {
 	name     string
 }
 
+// PipelineOption configures the extraction pipeline.
+type PipelineOption func(*Pipeline)
+
+// WithGovernor sets a custom governor config on the pipeline.
+func WithGovernor(cfg GovernorConfig) PipelineOption {
+	return func(p *Pipeline) {
+		p.governor = NewGovernor(cfg)
+	}
+}
+
 // NewPipeline creates a new extraction pipeline with all rule-based extractors
 // and optional LLM-assisted extraction.
 func NewPipeline(llmConfig ...*LLMConfig) *Pipeline {
 	p := &Pipeline{
 		kvPatterns:    initKVPatterns(),
 		regexPatterns: initRegexPatterns(),
+		governor:      NewGovernor(DefaultGovernorConfig()),
 	}
 
 	// Configure LLM if provided
@@ -82,6 +94,19 @@ func NewPipeline(llmConfig ...*LLMConfig) *Pipeline {
 		p.llmClient = NewLLMClient(llmConfig[0])
 	}
 
+	return p
+}
+
+// NewPipelineWithOptions creates a pipeline with functional options.
+func NewPipelineWithOptions(opts ...PipelineOption) *Pipeline {
+	p := &Pipeline{
+		kvPatterns:    initKVPatterns(),
+		regexPatterns: initRegexPatterns(),
+		governor:      NewGovernor(DefaultGovernorConfig()),
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
 	return p
 }
 
@@ -204,6 +229,11 @@ func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string
 	// 4. Merge and deduplicate facts from both tiers
 	allFacts := append(facts, llmFacts...)
 	allFacts = deduplicateFacts(allFacts)
+
+	// 5. Quality governor: filter noise, rank, and cap
+	if p.governor != nil {
+		allFacts = p.governor.Apply(allFacts)
+	}
 
 	return allFacts, nil
 }

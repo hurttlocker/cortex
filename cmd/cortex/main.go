@@ -1873,13 +1873,16 @@ Notes:
 
 func runCleanup(args []string) error {
 	dryRun := false
+	purgeNoise := false
 	for _, arg := range args {
 		switch arg {
 		case "--dry-run", "-n":
 			dryRun = true
+		case "--purge-noise":
+			purgeNoise = true
 		default:
 			if strings.HasPrefix(arg, "-") {
-				return fmt.Errorf("unknown flag: %s\nUsage: cortex cleanup [--dry-run]", arg)
+				return fmt.Errorf("unknown flag: %s\nUsage: cortex cleanup [--dry-run] [--purge-noise]", arg)
 			}
 			return fmt.Errorf("unexpected argument: %s", arg)
 		}
@@ -1899,7 +1902,7 @@ func runCleanup(args []string) error {
 		return fmt.Errorf("cleanup requires SQLiteStore backend")
 	}
 
-	if dryRun {
+	if dryRun && !purgeNoise {
 		// Count what would be cleaned without deleting (#57)
 		var shortCount, numericCount, factsCount int
 		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories WHERE LENGTH(content) < 20 AND deleted_at IS NULL`).Scan(&shortCount)
@@ -1913,33 +1916,325 @@ func runCleanup(args []string) error {
 		return nil
 	}
 
-	// 1. Delete short memories (likely garbage chunks).
-	res, err := ss.ExecContext(ctx, `DELETE FROM memories WHERE LENGTH(content) < 20`)
-	if err != nil {
-		return fmt.Errorf("deleting short memories: %w", err)
-	}
-	shortDeleted, _ := res.RowsAffected()
+	// Base cleanup (skip in dry-run + purge-noise mode)
+	if !dryRun {
+		// 1. Delete short memories (likely garbage chunks).
+		res, err := ss.ExecContext(ctx, `DELETE FROM memories WHERE LENGTH(content) < 20`)
+		if err != nil {
+			return fmt.Errorf("deleting short memories: %w", err)
+		}
+		shortDeleted, _ := res.RowsAffected()
 
-	// 2. Delete purely numeric memories.
-	res, err = ss.ExecContext(ctx, `DELETE FROM memories WHERE content GLOB '[0-9]*' AND content NOT GLOB '*[^0-9]*'`)
-	if err != nil {
-		return fmt.Errorf("deleting numeric memories: %w", err)
-	}
-	numericDeleted, _ := res.RowsAffected()
+		// 2. Delete purely numeric memories.
+		res, err = ss.ExecContext(ctx, `DELETE FROM memories WHERE content GLOB '[0-9]*' AND content NOT GLOB '*[^0-9]*'`)
+		if err != nil {
+			return fmt.Errorf("deleting numeric memories: %w", err)
+		}
+		numericDeleted, _ := res.RowsAffected()
 
-	// 3. Delete headless facts (subject is null or empty).
-	res, err = ss.ExecContext(ctx, `DELETE FROM facts WHERE subject IS NULL OR subject = ''`)
-	if err != nil {
-		return fmt.Errorf("deleting headless facts: %w", err)
-	}
-	factsDeleted, _ := res.RowsAffected()
+		// 3. Delete headless facts (subject is null or empty).
+		res, err = ss.ExecContext(ctx, `DELETE FROM facts WHERE subject IS NULL OR subject = ''`)
+		if err != nil {
+			return fmt.Errorf("deleting headless facts: %w", err)
+		}
+		factsDeleted, _ := res.RowsAffected()
 
-	fmt.Printf("Cleanup complete:\n")
-	fmt.Printf("  Short memories deleted:   %d\n", shortDeleted)
-	fmt.Printf("  Numeric memories deleted: %d\n", numericDeleted)
-	fmt.Printf("  Headless facts deleted:   %d\n", factsDeleted)
+		fmt.Printf("Cleanup complete:\n")
+		fmt.Printf("  Short memories deleted:   %d\n", shortDeleted)
+		fmt.Printf("  Numeric memories deleted: %d\n", numericDeleted)
+		fmt.Printf("  Headless facts deleted:   %d\n", factsDeleted)
+	}
+
+	// Purge noise: run governor quality filters against all existing facts
+	if purgeNoise {
+		fmt.Printf("\nRunning fact quality governor purge...\n")
+		noisePurged, err := purgeNoiseFacts(ctx, ss, dryRun)
+		if err != nil {
+			return fmt.Errorf("purging noise facts: %w", err)
+		}
+		if dryRun {
+			fmt.Printf("  Noise facts to purge: %d (dry run)\n", noisePurged)
+		} else {
+			fmt.Printf("  Noise facts purged: %d\n", noisePurged)
+		}
+
+		dupePurged, err := purgeDuplicateFacts(ctx, ss, dryRun)
+		if err != nil {
+			return fmt.Errorf("purging duplicate facts: %w", err)
+		}
+		if dryRun {
+			fmt.Printf("  Duplicate facts to purge: %d (dry run)\n", dupePurged)
+		} else {
+			fmt.Printf("  Duplicate facts purged: %d\n", dupePurged)
+		}
+
+		capPurged, err := purgeExcessFacts(ctx, ss, 50, dryRun)
+		if err != nil {
+			return fmt.Errorf("purging excess facts: %w", err)
+		}
+		if dryRun {
+			fmt.Printf("  Excess facts to cap: %d (dry run)\n", capPurged)
+		} else {
+			fmt.Printf("  Excess facts capped: %d\n", capPurged)
+		}
+
+		if !dryRun {
+			fmt.Printf("\nVacuuming database...\n")
+			if _, err := ss.ExecContext(ctx, "VACUUM"); err != nil {
+				return fmt.Errorf("vacuum: %w", err)
+			}
+			fmt.Printf("Done.\n")
+		}
+	}
 
 	return nil
+}
+
+// purgeNoiseFacts deletes facts that fail the governor's quality filters.
+func purgeNoiseFacts(ctx context.Context, ss *store.SQLiteStore, dryRun bool) (int64, error) {
+	gov := extract.NewGovernor(extract.DefaultGovernorConfig())
+
+	// Count total facts
+	var totalFacts int
+	if err := ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM facts WHERE superseded_by IS NULL`).Scan(&totalFacts); err != nil {
+		return 0, err
+	}
+	fmt.Printf("  Scanning %d active facts...\n", totalFacts)
+
+	// Process in batches by memory_id to avoid loading everything into RAM
+	rows, err := ss.QueryContext(ctx, `SELECT DISTINCT memory_id FROM facts WHERE superseded_by IS NULL ORDER BY memory_id`)
+	if err != nil {
+		return 0, err
+	}
+
+	var memoryIDs []int64
+	for rows.Next() {
+		var mid int64
+		if err := rows.Scan(&mid); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		memoryIDs = append(memoryIDs, mid)
+	}
+	rows.Close()
+
+	var totalPurged int64
+	for i, mid := range memoryIDs {
+		if (i+1)%500 == 0 {
+			fmt.Printf("  Processing memory %d/%d...\n", i+1, len(memoryIDs))
+		}
+
+		// Load facts for this memory
+		factRows, err := ss.QueryContext(ctx, `
+			SELECT id, subject, predicate, object, fact_type, confidence, source_quote
+			FROM facts
+			WHERE memory_id = ? AND superseded_by IS NULL
+		`, mid)
+		if err != nil {
+			return 0, err
+		}
+
+		var facts []struct {
+			id   int64
+			fact extract.ExtractedFact
+		}
+		for factRows.Next() {
+			var f struct {
+				id   int64
+				fact extract.ExtractedFact
+			}
+			if err := factRows.Scan(&f.id, &f.fact.Subject, &f.fact.Predicate, &f.fact.Object,
+				&f.fact.FactType, &f.fact.Confidence, &f.fact.SourceQuote); err != nil {
+				factRows.Close()
+				return 0, err
+			}
+			facts = append(facts, f)
+		}
+		factRows.Close()
+
+		if len(facts) == 0 {
+			continue
+		}
+
+		// Run governor on just the noise filter (no cap — that's separate)
+		noCap := extract.DefaultGovernorConfig()
+		noCap.MaxFactsPerMemory = 0 // No cap for noise-only pass
+		noCapGov := extract.NewGovernor(noCap)
+		_ = gov // suppress unused
+
+		// Build input slice
+		input := make([]extract.ExtractedFact, len(facts))
+		for j, f := range facts {
+			input[j] = f.fact
+		}
+
+		// Get filtered output
+		output := noCapGov.Apply(input)
+
+		// Build set of surviving (subject, predicate, object) triples
+		type triple struct{ s, p, o string }
+		survived := make(map[triple]bool)
+		for _, f := range output {
+			survived[triple{f.Subject, f.Predicate, f.Object}] = true
+		}
+
+		// Find IDs to delete
+		var idsToDelete []int64
+		for _, f := range facts {
+			key := triple{f.fact.Subject, f.fact.Predicate, f.fact.Object}
+			if !survived[key] {
+				idsToDelete = append(idsToDelete, f.id)
+			}
+		}
+
+		if len(idsToDelete) > 0 && !dryRun {
+			// Batch delete
+			for _, id := range idsToDelete {
+				if _, err := ss.ExecContext(ctx, `DELETE FROM facts WHERE id = ?`, id); err != nil {
+					return 0, err
+				}
+			}
+		}
+		totalPurged += int64(len(idsToDelete))
+	}
+
+	return totalPurged, nil
+}
+
+// purgeDuplicateFacts removes exact (subject, predicate, object) duplicates,
+// keeping the one with highest confidence.
+func purgeDuplicateFacts(ctx context.Context, ss *store.SQLiteStore, dryRun bool) (int64, error) {
+	if dryRun {
+		var count int
+		err := ss.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM facts f1
+			WHERE f1.superseded_by IS NULL
+			AND f1.id NOT IN (
+				SELECT MIN(id) FROM facts
+				WHERE superseded_by IS NULL
+				GROUP BY LOWER(TRIM(subject)), LOWER(TRIM(predicate)), LOWER(TRIM(object))
+			)
+		`).Scan(&count)
+		return int64(count), err
+	}
+
+	res, err := ss.ExecContext(ctx, `
+		DELETE FROM facts
+		WHERE superseded_by IS NULL
+		AND id NOT IN (
+			SELECT MIN(id) FROM facts
+			WHERE superseded_by IS NULL
+			GROUP BY LOWER(TRIM(subject)), LOWER(TRIM(predicate)), LOWER(TRIM(object))
+		)
+	`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// purgeExcessFacts enforces per-memory fact caps on existing data.
+// For each memory with more than maxPerMemory facts, keeps the best by quality score.
+func purgeExcessFacts(ctx context.Context, ss *store.SQLiteStore, maxPerMemory int, dryRun bool) (int64, error) {
+	// Find memories that exceed the cap
+	rows, err := ss.QueryContext(ctx, `
+		SELECT memory_id, COUNT(*) as cnt
+		FROM facts
+		WHERE superseded_by IS NULL
+		GROUP BY memory_id
+		HAVING cnt > ?
+		ORDER BY cnt DESC
+	`, maxPerMemory)
+	if err != nil {
+		return 0, err
+	}
+
+	type overCap struct {
+		memoryID int64
+		count    int
+	}
+	var targets []overCap
+	for rows.Next() {
+		var t overCap
+		if err := rows.Scan(&t.memoryID, &t.count); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		targets = append(targets, t)
+	}
+	rows.Close()
+
+	if len(targets) > 0 {
+		fmt.Printf("  Found %d memories exceeding %d-fact cap\n", len(targets), maxPerMemory)
+	}
+
+	var totalPurged int64
+	for _, t := range targets {
+		// Load all facts for this memory
+		factRows, err := ss.QueryContext(ctx, `
+			SELECT id, subject, predicate, object, fact_type, confidence, source_quote
+			FROM facts
+			WHERE memory_id = ? AND superseded_by IS NULL
+			ORDER BY id
+		`, t.memoryID)
+		if err != nil {
+			return 0, err
+		}
+
+		type idFact struct {
+			id   int64
+			fact extract.ExtractedFact
+		}
+		var facts []idFact
+		for factRows.Next() {
+			var f idFact
+			if err := factRows.Scan(&f.id, &f.fact.Subject, &f.fact.Predicate, &f.fact.Object,
+				&f.fact.FactType, &f.fact.Confidence, &f.fact.SourceQuote); err != nil {
+				factRows.Close()
+				return 0, err
+			}
+			facts = append(facts, f)
+		}
+		factRows.Close()
+
+		// Run governor with cap
+		cfg := extract.DefaultGovernorConfig()
+		cfg.MaxFactsPerMemory = maxPerMemory
+		gov := extract.NewGovernor(cfg)
+
+		input := make([]extract.ExtractedFact, len(facts))
+		for j, f := range facts {
+			input[j] = f.fact
+		}
+
+		output := gov.Apply(input)
+
+		// Build survivor set
+		type triple struct{ s, p, o string }
+		survived := make(map[triple]bool)
+		for _, f := range output {
+			survived[triple{f.Subject, f.Predicate, f.Object}] = true
+		}
+
+		var idsToDelete []int64
+		for _, f := range facts {
+			key := triple{f.fact.Subject, f.fact.Predicate, f.fact.Object}
+			if !survived[key] {
+				idsToDelete = append(idsToDelete, f.id)
+			}
+		}
+
+		if len(idsToDelete) > 0 && !dryRun {
+			for _, id := range idsToDelete {
+				if _, err := ss.ExecContext(ctx, `DELETE FROM facts WHERE id = ?`, id); err != nil {
+					return 0, err
+				}
+			}
+		}
+		totalPurged += int64(len(idsToDelete))
+	}
+
+	return totalPurged, nil
 }
 
 func runMCP(args []string) error {
@@ -4335,6 +4630,7 @@ Commands:
   stale               Find outdated memory entries
   conflicts           Detect contradictory facts
   cleanup             Remove garbage memories and headless facts
+                      --purge-noise  Run fact quality governor to remove noise + enforce caps
   optimize            Manual DB maintenance (integrity check, VACUUM, ANALYZE)
   reason <query>      LLM reasoning over memories (search → prompt → analyze)
   bench               Benchmark LLM models for reason (speed, cost, quality)
