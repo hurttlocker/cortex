@@ -551,6 +551,9 @@ Generates a publication-ready markdown report with summary table, per-preset bre
 
 ```bash
 cortex stats        # Overview: counts, freshness, growth trends (24h/7d), storage, alerts
+cortex stats --growth-report          # 24h/7d growth composition + recommendation
+cortex stats --growth-report --json   # machine-readable growth composition
+cortex stats --growth-report --top-source-files 20  # widen top source file slice
 cortex stale        # What's fading — reinforce, delete, or skip
 cortex conflicts    # Contradictions among active facts (compact grouped output)
 cortex conflicts --verbose  # Full per-conflict detail (no compacting)
@@ -561,6 +564,8 @@ cortex conflicts --keep 12345 --drop 12346     # Surgical manual resolution
 cortex supersede 12345 --by 12399 --reason "policy updated"
 cortex search "deployment policy" --include-superseded
 ```
+
+`--growth-report` emits a deterministic recommendation: `no-op` (growth looks expected) or `maintenance-pass` (growth exceeds guardrails; run report-first maintenance and compare before/after).
 
 No more black-box memory. No more hoping the agent remembers correctly.
 

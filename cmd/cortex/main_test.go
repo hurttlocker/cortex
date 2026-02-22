@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -924,5 +925,102 @@ func TestRunCodexRolloutReportCLI_HelpExitZero(t *testing.T) {
 	}
 	if errOut.Len() != 0 {
 		t.Fatalf("unexpected stderr output: %s", errOut.String())
+	}
+}
+
+func TestRunStats_GrowthReportJSON(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	t.Setenv("CORTEX_DB", dbPath)
+	globalDBPath = ""
+	globalReadOnly = false
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	ctx := context.Background()
+	memoryID, err := s.AddMemory(ctx, &store.Memory{Content: "growth test", SourceFile: "notes.md"})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+	_, err = s.AddFact(ctx, &store.Fact{MemoryID: memoryID, Subject: "user", Predicate: "city", Object: "Philly", FactType: "kv", Confidence: 0.9, DecayRate: 0.01})
+	if err != nil {
+		t.Fatalf("add fact: %v", err)
+	}
+	s.Close()
+
+	var runErr error
+	out := captureStdout(func() {
+		runErr = runStats([]string{"--growth-report", "--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runStats growth-report failed: %v", runErr)
+	}
+	if !strings.Contains(out, `"windows"`) || !strings.Contains(out, `"recommendation"`) {
+		t.Fatalf("unexpected growth report JSON output: %s", out)
+	}
+}
+
+func TestRunStats_UnknownFlag(t *testing.T) {
+	err := runStats([]string{"--not-a-real-flag"})
+	if err == nil {
+		t.Fatal("expected error for unknown stats flag")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunStats_InvalidTopSourceFiles(t *testing.T) {
+	err := runStats([]string{"--growth-report", "--top-source-files", "0"})
+	if err == nil {
+		t.Fatal("expected error for invalid --top-source-files")
+	}
+	if !strings.Contains(err.Error(), "invalid --top-source-files") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunStats_GrowthReportTopSourceFilesLimit(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	t.Setenv("CORTEX_DB", dbPath)
+	globalDBPath = ""
+	globalReadOnly = false
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		_, err = s.AddMemory(ctx, &store.Memory{Content: "growth limit test", SourceFile: fmt.Sprintf("src-%d.md", i)})
+		if err != nil {
+			t.Fatalf("add memory: %v", err)
+		}
+	}
+	s.Close()
+
+	var runErr error
+	out := captureStdout(func() {
+		runErr = runStats([]string{"--growth-report", "--top-source-files", "2", "--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runStats growth-report failed: %v", runErr)
+	}
+
+	var payload struct {
+		Windows []struct {
+			Window           string `json:"window"`
+			TopMemorySources []any  `json:"top_memory_sources"`
+		} `json:"windows"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode growth report JSON: %v\nraw: %s", err, out)
+	}
+	if len(payload.Windows) == 0 {
+		t.Fatal("expected growth report windows")
+	}
+	if len(payload.Windows[0].TopMemorySources) > 2 {
+		t.Fatalf("expected top_memory_sources <= 2, got %d", len(payload.Windows[0].TopMemorySources))
 	}
 }

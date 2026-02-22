@@ -2,6 +2,7 @@ package observe
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -550,5 +551,144 @@ func TestNewEngine(t *testing.T) {
 	}
 	if engine.dbPath != ":memory:" {
 		t.Error("engine dbPath not set correctly")
+	}
+}
+
+func TestGetGrowthReport_Composition(t *testing.T) {
+	engine := newTestEngine(t)
+	ctx := context.Background()
+
+	mPlugin := addTestMemory(t, engine, "Auto capture content", "/tmp/cortex-capture-123/auto-capture.md")
+	mManual := addTestMemory(t, engine, "Manual import content", "memory/2026-02-22.md")
+	mOld := addTestMemory(t, engine, "Older window content", "notes/old.txt")
+
+	addTestFact(t, engine, mPlugin, "user", "decision", "use codex", "decision", 0.9)
+	addTestFact(t, engine, mManual, "user", "city", "Philly", "kv", 0.8)
+	oldFactID := addTestFact(t, engine, mOld, "system", "status", "stable", "state", 0.7)
+
+	sqliteStore := engine.store.(*store.SQLiteStore)
+	oldTime := time.Now().UTC().Add(-48 * time.Hour)
+	if _, err := sqliteStore.ExecContext(ctx, "UPDATE memories SET imported_at = ? WHERE id = ?", oldTime, mOld); err != nil {
+		t.Fatalf("update old memory timestamp: %v", err)
+	}
+	if _, err := sqliteStore.ExecContext(ctx, "UPDATE facts SET created_at = ? WHERE id = ?", oldTime, oldFactID); err != nil {
+		t.Fatalf("update old fact timestamp: %v", err)
+	}
+
+	report, err := engine.GetGrowthReport(ctx, GrowthReportOpts{TopSourceFiles: 5})
+	if err != nil {
+		t.Fatalf("GetGrowthReport failed: %v", err)
+	}
+
+	if len(report.Windows) != 2 {
+		t.Fatalf("expected 2 windows (24h,7d), got %d", len(report.Windows))
+	}
+
+	window24h := report.Windows[0]
+	if window24h.Window != "24h" {
+		t.Fatalf("expected first window 24h, got %s", window24h.Window)
+	}
+	if window24h.MemoriesDelta != 2 {
+		t.Fatalf("expected 24h memories delta 2, got %d", window24h.MemoriesDelta)
+	}
+	if window24h.FactsDelta != 2 {
+		t.Fatalf("expected 24h facts delta 2, got %d", window24h.FactsDelta)
+	}
+
+	foundMarkdown := false
+	for _, bucket := range window24h.MemoriesBySource {
+		if bucket.Key == "markdown" {
+			foundMarkdown = true
+			break
+		}
+	}
+	if !foundMarkdown {
+		t.Fatalf("expected markdown in source-type composition: %+v", window24h.MemoriesBySource)
+	}
+
+	foundPluginCapture := false
+	for _, bucket := range window24h.MemoriesByPathway {
+		if bucket.Key == "plugin_capture" {
+			foundPluginCapture = true
+			break
+		}
+	}
+	if !foundPluginCapture {
+		t.Fatalf("expected plugin_capture in pathway composition: %+v", window24h.MemoriesByPathway)
+	}
+
+	window7d := report.Windows[1]
+	if window7d.Window != "7d" {
+		t.Fatalf("expected second window 7d, got %s", window7d.Window)
+	}
+	if window7d.MemoriesDelta != 3 {
+		t.Fatalf("expected 7d memories delta 3, got %d", window7d.MemoriesDelta)
+	}
+	if window7d.FactsDelta != 3 {
+		t.Fatalf("expected 7d facts delta 3, got %d", window7d.FactsDelta)
+	}
+}
+
+func TestBuildGrowthRecommendation(t *testing.T) {
+	rec, guidance := buildGrowthRecommendation(
+		GrowthWindowReport{Window: "24h", MemoriesDelta: 550, FactsDelta: 210000},
+		GrowthWindowReport{Window: "7d", MemoriesDelta: 700, FactsDelta: 350000},
+	)
+	if rec != "maintenance-pass" {
+		t.Fatalf("expected maintenance-pass recommendation, got %q", rec)
+	}
+	if len(guidance) == 0 {
+		t.Fatal("expected guidance messages")
+	}
+
+	recNoOp, guidanceNoOp := buildGrowthRecommendation(
+		GrowthWindowReport{Window: "24h", MemoriesDelta: 0, FactsDelta: 0},
+		GrowthWindowReport{Window: "7d", MemoriesDelta: 0, FactsDelta: 0},
+	)
+	if recNoOp != "no-op" {
+		t.Fatalf("expected no-op recommendation, got %q", recNoOp)
+	}
+	if len(guidanceNoOp) == 0 {
+		t.Fatal("expected no-op guidance")
+	}
+}
+
+func TestGetGrowthReport_TopSourceFilesLimit(t *testing.T) {
+	engine := newTestEngine(t)
+	ctx := context.Background()
+
+	addTestMemory(t, engine, "A", "a.md")
+	addTestMemory(t, engine, "B", "b.md")
+	addTestMemory(t, engine, "C", "c.md")
+
+	report, err := engine.GetGrowthReport(ctx, GrowthReportOpts{TopSourceFiles: 2})
+	if err != nil {
+		t.Fatalf("GetGrowthReport failed: %v", err)
+	}
+	if len(report.Windows) == 0 {
+		t.Fatal("expected at least one window")
+	}
+	if got := len(report.Windows[0].TopMemorySources); got > 2 {
+		t.Fatalf("expected top source files limited to 2, got %d", got)
+	}
+}
+
+func TestGetGrowthReport_DefaultTopSourceFilesApplied(t *testing.T) {
+	engine := newTestEngine(t)
+	ctx := context.Background()
+
+	for i := 0; i < 12; i++ {
+		addTestMemory(t, engine, "x", fmt.Sprintf("src-%02d.md", i))
+	}
+
+	report, err := engine.GetGrowthReport(ctx, GrowthReportOpts{TopSourceFiles: 0})
+	if err != nil {
+		t.Fatalf("GetGrowthReport failed: %v", err)
+	}
+	if len(report.Windows) == 0 {
+		t.Fatal("expected at least one window")
+	}
+	if got := len(report.Windows[0].TopMemorySources); got != 10 {
+		t.Fatalf("expected default top source files 10, got %d", got)
 	}
 }

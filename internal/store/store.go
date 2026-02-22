@@ -249,6 +249,11 @@ func (s *SQLiteStore) QueryRowContext(ctx context.Context, query string, args ..
 	return s.db.QueryRowContext(ctx, query, args...)
 }
 
+// QueryContext executes a query that returns multiple rows.
+func (s *SQLiteStore) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return s.db.QueryContext(ctx, query, args...)
+}
+
 // NewStore creates a new SQLite-backed Store.
 // Pass ":memory:" for in-memory databases (testing).
 func NewStore(cfg StoreConfig) (Store, error) {

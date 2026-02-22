@@ -680,10 +680,37 @@ func runSearch(args []string) error {
 }
 
 func runStats(args []string) error {
-	jsonOutput := false
-	for _, arg := range args {
-		if arg == "--json" {
-			jsonOutput = true
+	type statsOpts struct {
+		jsonOutput     bool
+		growthReport   bool
+		topSourceFiles int
+	}
+
+	opts := statsOpts{topSourceFiles: 10}
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--json":
+			opts.jsonOutput = true
+		case args[i] == "--growth-report":
+			opts.growthReport = true
+		case args[i] == "--top-source-files" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n <= 0 {
+				return fmt.Errorf("invalid --top-source-files value: %s", args[i])
+			}
+			opts.topSourceFiles = n
+		case strings.HasPrefix(args[i], "--top-source-files="):
+			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--top-source-files="))
+			if err != nil || n <= 0 {
+				return fmt.Errorf("invalid --top-source-files value: %s", strings.TrimPrefix(args[i], "--top-source-files="))
+			}
+			opts.topSourceFiles = n
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		default:
+			return fmt.Errorf("unexpected argument: %s", args[i])
 		}
 	}
 
@@ -703,6 +730,18 @@ func runStats(args []string) error {
 		dbPath = store.DefaultDBPath
 	}
 	engine := observe.NewEngine(s, dbPath)
+
+	if opts.growthReport {
+		report, err := engine.GetGrowthReport(ctx, observe.GrowthReportOpts{TopSourceFiles: opts.topSourceFiles})
+		if err != nil {
+			return fmt.Errorf("getting growth report: %w", err)
+		}
+		if opts.jsonOutput || !isTTY() {
+			return outputGrowthReportJSON(report)
+		}
+		return outputGrowthReportTTY(report)
+	}
+
 	observeStats, err := engine.GetStats(ctx)
 	if err != nil {
 		return fmt.Errorf("getting observability stats: %w", err)
@@ -715,7 +754,7 @@ func runStats(args []string) error {
 		return fmt.Errorf("getting extended stats: %w", err)
 	}
 
-	if jsonOutput || !isTTY() {
+	if opts.jsonOutput || !isTTY() {
 		return outputEnhancedStatsJSON(observeStats, dateRange)
 	}
 
@@ -3175,6 +3214,45 @@ func outputEnhancedStatsTTY(stats *observe.Stats, dateRange string) error {
 	return nil
 }
 
+func outputGrowthReportJSON(report *observe.GrowthReport) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(report)
+}
+
+func outputGrowthReportTTY(report *observe.GrowthReport) error {
+	fmt.Println("Cortex Growth Composition Report")
+	fmt.Println("================================")
+	fmt.Printf("Generated: %s\n", report.GeneratedAt)
+
+	for _, window := range report.Windows {
+		fmt.Printf("\n%s window\n", window.Window)
+		fmt.Printf("  Memories delta: %d\n", window.MemoriesDelta)
+		fmt.Printf("  Facts delta:    %d\n", window.FactsDelta)
+		printGrowthBuckets("  Memory contributors by source type", window.MemoriesBySource)
+		printGrowthBuckets("  Top source files", window.TopMemorySources)
+		printGrowthBuckets("  Memory contributors by capture pathway", window.MemoriesByPathway)
+		printGrowthBuckets("  Fact contributors by type", window.FactsByType)
+	}
+
+	fmt.Printf("\nRecommendation: %s\n", report.Recommendation)
+	for _, line := range report.Guidance {
+		fmt.Printf("- %s\n", line)
+	}
+	return nil
+}
+
+func printGrowthBuckets(title string, buckets []observe.GrowthBucket) {
+	fmt.Printf("%s\n", title)
+	if len(buckets) == 0 {
+		fmt.Println("    (none)")
+		return
+	}
+	for _, b := range buckets {
+		fmt.Printf("    - %s: %d (%.1f%%)\n", b.Key, b.Count, b.Percent)
+	}
+}
+
 // Stale facts output functions
 func outputStaleJSON(staleFacts []observe.StaleFact) error {
 	enc := json.NewEncoder(os.Stdout)
@@ -4326,6 +4404,8 @@ Export Flags:
 
 Stats Flags:
   --json              Force JSON output even in TTY
+  --growth-report     Show 24h/7d ingest growth composition report
+  --top-source-files <N> Limit top source files in growth report (default: 10)
 
 Stale/Conflict Flags:
   --include-superseded Include superseded facts in stale/conflict views
@@ -4388,6 +4468,9 @@ Examples:
   cortex list --limit 50
   cortex list --facts --type kv
   cortex export --format markdown --output memories.md
+  cortex stats --growth-report
+  cortex stats --growth-report --json
+  cortex stats --growth-report --top-source-files 20
   cortex --db ~/my-cortex.db list --source ~/notes.md
   cortex optimize --check-only
   cortex optimize --json

@@ -40,6 +40,37 @@ type Growth struct {
 	Facts7d     int `json:"facts_7d"`
 }
 
+// GrowthReportOpts configures the growth composition report.
+type GrowthReportOpts struct {
+	TopSourceFiles int
+}
+
+// GrowthBucket captures one grouped contributor row.
+type GrowthBucket struct {
+	Key     string  `json:"key"`
+	Count   int     `json:"count"`
+	Percent float64 `json:"percent"`
+}
+
+// GrowthWindowReport holds growth composition for a single time window.
+type GrowthWindowReport struct {
+	Window            string         `json:"window"`
+	MemoriesDelta     int            `json:"memories_delta"`
+	FactsDelta        int            `json:"facts_delta"`
+	MemoriesBySource  []GrowthBucket `json:"memories_by_source_type"`
+	TopMemorySources  []GrowthBucket `json:"top_memory_sources"`
+	MemoriesByPathway []GrowthBucket `json:"memories_by_capture_pathway"`
+	FactsByType       []GrowthBucket `json:"facts_by_type"`
+}
+
+// GrowthReport is the high-signal composition report for ingest growth.
+type GrowthReport struct {
+	GeneratedAt    string               `json:"generated_at"`
+	Windows        []GrowthWindowReport `json:"windows"`
+	Recommendation string               `json:"recommendation"`
+	Guidance       []string             `json:"guidance,omitempty"`
+}
+
 // Freshness holds distribution of memories by import date buckets.
 type Freshness struct {
 	Today     int `json:"today"`
@@ -221,6 +252,212 @@ func buildGrowthAlerts(storageBytes int64, growth Growth) []string {
 	}
 
 	return alerts
+}
+
+// GetGrowthReport returns 24h/7d growth composition with recommendation guidance.
+func (e *Engine) GetGrowthReport(ctx context.Context, opts GrowthReportOpts) (*GrowthReport, error) {
+	if opts.TopSourceFiles <= 0 {
+		opts.TopSourceFiles = 10
+	}
+
+	sq, ok := e.store.(*store.SQLiteStore)
+	if !ok {
+		return nil, fmt.Errorf("growth report requires sqlite store")
+	}
+
+	windows := []struct {
+		label string
+		sql   string
+	}{
+		{label: "24h", sql: "-1 day"},
+		{label: "7d", sql: "-7 day"},
+	}
+
+	report := &GrowthReport{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Windows:     make([]GrowthWindowReport, 0, len(windows)),
+	}
+
+	for _, w := range windows {
+		memoryDelta, err := querySingleInt(ctx, sq, `
+			SELECT COUNT(*)
+			FROM memories
+			WHERE deleted_at IS NULL
+			  AND imported_at >= datetime('now', ?)
+		`, w.sql)
+		if err != nil {
+			return nil, fmt.Errorf("query %s memory delta: %w", w.label, err)
+		}
+
+		factDelta, err := querySingleInt(ctx, sq, `
+			SELECT COUNT(*)
+			FROM facts
+			WHERE superseded_by IS NULL
+			  AND created_at >= datetime('now', ?)
+		`, w.sql)
+		if err != nil {
+			return nil, fmt.Errorf("query %s fact delta: %w", w.label, err)
+		}
+
+		bySourceType, err := queryBuckets(ctx, sq, `
+			SELECT
+				CASE
+					WHEN json_valid(COALESCE(metadata, '')) AND COALESCE(json_extract(metadata, '$.source_type'), '') != '' THEN LOWER(json_extract(metadata, '$.source_type'))
+					WHEN LOWER(COALESCE(source_file, '')) LIKE '%.md' OR LOWER(COALESCE(source_file, '')) LIKE '%.markdown' THEN 'markdown'
+					WHEN LOWER(COALESCE(source_file, '')) LIKE '%.json' OR LOWER(COALESCE(source_file, '')) LIKE '%.jsonl' THEN 'json'
+					WHEN LOWER(COALESCE(source_file, '')) LIKE '%.yaml' OR LOWER(COALESCE(source_file, '')) LIKE '%.yml' THEN 'yaml'
+					WHEN LOWER(COALESCE(source_file, '')) LIKE '%.txt' OR LOWER(COALESCE(source_file, '')) LIKE '%.text' THEN 'text'
+					WHEN COALESCE(source_file, '') = '' THEN 'unknown'
+					ELSE 'other'
+				END AS key,
+				COUNT(*) AS count
+			FROM memories
+			WHERE deleted_at IS NULL
+			  AND imported_at >= datetime('now', ?)
+			GROUP BY key
+			ORDER BY count DESC, key ASC
+		`, memoryDelta, w.sql)
+		if err != nil {
+			return nil, fmt.Errorf("query %s source type composition: %w", w.label, err)
+		}
+
+		topSources, err := queryBuckets(ctx, sq, `
+			SELECT
+				CASE
+					WHEN COALESCE(source_file, '') = '' THEN '(unknown)'
+					ELSE source_file
+				END AS key,
+				COUNT(*) AS count
+			FROM memories
+			WHERE deleted_at IS NULL
+			  AND imported_at >= datetime('now', ?)
+			GROUP BY key
+			ORDER BY count DESC, key ASC
+			LIMIT ?
+		`, memoryDelta, w.sql, opts.TopSourceFiles)
+		if err != nil {
+			return nil, fmt.Errorf("query %s top source files: %w", w.label, err)
+		}
+
+		byPathway, err := queryBuckets(ctx, sq, `
+			SELECT
+				CASE
+					WHEN LOWER(COALESCE(source_file, '')) LIKE '%/cortex-capture-%' THEN 'plugin_capture'
+					ELSE 'manual_import'
+				END AS key,
+				COUNT(*) AS count
+			FROM memories
+			WHERE deleted_at IS NULL
+			  AND imported_at >= datetime('now', ?)
+			GROUP BY key
+			ORDER BY count DESC, key ASC
+		`, memoryDelta, w.sql)
+		if err != nil {
+			return nil, fmt.Errorf("query %s capture pathway composition: %w", w.label, err)
+		}
+
+		factsByType, err := queryBuckets(ctx, sq, `
+			SELECT
+				COALESCE(NULLIF(LOWER(fact_type), ''), 'unknown') AS key,
+				COUNT(*) AS count
+			FROM facts
+			WHERE superseded_by IS NULL
+			  AND created_at >= datetime('now', ?)
+			GROUP BY key
+			ORDER BY count DESC, key ASC
+		`, factDelta, w.sql)
+		if err != nil {
+			return nil, fmt.Errorf("query %s fact type composition: %w", w.label, err)
+		}
+
+		report.Windows = append(report.Windows, GrowthWindowReport{
+			Window:            w.label,
+			MemoriesDelta:     memoryDelta,
+			FactsDelta:        factDelta,
+			MemoriesBySource:  bySourceType,
+			TopMemorySources:  topSources,
+			MemoriesByPathway: byPathway,
+			FactsByType:       factsByType,
+		})
+	}
+
+	primary24h := report.Windows[0]
+	primary7d := report.Windows[1]
+	report.Recommendation, report.Guidance = buildGrowthRecommendation(primary24h, primary7d)
+
+	return report, nil
+}
+
+func querySingleInt(ctx context.Context, sq *store.SQLiteStore, sql string, args ...any) (int, error) {
+	var out int
+	if err := sq.QueryRowContext(ctx, sql, args...).Scan(&out); err != nil {
+		return 0, err
+	}
+	return out, nil
+}
+
+func queryBuckets(ctx context.Context, sq *store.SQLiteStore, sql string, total int, args ...any) ([]GrowthBucket, error) {
+	rows, err := sq.QueryContext(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]GrowthBucket, 0)
+	for rows.Next() {
+		var key string
+		var count int
+		if err := rows.Scan(&key, &count); err != nil {
+			return nil, err
+		}
+		pct := 0.0
+		if total > 0 {
+			pct = (float64(count) / float64(total)) * 100
+		}
+		out = append(out, GrowthBucket{Key: key, Count: count, Percent: pct})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func buildGrowthRecommendation(w24h GrowthWindowReport, w7d GrowthWindowReport) (string, []string) {
+	if w24h.MemoriesDelta == 0 && w24h.FactsDelta == 0 {
+		return "no-op", []string{"No ingest growth detected in the last 24h. No maintenance action needed."}
+	}
+
+	expectedMemPerDay := float64(w7d.MemoriesDelta) / 7.0
+	if expectedMemPerDay < 1 {
+		expectedMemPerDay = 1
+	}
+	expectedFactsPerDay := float64(w7d.FactsDelta) / 7.0
+	if expectedFactsPerDay < 1 {
+		expectedFactsPerDay = 1
+	}
+
+	recommendedMemorySpike := int(math.Ceil(expectedMemPerDay * 3))
+	if recommendedMemorySpike < 500 {
+		recommendedMemorySpike = 500
+	}
+	recommendedFactSpike := int(math.Ceil(expectedFactsPerDay * 3))
+	if recommendedFactSpike < 200000 {
+		recommendedFactSpike = 200000
+	}
+
+	guidance := []string{
+		fmt.Sprintf("Suggested growth alert thresholds: memories_24h >= %d, facts_24h >= %d (based on 7d baseline x3).", recommendedMemorySpike, recommendedFactSpike),
+	}
+
+	recommendation := "no-op"
+	if w24h.MemoriesDelta >= 500 || w24h.FactsDelta >= 200000 {
+		recommendation = "maintenance-pass"
+		guidance = append(guidance,
+			"Growth spike exceeds current guardrails; run report-first maintenance (backup, cleanup/optimize), then compare before/after stats.",
+		)
+	}
+
+	return recommendation, guidance
 }
 
 // GetStaleFacts returns facts that have decayed below the confidence threshold.
