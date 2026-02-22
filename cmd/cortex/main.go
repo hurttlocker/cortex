@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/codexrollout"
+	"github.com/hurttlocker/cortex/internal/connect"
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/ingest"
@@ -152,6 +153,11 @@ func main() {
 		exitCode := runCodexRolloutReportCLI(args[1:], os.Stdout, os.Stderr)
 		if exitCode != 0 {
 			os.Exit(exitCode)
+		}
+	case "connect":
+		if err := runConnect(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
 		}
 	case "mcp":
 		if err := runMCP(args[1:]); err != nil {
@@ -4620,6 +4626,324 @@ func runAutoTag(ctx context.Context, s store.Store) error {
 	return nil
 }
 
+// runConnect handles the `cortex connect` command family.
+func runConnect(args []string) error {
+	if len(args) < 1 {
+		fmt.Println(`Usage: cortex connect <subcommand>
+
+Subcommands:
+  init                Initialize the connector system
+  add <provider>      Add a new connector
+  sync                Sync connectors (--all or --provider <name>)
+  status              Show connector health and sync state
+  remove <provider>   Remove a connector
+  enable <provider>   Enable a disabled connector
+  disable <provider>  Disable a connector
+  providers           List available provider types`)
+		return nil
+	}
+
+	switch args[0] {
+	case "init":
+		return runConnectInit()
+	case "add":
+		return runConnectAdd(args[1:])
+	case "sync":
+		return runConnectSync(args[1:])
+	case "status":
+		return runConnectStatus()
+	case "remove":
+		return runConnectRemove(args[1:])
+	case "enable":
+		return runConnectEnable(args[1:])
+	case "disable":
+		return runConnectDisable(args[1:])
+	case "providers":
+		return runConnectProviders()
+	default:
+		return fmt.Errorf("unknown connect subcommand: %s", args[0])
+	}
+}
+
+func runConnectInit() error {
+	dbPath := getDBPath()
+	st, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer st.Close()
+
+	// Migration already runs on NewStore, so the connectors table exists now
+	fmt.Println("✓ Connector system initialized")
+	fmt.Println("  Database:", dbPath)
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Println("  cortex connect providers   # See available providers")
+	fmt.Println("  cortex connect add <name>  # Add a connector")
+	return nil
+}
+
+func runConnectAdd(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: cortex connect add <provider>")
+	}
+	providerName := args[0]
+
+	// Check if provider is registered
+	provider := connect.DefaultRegistry.Get(providerName)
+
+	dbPath := getDBPath()
+	st, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer st.Close()
+
+	// Get the underlying DB for connector store
+	sqliteSt, ok := st.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("connector operations require SQLite store")
+	}
+	cs := connect.NewConnectorStore(sqliteSt.GetDB())
+
+	// Check for duplicate
+	existing, _ := cs.Get(context.Background(), providerName)
+	if existing != nil {
+		return fmt.Errorf("connector %q already exists (use 'cortex connect status' to check)", providerName)
+	}
+
+	// Get default config if provider is registered, otherwise use empty
+	var config json.RawMessage
+	if provider != nil {
+		config = provider.DefaultConfig()
+	} else {
+		config = json.RawMessage("{}")
+		fmt.Printf("⚠  Provider %q is not yet implemented — adding as placeholder.\n", providerName)
+		fmt.Println("   It will become active when the provider is registered.")
+		fmt.Println()
+	}
+
+	// Parse optional --config flag
+	fs := flag.NewFlagSet("connect-add", flag.ContinueOnError)
+	configStr := fs.String("config", "", "JSON config string")
+	fs.Parse(args[1:])
+	if *configStr != "" {
+		config = json.RawMessage(*configStr)
+	}
+
+	id, err := cs.Add(context.Background(), providerName, config)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("✓ Added connector: %s (id=%d)\n", providerName, id)
+	if provider != nil {
+		fmt.Printf("  Display name: %s\n", provider.DisplayName())
+	}
+	fmt.Println()
+	fmt.Println("Next steps:")
+	if provider != nil {
+		fmt.Printf("  cortex connect sync --provider %s   # Run first sync\n", providerName)
+	} else {
+		fmt.Printf("  # Provider %q will sync once its implementation is available\n", providerName)
+	}
+	return nil
+}
+
+func runConnectSync(args []string) error {
+	fs := flag.NewFlagSet("connect-sync", flag.ContinueOnError)
+	all := fs.Bool("all", false, "Sync all enabled connectors")
+	providerName := fs.String("provider", "", "Sync a specific provider")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if !*all && *providerName == "" {
+		return fmt.Errorf("usage: cortex connect sync --all | --provider <name>")
+	}
+
+	dbPath := getDBPath()
+	st, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer st.Close()
+
+	sqliteSt, ok := st.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("connector operations require SQLite store")
+	}
+	cs := connect.NewConnectorStore(sqliteSt.GetDB())
+	engine := connect.NewSyncEngine(connect.DefaultRegistry, cs, st, globalVerbose)
+
+	ctx := context.Background()
+
+	if *all {
+		results, err := engine.SyncAll(ctx)
+		if err != nil {
+			return err
+		}
+		if len(results) == 0 {
+			fmt.Println("No enabled connectors to sync.")
+			return nil
+		}
+		for _, r := range results {
+			printSyncResult(r)
+		}
+	} else {
+		result, err := engine.SyncProvider(ctx, *providerName)
+		if err != nil {
+			return err
+		}
+		printSyncResult(result)
+	}
+	return nil
+}
+
+func printSyncResult(r connect.SyncResult) {
+	if r.Error != "" {
+		fmt.Printf("✗ %s: %s\n", r.Provider, r.Error)
+	} else {
+		fmt.Printf("✓ %s: %d fetched, %d imported, %d skipped (%s)\n",
+			r.Provider, r.RecordsFetched, r.RecordsImported, r.RecordsSkipped,
+			r.Duration.Round(time.Millisecond))
+	}
+}
+
+func runConnectStatus() error {
+	dbPath := getDBPath()
+	st, err := store.NewStore(store.StoreConfig{DBPath: dbPath, ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer st.Close()
+
+	sqliteSt, ok := st.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("connector operations require SQLite store")
+	}
+	cs := connect.NewConnectorStore(sqliteSt.GetDB())
+
+	connectors, err := cs.List(context.Background(), false)
+	if err != nil {
+		return err
+	}
+
+	if len(connectors) == 0 {
+		fmt.Println("No connectors configured.")
+		fmt.Println("  cortex connect add <provider>  # Add one")
+		return nil
+	}
+
+	fmt.Printf("Connectors (%d):\n\n", len(connectors))
+	for _, c := range connectors {
+		status := "✓ enabled"
+		if !c.Enabled {
+			status = "○ disabled"
+		}
+
+		fmt.Printf("  %s  %s\n", status, c.Provider)
+		fmt.Printf("         Records: %d imported\n", c.RecordsImported)
+
+		if c.LastSyncAt != nil {
+			ago := time.Since(*c.LastSyncAt).Round(time.Second)
+			fmt.Printf("         Last sync: %s (%s ago)\n", c.LastSyncAt.Format("2006-01-02 15:04:05"), ago)
+		} else {
+			fmt.Printf("         Last sync: never\n")
+		}
+
+		if c.LastError != "" {
+			fmt.Printf("         ⚠  Error: %s\n", c.LastError)
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+func runConnectRemove(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: cortex connect remove <provider>")
+	}
+
+	dbPath := getDBPath()
+	st, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer st.Close()
+
+	sqliteSt, ok := st.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("connector operations require SQLite store")
+	}
+	cs := connect.NewConnectorStore(sqliteSt.GetDB())
+
+	if err := cs.Remove(context.Background(), args[0]); err != nil {
+		return err
+	}
+
+	fmt.Printf("✓ Removed connector: %s\n", args[0])
+	return nil
+}
+
+func runConnectEnable(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: cortex connect enable <provider>")
+	}
+	return setConnectorEnabled(args[0], true)
+}
+
+func runConnectDisable(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: cortex connect disable <provider>")
+	}
+	return setConnectorEnabled(args[0], false)
+}
+
+func setConnectorEnabled(provider string, enabled bool) error {
+	dbPath := getDBPath()
+	st, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer st.Close()
+
+	sqliteSt, ok := st.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("connector operations require SQLite store")
+	}
+	cs := connect.NewConnectorStore(sqliteSt.GetDB())
+
+	if err := cs.SetEnabled(context.Background(), provider, enabled); err != nil {
+		return err
+	}
+
+	action := "enabled"
+	if !enabled {
+		action = "disabled"
+	}
+	fmt.Printf("✓ Connector %s: %s\n", provider, action)
+	return nil
+}
+
+func runConnectProviders() error {
+	names := connect.DefaultRegistry.List()
+	if len(names) == 0 {
+		fmt.Println("No providers registered yet.")
+		fmt.Println()
+		fmt.Println("Coming soon: gmail, github, calendar, drive, slack")
+		fmt.Println("Providers will be added in upcoming releases.")
+		return nil
+	}
+
+	fmt.Printf("Available providers (%d):\n\n", len(names))
+	for _, name := range names {
+		p := connect.DefaultRegistry.Get(name)
+		fmt.Printf("  %-15s  %s\n", name, p.DisplayName())
+	}
+	return nil
+}
+
 func printUsage() {
 	fmt.Printf(`cortex %s — Import-first memory layer for AI agents
 
@@ -4648,6 +4972,7 @@ Commands:
   codex-rollout-report Summarize reason telemetry + optional rollout guardrails
   projects            List all project tags with memory/fact counts
   tag                 Tag memories by project (--project, --source, --id, --auto)
+  connect             Manage external service connectors (init, add, sync, status)
   mcp                 Start MCP (Model Context Protocol) server
   version             Print version
 
@@ -4794,6 +5119,16 @@ Examples:
   cortex codex-rollout-report --one-shot-p95-warn-ms 15000 --recursive-known-cost-min-share 0.90
   cortex mcp                          # Start MCP server (stdio, for Claude Desktop/Cursor)
   cortex mcp --port 8080              # Start MCP server (HTTP+SSE)
+
+Connect:
+  cortex connect init                 # Initialize connector system
+  cortex connect add gmail            # Add a connector (shows config template)
+  cortex connect sync --all           # Sync all enabled connectors
+  cortex connect sync --provider gmail # Sync a specific connector
+  cortex connect status               # Show connector health and sync state
+  cortex connect remove gmail         # Remove a connector
+  cortex connect enable gmail         # Enable a disabled connector
+  cortex connect disable gmail        # Disable a connector
 
 Documentation:
   https://github.com/hurttlocker/cortex

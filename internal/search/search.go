@@ -111,12 +111,12 @@ type Options struct {
 
 	// Metadata-aware ranking context (Issue #148)
 	// These don't filter — they boost results that match the calling context.
-	BoostAgent   string // Boost results from this agent (e.g., "main", "ace")
-	BoostChannel string // Boost results from this channel (e.g., "discord", "telegram")
-	After             string   // Filter memories imported after date YYYY-MM-DD (Issue #30)
-	Before            string   // Filter memories imported before date YYYY-MM-DD (Issue #30)
-	IncludeSuperseded bool     // Include memories backed only by superseded facts
-	Explain           bool     // Attach explainability/provenance payloads to results
+	BoostAgent        string // Boost results from this agent (e.g., "main", "ace")
+	BoostChannel      string // Boost results from this channel (e.g., "discord", "telegram")
+	After             string // Filter memories imported after date YYYY-MM-DD (Issue #30)
+	Before            string // Filter memories imported before date YYYY-MM-DD (Issue #30)
+	IncludeSuperseded bool   // Include memories backed only by superseded facts
+	Explain           bool   // Attach explainability/provenance payloads to results
 }
 
 // Default minimum score thresholds by mode.
