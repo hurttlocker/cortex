@@ -69,6 +69,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating SLO indexes: %w", err)
 	}
 
+	// Schema evolution: connectors table (v0.5.0 — Issue #138/#139)
+	if err := s.migrateConnectorsTable(); err != nil {
+		return fmt.Errorf("migrating connectors table: %w", err)
+	}
+
 	return nil
 }
 
@@ -763,6 +768,50 @@ func (s *SQLiteStore) migrateSLOIndexes() error {
 	}
 
 	return nil
+}
+
+// migrateConnectorsTable creates the connectors table for Cortex Connect (#138/#139).
+func (s *SQLiteStore) migrateConnectorsTable() error {
+	done, err := s.isMetaFlagEnabled("connectors_v1")
+	if err != nil {
+		return err
+	}
+	if done {
+		return nil
+	}
+
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS connectors (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			provider        TEXT NOT NULL UNIQUE,
+			config          TEXT NOT NULL DEFAULT '{}',
+			enabled         INTEGER NOT NULL DEFAULT 1,
+			last_sync_at    DATETIME,
+			last_error      TEXT,
+			records_imported INTEGER NOT NULL DEFAULT 0,
+			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("creating connectors table: %w", err)
+		}
+	}
+
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('connectors_v1', 'true')`); err != nil {
+		return fmt.Errorf("setting connectors_v1 flag: %w", err)
+	}
+
+	return nil
+}
+
+// GetDB returns the underlying *sql.DB for packages that need direct access
+// (e.g., internal/connect). This does NOT break encapsulation — callers still
+// go through typed store methods for normal operations.
+func (s *SQLiteStore) GetDB() *sql.DB {
+	return s.db
 }
 
 // truncate shortens a string for error messages.
