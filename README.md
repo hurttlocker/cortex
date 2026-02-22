@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/cortex-logo-redpink.jpg" alt="Cortex Logo" width="120" height="120">
+  <img src="docs/assets/cortex-logo-redpink-transparent.png" alt="Cortex Logo" width="120" height="120">
 </p>
 
 <h1 align="center">Cortex</h1>
