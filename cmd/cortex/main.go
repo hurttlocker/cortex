@@ -1992,8 +1992,6 @@ func runCleanup(args []string) error {
 
 // purgeNoiseFacts deletes facts that fail the governor's quality filters.
 func purgeNoiseFacts(ctx context.Context, ss *store.SQLiteStore, dryRun bool) (int64, error) {
-	gov := extract.NewGovernor(extract.DefaultGovernorConfig())
-
 	// Count total facts
 	var totalFacts int
 	if err := ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM facts WHERE superseded_by IS NULL`).Scan(&totalFacts); err != nil {
@@ -2060,7 +2058,6 @@ func purgeNoiseFacts(ctx context.Context, ss *store.SQLiteStore, dryRun bool) (i
 		noCap := extract.DefaultGovernorConfig()
 		noCap.MaxFactsPerMemory = 0 // No cap for noise-only pass
 		noCapGov := extract.NewGovernor(noCap)
-		_ = gov // suppress unused
 
 		// Build input slice
 		input := make([]extract.ExtractedFact, len(facts))
