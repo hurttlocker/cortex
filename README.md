@@ -24,6 +24,7 @@
   <a href="#-how-cortex-is-different">What's Different</a> •
   <a href="#-vs-alternatives">Comparison</a> •
   <a href="#-roadmap">Roadmap</a> •
+  <a href="docs/branding.md">Brand Assets</a> •
   <a href="#-contributing">Contributing</a>
 </p>
 
