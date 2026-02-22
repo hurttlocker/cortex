@@ -744,6 +744,54 @@ Real-world benchmark on 967 memories from a production agent workspace. Embeddin
 
 > **Recommendation:** Use `hybrid` as default mode. Fall back to `bm25` for exact keyword lookups, `semantic` for exploratory/conceptual queries.
 
+### 🔌 Cortex Connect — Sync External Services Into Memory
+
+Import isn't just for files anymore. **Cortex Connect** pulls data from services you already use — GitHub, Gmail, Google Calendar, and more — through the same quality-gated pipeline.
+
+All connector data gets full provenance, confidence scoring, fact extraction, and search. No separate data silo.
+
+```bash
+# Initialize and add a connector
+cortex connect init
+cortex connect add github --config '{
+  "token": "ghp_your_token",
+  "repos": ["your-org/your-repo"],
+  "project": "my-project"
+}'
+
+# Sync
+cortex connect sync --provider github    # One provider
+cortex connect sync --all                # All enabled connectors
+
+# Manage
+cortex connect status                    # Health + sync state
+cortex connect disable github            # Pause a connector
+cortex connect providers                 # List available types
+```
+
+**Available connectors:**
+
+| Provider | Status | What's Synced | Auth |
+|----------|--------|---------------|------|
+| **GitHub** | ✅ Live | Issues, PRs, comments | PAT or `GITHUB_TOKEN` env |
+| **Gmail** | 🔜 Next | Messages, threads | Google OAuth 2.0 |
+| **Google Calendar** | 🔜 Planned | Events | Google OAuth 2.0 |
+| **Google Drive** | 🔜 Planned | Documents | Google OAuth 2.0 |
+| **Slack** | 🔜 Planned | Messages, threads | Bot token |
+
+See [`.env.example`](.env.example) for credential setup.
+
+### 🛡️ Fact Quality Governor — Signal Over Noise
+
+The Fact Quality Governor (v0.4.0) ensures extracted facts are high-signal:
+
+- **Noise filters**: drops markdown artifacts, generic subjects, circular facts
+- **Quality scoring**: identity/decision facts rank above key-value
+- **Per-memory cap**: top 50 facts by quality score (configurable)
+- **Retroactive cleanup**: `cortex cleanup --purge-noise`
+
+Production impact: reduced 1.9M noisy facts to 5.3K high-signal (99.7% reduction, 982MB → 12MB).
+
 ## 🗺️ Roadmap
 
 ### ✅ Phase 1 — Foundation *(Complete)*
@@ -776,17 +824,26 @@ Shipped on `main` and now in stable release path:
 - **Lane 8:** one-command external audit preflight artifact (`scripts/audit_preflight.sh`)
 - **Lane 9:** hostile-audit packet + immutable-target handoff docs (`docs/audits/v0.3.5-rc2-*.md`, `docs/releases/v0.3.5-rc2.md`)
 
-### 🔭 Phase 5 — Next Priorities
-- SLO trend comparison across canary history (relative regression detection)
-- Codex real-work dogfooding loop (collect evidence, tune thresholds/prompting only when data justifies)
-- Dashboard-grade visibility for release gates + canary trend history
-- UX polish for operator-facing audit/release evidence surfaces
+### ✅ Phase 5 — Agent Memory Excellence *(Complete in v0.4.0)*
+Epic #144 — quality, scale, and trust overhaul:
+- **Fact Quality Governor** (#146): noise filters, quality scoring, per-memory caps — 1.9M → 5.3K facts
+- **SLO Performance Hardening** (#147): covering indexes, benchmark suite, published p95 gates
+- **Metadata-Aware Retrieval** (#148): agent/channel/project ranking boosts, recency scoring
+- **Agent-Memory Benchmark Suite** (#149): 30-query CI regression gate
+- **Cortex Connect** (#138/#139): connector framework + GitHub provider
+
+### 🔭 Phase 6 — Connector Expansion *(In Progress)*
+- Gmail connector (Google OAuth 2.0)
+- Google Calendar + Drive connectors
+- Slack connector
+- MCP connector bridge for long-tail tools
+- OpenClaw plugin extension for connector management
 
 ### Current State
-- Latest stable release: **`v0.3.5`**
-- External hostile audit on immutable RC target (`v0.3.5-rc2`) verdict: **GO**
-- Current source fallback version: **`0.3.5-dev`**
-- Open issues: **none**
+- Latest stable release: **`v0.4.0`**
+- Current source version: **`0.4.0-dev`**
+- Test suite: **459 tests across 15 packages**
+- Open issues: #140, #141, #143 (connector extensions)
 
 See [docs/CORTEX_DEEP_DIVE.md](docs/CORTEX_DEEP_DIVE.md) for the full strategic deep dive and [docs/prd/](docs/prd/) for detailed implementation specs.
 

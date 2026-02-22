@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -82,8 +83,19 @@ func (g *GitHubProvider) Fetch(ctx context.Context, config json.RawMessage, sinc
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
+	// Fall back to GITHUB_TOKEN env var if no token in config
+	if cfg.Token == "" {
+		cfg.Token = os.Getenv("GITHUB_TOKEN")
+	}
+
 	if err := g.ValidateConfig(config); err != nil {
-		return nil, err
+		// Re-validate with the env token injected
+		if cfg.Token == "" {
+			return nil, fmt.Errorf("no token provided: set in config or GITHUB_TOKEN env var")
+		}
+		if len(cfg.Repos) == 0 {
+			return nil, fmt.Errorf("at least one repo is required (format: owner/repo)")
+		}
 	}
 
 	client := &gitHubClient{
