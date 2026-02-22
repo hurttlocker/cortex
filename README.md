@@ -2,7 +2,7 @@
   <img src="docs/assets/cortex-logo-redpink-transparent.png" alt="Cortex Logo" width="120" height="120">
 </p>
 
-<h1 align="center">Cortex</h1>
+<h1 align="center">CORTEX</h1>
 
 <p align="center">
   <strong>Memory that thinks like you do.</strong><br>
