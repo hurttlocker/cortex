@@ -1,0 +1,138 @@
+package search
+
+import (
+	"testing"
+	"time"
+
+	"github.com/hurttlocker/cortex/internal/store"
+)
+
+func TestApplyMetadataBoosts_AgentMatch(t *testing.T) {
+	results := []Result{
+		{Content: "from main agent", Score: 1.0, Metadata: &store.Metadata{AgentID: "main"}},
+		{Content: "from ace agent", Score: 1.0, Metadata: &store.Metadata{AgentID: "ace"}},
+		{Content: "no metadata", Score: 1.0},
+	}
+
+	opts := Options{BoostAgent: "main"}
+	boosted := applyMetadataBoosts(results, opts)
+
+	if boosted[0].Content != "from main agent" {
+		t.Errorf("expected main agent result first, got %q", boosted[0].Content)
+	}
+	if boosted[0].Score <= 1.0 {
+		t.Errorf("expected boosted score > 1.0, got %f", boosted[0].Score)
+	}
+	if boosted[1].Score != 1.0 {
+		t.Errorf("expected non-matched score unchanged at 1.0, got %f", boosted[1].Score)
+	}
+}
+
+func TestApplyMetadataBoosts_ChannelMatch(t *testing.T) {
+	results := []Result{
+		{Content: "telegram msg", Score: 1.0, Metadata: &store.Metadata{Channel: "telegram"}},
+		{Content: "discord msg", Score: 1.0, Metadata: &store.Metadata{Channel: "discord"}},
+	}
+
+	opts := Options{BoostChannel: "discord"}
+	boosted := applyMetadataBoosts(results, opts)
+
+	if boosted[0].Content != "discord msg" {
+		t.Errorf("expected discord result first, got %q", boosted[0].Content)
+	}
+}
+
+func TestApplyMetadataBoosts_NoBoostContext(t *testing.T) {
+	results := []Result{
+		{Content: "first", Score: 0.9},
+		{Content: "second", Score: 0.8},
+	}
+
+	opts := Options{} // No boost context
+	boosted := applyMetadataBoosts(results, opts)
+
+	if boosted[0].Score != 0.9 || boosted[1].Score != 0.8 {
+		t.Error("scores should be unchanged when no boost context")
+	}
+}
+
+func TestApplyRecencyBoost_TodayBoosted(t *testing.T) {
+	now := time.Now()
+	results := []Result{
+		{Content: "old memory", Score: 1.0, ImportedAt: now.AddDate(0, -2, 0)},
+		{Content: "today memory", Score: 1.0, ImportedAt: now},
+		{Content: "week ago", Score: 1.0, ImportedAt: now.AddDate(0, 0, -3)},
+	}
+
+	boosted := applyRecencyBoost(results, false)
+
+	if boosted[0].Content != "today memory" {
+		t.Errorf("expected today's memory first, got %q", boosted[0].Content)
+	}
+	if boosted[0].Score <= 1.0 {
+		t.Errorf("expected today's score > 1.0, got %f", boosted[0].Score)
+	}
+}
+
+func TestApplyRecencyBoost_WeekBoostedMoreThanMonth(t *testing.T) {
+	now := time.Now()
+	results := []Result{
+		{Content: "3 weeks ago", Score: 1.0, ImportedAt: now.AddDate(0, 0, -21)},
+		{Content: "3 days ago", Score: 1.0, ImportedAt: now.AddDate(0, 0, -3)},
+	}
+
+	boosted := applyRecencyBoost(results, false)
+
+	weekScore := boosted[0].Score
+	monthScore := boosted[1].Score
+
+	// 3 days ago should be boosted more than 3 weeks ago
+	if weekScore <= monthScore {
+		t.Errorf("expected week-old score (%f) > month-old score (%f)", weekScore, monthScore)
+	}
+}
+
+func TestApplyRecencyBoost_OldNotBoosted(t *testing.T) {
+	now := time.Now()
+	results := []Result{
+		{Content: "ancient", Score: 1.0, ImportedAt: now.AddDate(-1, 0, 0)},
+	}
+
+	boosted := applyRecencyBoost(results, false)
+
+	if boosted[0].Score != 1.0 {
+		t.Errorf("expected ancient memory score unchanged at 1.0, got %f", boosted[0].Score)
+	}
+}
+
+func TestApplyMetadataBoosts_CaseInsensitive(t *testing.T) {
+	results := []Result{
+		{Content: "from Main", Score: 1.0, Metadata: &store.Metadata{AgentID: "Main"}},
+	}
+
+	opts := Options{BoostAgent: "main"}
+	boosted := applyMetadataBoosts(results, opts)
+
+	if boosted[0].Score <= 1.0 {
+		t.Errorf("expected case-insensitive match to boost, got %f", boosted[0].Score)
+	}
+}
+
+func TestApplyMetadataBoosts_BothAgentAndChannel(t *testing.T) {
+	results := []Result{
+		{Content: "both match", Score: 1.0, Metadata: &store.Metadata{AgentID: "main", Channel: "discord"}},
+		{Content: "agent only", Score: 1.0, Metadata: &store.Metadata{AgentID: "main", Channel: "telegram"}},
+		{Content: "neither", Score: 1.0, Metadata: &store.Metadata{AgentID: "ace", Channel: "telegram"}},
+	}
+
+	opts := Options{BoostAgent: "main", BoostChannel: "discord"}
+	boosted := applyMetadataBoosts(results, opts)
+
+	if boosted[0].Content != "both match" {
+		t.Errorf("expected double-boosted result first, got %q", boosted[0].Content)
+	}
+	// Double boost should be > single boost
+	if boosted[0].Score <= boosted[1].Score {
+		t.Errorf("expected double boost (%f) > single boost (%f)", boosted[0].Score, boosted[1].Score)
+	}
+}
