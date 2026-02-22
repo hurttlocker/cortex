@@ -21,6 +21,7 @@ Review:
 ```bash
 cortex stats --json
 cortex stats --growth-report --json
+cortex stats --growth-report --top-source-files 20
 cortex stale 7
 cortex optimize --check-only
 ```
