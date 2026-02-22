@@ -1,0 +1,41 @@
+name: Agent Memory Benchmark
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Agent Memory Quality Gate
+        env:
+          BENCH_OUTPUT: /tmp/agent-memory-scorecard.json
+        run: go test -v -run TestAgentMemoryBenchmark ./scripts/bench/
+
+      - name: Upload scorecard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-memory-scorecard
+          path: /tmp/agent-memory-scorecard.json
+          retention-days: 30
+
+      - name: SLO Benchmark (Go bench)
+        run: |
+          go test ./internal/store/ -bench=. -benchtime=2s -run=^$ | tee /tmp/go-bench-output.txt
+
+      - name: Upload Go bench
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-bench-output
+          path: /tmp/go-bench-output.txt
+          retention-days: 30
