@@ -64,6 +64,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating FTS multi-column: %w", err)
 	}
 
+	// Schema evolution: SLO performance indexes (v0.4.0 — Issue #147)
+	if err := s.migrateSLOIndexes(); err != nil {
+		return fmt.Errorf("migrating SLO indexes: %w", err)
+	}
+
 	return nil
 }
 
@@ -719,6 +724,44 @@ func (s *SQLiteStore) seedMeta() error {
 			return fmt.Errorf("seeding meta key %q: %w", k, err)
 		}
 	}
+	return nil
+}
+
+// migrateSLOIndexes adds performance indexes for search, stale, and conflicts SLOs.
+func (s *SQLiteStore) migrateSLOIndexes() error {
+	done, err := s.isMetaFlagEnabled("slo_indexes_v1")
+	if err != nil {
+		return err
+	}
+	if done {
+		return nil
+	}
+
+	indexes := []string{
+		// Covering index for conflicts query: GROUP BY LOWER(subject), LOWER(predicate)
+		// with superseded_by filter. Dramatically speeds up the self-join.
+		`CREATE INDEX IF NOT EXISTS idx_facts_conflict_scan
+		 ON facts(superseded_by, subject, predicate, object)`,
+
+		// Index for stale facts query: confidence + last_reinforced scan
+		`CREATE INDEX IF NOT EXISTS idx_facts_stale_scan
+		 ON facts(superseded_by, confidence, last_reinforced)`,
+
+		// Index for memory-joined fact lookups (used in governor purge and search)
+		`CREATE INDEX IF NOT EXISTS idx_facts_memid_superseded
+		 ON facts(memory_id, superseded_by)`,
+	}
+
+	for _, ddl := range indexes {
+		if _, err := s.db.Exec(ddl); err != nil {
+			return fmt.Errorf("creating SLO index: %w", err)
+		}
+	}
+
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('slo_indexes_v1', '1')`); err != nil {
+		return fmt.Errorf("setting slo_indexes_v1 flag: %w", err)
+	}
+
 	return nil
 }
 
