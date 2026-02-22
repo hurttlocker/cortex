@@ -82,13 +82,13 @@ type Connector struct {
 
 // SyncResult holds the outcome of a connector sync operation.
 type SyncResult struct {
-	Provider        string    `json:"provider"`
-	RecordsFetched  int       `json:"records_fetched"`
-	RecordsImported int       `json:"records_imported"`
-	RecordsSkipped  int       `json:"records_skipped"`
+	Provider        string        `json:"provider"`
+	RecordsFetched  int           `json:"records_fetched"`
+	RecordsImported int           `json:"records_imported"`
+	RecordsSkipped  int           `json:"records_skipped"`
 	Duration        time.Duration `json:"duration"`
-	Error           string    `json:"error,omitempty"`
-	SyncedAt        time.Time `json:"synced_at"`
+	Error           string        `json:"error,omitempty"`
+	SyncedAt        time.Time     `json:"synced_at"`
 }
 
 // Registry holds all registered providers. Thread-safe.

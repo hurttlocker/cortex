@@ -15,10 +15,10 @@ type mockProvider struct {
 	fetchErr    error
 }
 
-func (m *mockProvider) Name() string                                    { return m.name }
-func (m *mockProvider) DisplayName() string                             { return m.displayName }
-func (m *mockProvider) ValidateConfig(config json.RawMessage) error     { return nil }
-func (m *mockProvider) DefaultConfig() json.RawMessage                  { return json.RawMessage(`{"token": ""}`) }
+func (m *mockProvider) Name() string                                { return m.name }
+func (m *mockProvider) DisplayName() string                         { return m.displayName }
+func (m *mockProvider) ValidateConfig(config json.RawMessage) error { return nil }
+func (m *mockProvider) DefaultConfig() json.RawMessage              { return json.RawMessage(`{"token": ""}`) }
 func (m *mockProvider) Fetch(ctx context.Context, cfg json.RawMessage, since *time.Time) ([]Record, error) {
 	if m.fetchErr != nil {
 		return nil, m.fetchErr

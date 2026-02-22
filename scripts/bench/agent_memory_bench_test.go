@@ -37,19 +37,19 @@ type BenchCase struct {
 
 // BenchScorecard tracks pass/fail across the full benchmark.
 type BenchScorecard struct {
-	Total      int            `json:"total"`
-	Passed     int            `json:"passed"`
-	Failed     int            `json:"failed"`
-	PassRate   float64        `json:"pass_rate"`
-	Cases      []CaseResult   `json:"cases"`
-	GeneratedAt string        `json:"generated_at"`
+	Total       int          `json:"total"`
+	Passed      int          `json:"passed"`
+	Failed      int          `json:"failed"`
+	PassRate    float64      `json:"pass_rate"`
+	Cases       []CaseResult `json:"cases"`
+	GeneratedAt string       `json:"generated_at"`
 }
 
 type CaseResult struct {
-	Name    string `json:"name"`
-	Pass    bool   `json:"pass"`
-	Reason  string `json:"reason,omitempty"`
-	LatMs   float64 `json:"latency_ms"`
+	Name   string  `json:"name"`
+	Pass   bool    `json:"pass"`
+	Reason string  `json:"reason,omitempty"`
+	LatMs  float64 `json:"latency_ms"`
 }
 
 func TestAgentMemoryBenchmark(t *testing.T) {
@@ -109,13 +109,13 @@ func TestAgentMemoryBenchmark(t *testing.T) {
 			ExpectInTop3: []string{"ML220", "Coinbase"},
 		},
 		{
-			Name:         "noise_suppression_heartbeat",
-			Query:        "heartbeat status",
+			Name:          "noise_suppression_heartbeat",
+			Query:         "heartbeat status",
 			ExpectNotTop3: []string{"untrusted metadata", "conversation_label"},
 		},
 		{
-			Name:         "noise_suppression_scaffold",
-			Query:        "system message cron",
+			Name:          "noise_suppression_scaffold",
+			Query:         "system message cron",
 			ExpectNotTop3: []string{"sender_id", "message_id"},
 		},
 	}

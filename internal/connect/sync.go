@@ -12,7 +12,7 @@ import (
 
 // SyncEngine orchestrates connector syncs through the standard Cortex ingest pipeline.
 type SyncEngine struct {
-	registry *Registry
+	registry  *Registry
 	connStore *ConnectorStore
 	memStore  store.Store
 	verbose   bool
