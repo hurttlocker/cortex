@@ -50,6 +50,36 @@ changelog:
       - "^ci:"
       - "^chore:"
 
+brews:
+  - name: cortex-memory
+    ids:
+      - default
+    repository:
+      owner: hurttlocker
+      name: homebrew-cortex
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/hurttlocker/cortex"
+    description: "Import-first, observable memory layer for AI agents. Memory that forgets."
+    license: "MIT"
+    install: |
+      bin.install "cortex"
+    test: |
+      system "#{bin}/cortex", "version"
+    caveats: |
+      Cortex is installed! Quick start:
+
+        # Import some files
+        cortex import ~/notes/ --recursive --extract
+
+        # Search your memory
+        cortex search "what did I decide about..."
+
+        # Run as MCP server (for Claude Code, etc.)
+        cortex mcp
+
+      Data stored in: ~/.cortex/cortex.db
+
 release:
   github:
     owner: hurttlocker
