@@ -2343,6 +2343,10 @@ func runEdgeAdd(args []string) error {
 	}
 
 	if err := sqlStore.AddEdge(context.Background(), edge); err != nil {
+		if errors.Is(err, store.ErrEdgeExists) {
+			fmt.Printf("Edge already exists: fact %d -[%s]→ fact %d\n", sourceID, edgeType, targetID)
+			return nil
+		}
 		return err
 	}
 
@@ -2514,6 +2518,9 @@ func runGraph(args []string) error {
 				return fmt.Errorf("invalid --depth: %s", args[i])
 			}
 			depth = d
+			if depth > 10 {
+				depth = 10
+			}
 		case args[i] == "--min-confidence" && i+1 < len(args):
 			i++
 			c, err := strconv.ParseFloat(args[i], 64)

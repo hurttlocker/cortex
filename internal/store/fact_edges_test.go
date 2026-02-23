@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -46,12 +47,43 @@ func TestAddEdgeDuplicate(t *testing.T) {
 	f2, _ := s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "b", Predicate: "p", Object: "o2", FactType: "kv"})
 
 	edge := &FactEdge{SourceFactID: f1, TargetFactID: f2, EdgeType: EdgeTypeSupports}
-	s.AddEdge(ctx, edge)
+	if err := s.AddEdge(ctx, edge); err != nil {
+		t.Fatalf("First edge should succeed: %v", err)
+	}
+	if edge.ID == 0 {
+		t.Fatal("First edge should have non-zero ID")
+	}
 
-	// Duplicate should be ignored (OR IGNORE)
+	// Duplicate should return ErrEdgeExists
 	err := s.AddEdge(ctx, &FactEdge{SourceFactID: f1, TargetFactID: f2, EdgeType: EdgeTypeSupports})
+	if !errors.Is(err, ErrEdgeExists) {
+		t.Fatalf("Expected ErrEdgeExists, got: %v", err)
+	}
+
+	// But a different type on same facts should succeed
+	err = s.AddEdge(ctx, &FactEdge{SourceFactID: f1, TargetFactID: f2, EdgeType: EdgeTypeRelatesTo})
 	if err != nil {
-		t.Fatalf("Expected duplicate to be silently ignored, got: %v", err)
+		t.Fatalf("Different edge type should succeed: %v", err)
+	}
+
+	// Verify count
+	edges, _ := s.GetEdgesForFact(ctx, f1)
+	if len(edges) != 2 {
+		t.Fatalf("Expected 2 edges, got %d", len(edges))
+	}
+}
+
+func TestAddEdgeInvalidType(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{Content: "test", SourceFile: "t.md"})
+	f1, _ := s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "a", Predicate: "p", Object: "o1", FactType: "kv"})
+	f2, _ := s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "b", Predicate: "p", Object: "o2", FactType: "kv"})
+
+	err := s.AddEdge(ctx, &FactEdge{SourceFactID: f1, TargetFactID: f2, EdgeType: EdgeType("bogus")})
+	if err == nil {
+		t.Fatal("Expected error for invalid edge type")
 	}
 }
 

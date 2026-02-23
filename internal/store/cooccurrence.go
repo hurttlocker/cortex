@@ -42,10 +42,28 @@ func (s *SQLiteStore) RecordCooccurrence(ctx context.Context, factIDA, factIDB i
 }
 
 // RecordCooccurrenceBatch records co-occurrences for a set of fact IDs
-// (e.g., all facts returned in a single search). Generates all pairs.
+// (e.g., all facts returned in a single search). Generates all unique pairs.
+// Deduplicates input IDs and skips self-pairs. Caps at 50 unique IDs to bound O(N²).
 func (s *SQLiteStore) RecordCooccurrenceBatch(ctx context.Context, factIDs []int64) error {
-	if len(factIDs) < 2 {
+	// Deduplicate input IDs
+	seen := make(map[int64]bool, len(factIDs))
+	unique := make([]int64, 0, len(factIDs))
+	for _, id := range factIDs {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+	}
+
+	if len(unique) < 2 {
 		return nil
+	}
+
+	// Cap to prevent O(N²) explosion on large result sets
+	const maxPairIDs = 50
+	if len(unique) > maxPairIDs {
+		unique = unique[:maxPairIDs]
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -66,20 +84,24 @@ func (s *SQLiteStore) RecordCooccurrenceBatch(ctx context.Context, factIDs []int
 	}
 	defer stmt.Close()
 
-	// Generate all pairs (n*(n-1)/2)
-	for i := 0; i < len(factIDs); i++ {
-		for j := i + 1; j < len(factIDs); j++ {
-			a, b := factIDs[i], factIDs[j]
+	// Generate all pairs (n*(n-1)/2) — already deduped, no self-pairs possible
+	var batchErr error
+	for i := 0; i < len(unique); i++ {
+		for j := i + 1; j < len(unique); j++ {
+			a, b := unique[i], unique[j]
 			if a > b {
 				a, b = b, a
 			}
 			if _, err := stmt.ExecContext(ctx, a, b); err != nil {
-				continue // Skip failures
+				batchErr = err // Track but continue — partial is better than none
 			}
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit co-occurrence batch: %w", err)
+	}
+	return batchErr // Return last error if any writes failed
 }
 
 // GetTopCooccurrences returns the most frequent co-occurrence pairs.

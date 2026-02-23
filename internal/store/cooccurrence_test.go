@@ -140,3 +140,64 @@ func TestGraphTraversalFollowsCooccurrence(t *testing.T) {
 		t.Fatalf("Expected 2 nodes (root + co-occurred neighbor), got %d", len(nodes))
 	}
 }
+
+func TestRecordCooccurrenceBatchDuplicateIDs(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{Content: "test", SourceFile: "t.md"})
+	f1, _ := s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "a", Predicate: "p", Object: "o1", FactType: "kv"})
+	f2, _ := s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "b", Predicate: "p", Object: "o2", FactType: "kv"})
+
+	// Input has duplicate IDs — should deduplicate, no self-pairs
+	err := s.RecordCooccurrenceBatch(ctx, []int64{f1, f1, f2, f2})
+	if err != nil {
+		t.Fatalf("RecordCooccurrenceBatch with dupes: %v", err)
+	}
+
+	// Should have exactly 1 pair (f1,f2) with count 1
+	count, _ := s.CountCooccurrences(ctx)
+	if count != 1 {
+		t.Fatalf("Expected 1 pair after dedup, got %d", count)
+	}
+
+	pairs, _ := s.GetCooccurrencesForFact(ctx, f1, 10)
+	if len(pairs) != 1 || pairs[0].Count != 1 {
+		t.Fatalf("Expected 1 pair with count=1, got %d pairs", len(pairs))
+	}
+}
+
+func TestRecordCooccurrenceBatchSingleID(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	// Single ID (even repeated) should be a no-op
+	err := s.RecordCooccurrenceBatch(ctx, []int64{1, 1, 1})
+	if err != nil {
+		t.Fatalf("Expected no error for single unique ID: %v", err)
+	}
+
+	count, _ := s.CountCooccurrences(ctx)
+	if count != 0 {
+		t.Fatalf("Expected 0 pairs, got %d", count)
+	}
+}
+
+func TestRecordCooccurrenceBatchZeroAndNegativeIDs(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{Content: "test", SourceFile: "t.md"})
+	f1, _ := s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "a", Predicate: "p", Object: "o1", FactType: "kv"})
+
+	// Zero and negative IDs should be filtered out
+	err := s.RecordCooccurrenceBatch(ctx, []int64{0, -1, f1})
+	if err != nil {
+		t.Fatalf("Expected no error: %v", err)
+	}
+
+	count, _ := s.CountCooccurrences(ctx)
+	if count != 0 {
+		t.Fatalf("Expected 0 pairs (only 1 valid ID), got %d", count)
+	}
+}

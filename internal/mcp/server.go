@@ -9,6 +9,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -843,6 +844,9 @@ func registerEdgeAddTool(s *server.MCPServer, st store.Store) {
 		}
 
 		if err := sqlStore.AddEdge(ctx, edge); err != nil {
+			if errors.Is(err, store.ErrEdgeExists) {
+				return mcp.NewToolResultText(fmt.Sprintf("Edge already exists: fact %d -[%s]→ fact %d", int64(sourceID), edgeType, int64(targetID))), nil
+			}
 			return mcp.NewToolResultError(fmt.Sprintf("add edge error: %v", err)), nil
 		}
 

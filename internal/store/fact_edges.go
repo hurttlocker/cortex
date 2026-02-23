@@ -47,10 +47,17 @@ type GraphNode struct {
 	Depth int         `json:"depth"`
 }
 
+// ErrEdgeExists is returned when an edge already exists (duplicate).
+var ErrEdgeExists = fmt.Errorf("edge already exists")
+
 // AddEdge creates a relationship between two facts.
+// Returns ErrEdgeExists if the edge already exists (same source, target, type).
 func (s *SQLiteStore) AddEdge(ctx context.Context, edge *FactEdge) error {
 	if edge.SourceFactID == edge.TargetFactID {
 		return fmt.Errorf("cannot create edge from a fact to itself")
+	}
+	if _, err := ParseEdgeType(string(edge.EdgeType)); err != nil {
+		return err
 	}
 	if edge.Confidence <= 0 {
 		edge.Confidence = 1.0
@@ -67,6 +74,11 @@ func (s *SQLiteStore) AddEdge(ctx context.Context, edge *FactEdge) error {
 	)
 	if err != nil {
 		return fmt.Errorf("adding edge: %w", err)
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return ErrEdgeExists
 	}
 
 	id, _ := result.LastInsertId()
@@ -145,19 +157,33 @@ func (s *SQLiteStore) TraverseGraph(ctx context.Context, startFactID int64, maxD
 	visited[startFactID] = true
 
 	for len(queue) > 0 {
+		// Respect context cancellation
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+
 		item := queue[0]
 		queue = queue[1:]
 
 		// Get the fact
 		fact, err := s.GetFact(ctx, item.factID)
-		if err != nil || fact == nil {
+		if err != nil {
+			if ctx.Err() != nil {
+				return result, ctx.Err()
+			}
+			continue // Fact may have been deleted
+		}
+		if fact == nil {
 			continue
 		}
 
 		// Get edges
 		edges, err := s.GetEdgesForFact(ctx, item.factID)
 		if err != nil {
-			continue
+			if ctx.Err() != nil {
+				return result, ctx.Err()
+			}
+			continue // Edge query failed, skip this node
 		}
 
 		// Filter by confidence

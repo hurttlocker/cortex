@@ -228,6 +228,9 @@ type Store interface {
 	GetAttributeConflictsLimit(ctx context.Context, limit int) ([]Conflict, error)
 	GetAttributeConflictsLimitWithSuperseded(ctx context.Context, limit int, includeSuperseded bool) ([]Conflict, error)
 
+	// Co-occurrence tracking
+	RecordCooccurrenceBatch(ctx context.Context, factIDs []int64) error
+
 	// Maintenance
 	Vacuum(ctx context.Context) error
 	Close() error

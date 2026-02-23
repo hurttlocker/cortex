@@ -944,12 +944,18 @@ func (s *SQLiteStore) migrateFactCooccurrenceTable() error {
 			last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (fact_id_a, fact_id_b),
 			FOREIGN KEY (fact_id_a) REFERENCES facts(id),
-			FOREIGN KEY (fact_id_b) REFERENCES facts(id)
+			FOREIGN KEY (fact_id_b) REFERENCES facts(id),
+			CHECK (fact_id_a < fact_id_b),
+			CHECK (fact_id_a != fact_id_b)
 		)
 	`)
 	if err != nil {
 		return fmt.Errorf("creating fact_cooccurrence_v1 table: %w", err)
 	}
+
+	// Index for lookups by fact_id_b (fact_id_a is covered by PK)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_cooccurrence_b ON fact_cooccurrence_v1(fact_id_b)`)
+
 	return nil
 }
 
@@ -960,14 +966,15 @@ func (s *SQLiteStore) migrateFactEdgesTable() error {
 			id INTEGER PRIMARY KEY,
 			source_fact_id INTEGER NOT NULL,
 			target_fact_id INTEGER NOT NULL,
-			edge_type TEXT NOT NULL,
-			confidence REAL DEFAULT 1.0,
-			source TEXT NOT NULL DEFAULT 'explicit',
+			edge_type TEXT NOT NULL CHECK (edge_type IN ('supports','contradicts','relates_to','supersedes','derived_from')),
+			confidence REAL DEFAULT 1.0 CHECK (confidence >= 0 AND confidence <= 1.0),
+			source TEXT NOT NULL DEFAULT 'explicit' CHECK (source IN ('explicit','detected','inferred')),
 			agent_id TEXT NOT NULL DEFAULT '',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (source_fact_id) REFERENCES facts(id),
 			FOREIGN KEY (target_fact_id) REFERENCES facts(id),
-			UNIQUE(source_fact_id, target_fact_id, edge_type)
+			UNIQUE(source_fact_id, target_fact_id, edge_type),
+			CHECK (source_fact_id != target_fact_id)
 		)
 	`)
 	if err != nil {

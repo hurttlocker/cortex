@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,10 +10,10 @@ import (
 
 // InferenceResult holds the outcome of running the inference engine.
 type InferenceResult struct {
-	EdgesCreated    int              `json:"edges_created"`
-	EdgesSkipped    int              `json:"edges_skipped"` // Already existed
-	RulesApplied    map[string]int   `json:"rules_applied"`
-	Proposals       []EdgeProposal   `json:"proposals,omitempty"` // For dry-run
+	EdgesCreated int            `json:"edges_created"`
+	EdgesSkipped int            `json:"edges_skipped"` // Already existed
+	RulesApplied map[string]int `json:"rules_applied"`
+	Proposals    []EdgeProposal `json:"proposals,omitempty"` // For dry-run
 }
 
 // EdgeProposal represents a proposed edge from inference.
@@ -29,7 +30,7 @@ type EdgeProposal struct {
 type InferenceOpts struct {
 	DryRun        bool    // Preview only, don't create edges
 	MinConfidence float64 // Minimum confidence for inferred edges (default: 0.3)
-	MaxEdges      int     // Maximum edges to create per run (default: 100)
+	MaxEdges      int     // Maximum edges to create/propose per run (default: 100)
 }
 
 // DefaultInferenceOpts returns sensible defaults.
@@ -38,6 +39,14 @@ func DefaultInferenceOpts() InferenceOpts {
 		MinConfidence: 0.3,
 		MaxEdges:      100,
 	}
+}
+
+// edgeCount returns the current count of edges created or proposals emitted.
+func (r *InferenceResult) edgeCount(dryRun bool) int {
+	if dryRun {
+		return len(r.Proposals)
+	}
+	return r.EdgesCreated
 }
 
 // RunInference applies all inference rules and creates (or proposes) edges.
@@ -63,7 +72,7 @@ func (s *SQLiteStore) RunInference(ctx context.Context, opts InferenceOpts) (*In
 	}
 
 	for _, rule := range rules {
-		if result.EdgesCreated >= opts.MaxEdges && !opts.DryRun {
+		if result.edgeCount(opts.DryRun) >= opts.MaxEdges {
 			break
 		}
 		if err := rule.fn(ctx, opts, result); err != nil {
@@ -83,6 +92,10 @@ func (s *SQLiteStore) inferFromCooccurrence(ctx context.Context, opts InferenceO
 	}
 
 	for _, pair := range suggestions {
+		if result.edgeCount(opts.DryRun) >= opts.MaxEdges {
+			break
+		}
+
 		// Confidence based on co-occurrence count (5=0.5, 10=0.7, 20+=0.9)
 		conf := 0.5 + float64(pair.Count-5)*0.02
 		if conf > 0.9 {
@@ -114,15 +127,13 @@ func (s *SQLiteStore) inferFromCooccurrence(ctx context.Context, opts InferenceO
 			Confidence:   conf,
 			Source:       EdgeSourceInferred,
 		})
-		if err != nil {
+		if errors.Is(err, ErrEdgeExists) {
+			result.EdgesSkipped++
+		} else if err != nil {
 			result.EdgesSkipped++
 		} else {
 			result.EdgesCreated++
 			result.RulesApplied["cooccurrence"]++
-		}
-
-		if result.EdgesCreated >= opts.MaxEdges {
-			break
 		}
 	}
 
@@ -152,13 +163,16 @@ func (s *SQLiteStore) inferFromSubjectClustering(ctx context.Context, opts Infer
 		var subject string
 		var count int
 		if err := rows.Scan(&subject, &count); err != nil {
-			continue
+			return fmt.Errorf("scanning subject cluster: %w", err)
 		}
 		subjects = append(subjects, subject)
 	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating subject clusters: %w", err)
+	}
 
 	for _, subject := range subjects {
-		if result.EdgesCreated >= opts.MaxEdges && !opts.DryRun {
+		if result.edgeCount(opts.DryRun) >= opts.MaxEdges {
 			break
 		}
 
@@ -176,7 +190,10 @@ func (s *SQLiteStore) inferFromSubjectClustering(ctx context.Context, opts Infer
 		var factIDs []int64
 		for factRows.Next() {
 			var id int64
-			factRows.Scan(&id)
+			if err := factRows.Scan(&id); err != nil {
+				factRows.Close()
+				return fmt.Errorf("scanning fact id for subject %q: %w", subject, err)
+			}
 			factIDs = append(factIDs, id)
 		}
 		factRows.Close()
@@ -184,6 +201,10 @@ func (s *SQLiteStore) inferFromSubjectClustering(ctx context.Context, opts Infer
 		// Create relates_to edges between facts with same subject
 		for i := 0; i < len(factIDs); i++ {
 			for j := i + 1; j < len(factIDs); j++ {
+				if result.edgeCount(opts.DryRun) >= opts.MaxEdges {
+					return nil
+				}
+
 				conf := 0.4 // Lower confidence for subject clustering
 				if conf < opts.MinConfidence {
 					continue
@@ -211,15 +232,13 @@ func (s *SQLiteStore) inferFromSubjectClustering(ctx context.Context, opts Infer
 					Confidence:   conf,
 					Source:       EdgeSourceInferred,
 				})
-				if err != nil {
+				if errors.Is(err, ErrEdgeExists) {
+					result.EdgesSkipped++
+				} else if err != nil {
 					result.EdgesSkipped++
 				} else {
 					result.EdgesCreated++
 					result.RulesApplied["subject_clustering"]++
-				}
-
-				if result.EdgesCreated >= opts.MaxEdges {
-					return nil
 				}
 			}
 		}
@@ -251,12 +270,17 @@ func (s *SQLiteStore) inferFromSupersession(ctx context.Context, opts InferenceO
 	for rows.Next() {
 		var p spPair
 		var cnt int
-		rows.Scan(&p.subject, &p.predicate, &cnt)
+		if err := rows.Scan(&p.subject, &p.predicate, &cnt); err != nil {
+			return fmt.Errorf("scanning supersession pair: %w", err)
+		}
 		pairs = append(pairs, p)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterating supersession pairs: %w", err)
 	}
 
 	for _, p := range pairs {
-		if result.EdgesCreated >= opts.MaxEdges && !opts.DryRun {
+		if result.edgeCount(opts.DryRun) >= opts.MaxEdges {
 			break
 		}
 
@@ -280,7 +304,10 @@ func (s *SQLiteStore) inferFromSupersession(ctx context.Context, opts InferenceO
 		for factRows.Next() {
 			var f factInfo
 			var createdStr string
-			factRows.Scan(&f.id, &f.object, &createdStr)
+			if err := factRows.Scan(&f.id, &f.object, &createdStr); err != nil {
+				factRows.Close()
+				return fmt.Errorf("scanning supersession fact: %w", err)
+			}
 			if t, err := time.Parse("2006-01-02 15:04:05", createdStr); err == nil {
 				f.createdAt = t
 			}
@@ -292,6 +319,10 @@ func (s *SQLiteStore) inferFromSupersession(ctx context.Context, opts InferenceO
 		if len(facts) >= 2 {
 			newest := facts[0]
 			for _, older := range facts[1:] {
+				if result.edgeCount(opts.DryRun) >= opts.MaxEdges {
+					return nil
+				}
+
 				if strings.EqualFold(newest.object, older.object) {
 					continue
 				}
@@ -323,7 +354,9 @@ func (s *SQLiteStore) inferFromSupersession(ctx context.Context, opts InferenceO
 					Confidence:   conf,
 					Source:       EdgeSourceInferred,
 				})
-				if err != nil {
+				if errors.Is(err, ErrEdgeExists) {
+					result.EdgesSkipped++
+				} else if err != nil {
 					result.EdgesSkipped++
 				} else {
 					result.EdgesCreated++

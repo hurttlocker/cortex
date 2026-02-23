@@ -1043,10 +1043,22 @@ func (e *Engine) applyConfidenceDecay(ctx context.Context, results []Result, inc
 		return results[i].Score > results[j].Score
 	})
 
-	// Reinforce-on-recall: update last_reinforced for facts linked to returned memories
-	// This is fire-and-forget — don't fail the search if reinforcement fails
+	// Reinforce-on-recall + co-occurrence tracking: fire-and-forget
+	// Don't fail the search if reinforcement or co-occurrence recording fails
 	go func() {
-		_, _ = e.store.ReinforceFactsByMemoryIDs(context.Background(), memoryIDs)
+		bgCtx := context.Background()
+		_, _ = e.store.ReinforceFactsByMemoryIDs(bgCtx, memoryIDs)
+
+		// Record co-occurrence: collect fact IDs from returned memories
+		// and record that they appeared together in the same search
+		facts, err := e.store.GetFactsByMemoryIDs(bgCtx, memoryIDs)
+		if err == nil && len(facts) >= 2 {
+			factIDs := make([]int64, 0, len(facts))
+			for _, f := range facts {
+				factIDs = append(factIDs, f.ID)
+			}
+			_ = e.store.RecordCooccurrenceBatch(bgCtx, factIDs)
+		}
 	}()
 
 	return results, confidenceMap

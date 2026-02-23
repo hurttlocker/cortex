@@ -159,3 +159,66 @@ func TestInferenceMinConfidence(t *testing.T) {
 		}
 	}
 }
+
+func TestInferenceIdempotency(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{Content: "test", SourceFile: "t.md"})
+
+	s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "cortex", Predicate: "language", Object: "Go", FactType: "kv"})
+	s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "cortex", Predicate: "database", Object: "SQLite", FactType: "kv"})
+
+	opts := DefaultInferenceOpts()
+	opts.DryRun = false
+
+	// First run creates edges
+	r1, err := s.RunInference(ctx, opts)
+	if err != nil {
+		t.Fatalf("First inference run: %v", err)
+	}
+	if r1.EdgesCreated == 0 {
+		t.Fatal("Expected edges created on first run")
+	}
+	firstCount, _ := s.CountEdges(ctx)
+
+	// Second run should create 0 new edges (all duplicates)
+	r2, err := s.RunInference(ctx, opts)
+	if err != nil {
+		t.Fatalf("Second inference run: %v", err)
+	}
+	if r2.EdgesCreated != 0 {
+		t.Fatalf("Expected 0 new edges on second run, got %d", r2.EdgesCreated)
+	}
+	if r2.EdgesSkipped == 0 {
+		t.Fatal("Expected skipped edges on second run (duplicates)")
+	}
+
+	// Edge count in DB should be unchanged
+	secondCount, _ := s.CountEdges(ctx)
+	if firstCount != secondCount {
+		t.Fatalf("DB edge count changed: %d → %d", firstCount, secondCount)
+	}
+}
+
+func TestInferenceDryRunMaxEdges(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{Content: "test", SourceFile: "t.md"})
+
+	// Create many facts to generate many proposals
+	for i := 0; i < 10; i++ {
+		s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "project", Predicate: fmt.Sprintf("attr%d", i), Object: fmt.Sprintf("val%d", i), FactType: "kv"})
+	}
+
+	opts := DefaultInferenceOpts()
+	opts.DryRun = true
+	opts.MaxEdges = 5
+
+	result, _ := s.RunInference(ctx, opts)
+
+	if len(result.Proposals) > 5 {
+		t.Fatalf("Dry-run should respect MaxEdges cap: got %d proposals", len(result.Proposals))
+	}
+}
