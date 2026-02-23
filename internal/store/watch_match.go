@@ -10,11 +10,11 @@ import (
 
 // WatchMatchResult describes what a watch matched.
 type WatchMatchResult struct {
-	WatchID  int64  `json:"watch_id"`
-	Query    string `json:"query"`
-	MemoryID int64  `json:"memory_id"`
+	WatchID  int64   `json:"watch_id"`
+	Query    string  `json:"query"`
+	MemoryID int64   `json:"memory_id"`
 	Score    float64 `json:"score"`
-	Snippet  string `json:"snippet"`
+	Snippet  string  `json:"snippet"`
 }
 
 // CheckWatchesForMemory runs all active watch queries against a newly imported memory.

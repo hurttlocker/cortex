@@ -36,13 +36,13 @@ type FactAccess struct {
 
 // FactAccessSummary provides an aggregate view of a fact's access patterns.
 type FactAccessSummary struct {
-	FactID       int64    `json:"fact_id"`
-	TotalAccess  int      `json:"total_accesses"`
-	UniqueAgents int      `json:"unique_agents"`
-	AgentIDs     []string `json:"agent_ids"`
+	FactID       int64     `json:"fact_id"`
+	TotalAccess  int       `json:"total_accesses"`
+	UniqueAgents int       `json:"unique_agents"`
+	AgentIDs     []string  `json:"agent_ids"`
 	LastAccess   time.Time `json:"last_access"`
-	SearchCount  int      `json:"search_count"`
-	CrossAgent   bool     `json:"cross_agent"` // 2+ distinct agents
+	SearchCount  int       `json:"search_count"`
+	CrossAgent   bool      `json:"cross_agent"` // 2+ distinct agents
 }
 
 // RecordFactAccess logs a fact access and applies implicit reinforcement.

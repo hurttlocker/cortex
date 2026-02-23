@@ -180,7 +180,11 @@ func (s *SQLiteStore) CountCooccurrences(ctx context.Context) (int, error) {
 	return count, err
 }
 
-func scanCooccurrences(rows interface{ Next() bool; Scan(...interface{}) error; Err() error }) ([]CooccurrencePair, error) {
+func scanCooccurrences(rows interface {
+	Next() bool
+	Scan(...interface{}) error
+	Err() error
+}) ([]CooccurrencePair, error) {
 	var pairs []CooccurrencePair
 	for rows.Next() {
 		var p CooccurrencePair

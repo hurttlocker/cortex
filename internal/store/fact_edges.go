@@ -42,9 +42,9 @@ type FactEdge struct {
 
 // GraphNode represents a fact in a graph traversal result.
 type GraphNode struct {
-	Fact  *Fact       `json:"fact"`
-	Edges []FactEdge  `json:"edges"`
-	Depth int         `json:"depth"`
+	Fact  *Fact      `json:"fact"`
+	Edges []FactEdge `json:"edges"`
+	Depth int        `json:"depth"`
 }
 
 // ErrEdgeExists is returned when an edge already exists (duplicate).
