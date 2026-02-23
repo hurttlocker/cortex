@@ -89,6 +89,11 @@ func Serve(cfg ServerConfig) error {
 		handleClusterAPI(w, r, cfg.Store)
 	})
 
+	// Stats endpoint — DB health numbers for the banner
+	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
+		handleStatsAPI(w, r, cfg.Store)
+	})
+
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	fmt.Printf("🧠 Cortex graph visualizer: http://localhost%s\n", addr)
 	fmt.Printf("   Open in browser to explore your knowledge graph in 3D.\n")
@@ -389,6 +394,29 @@ func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSt
 	}
 
 	writeJSON(w, 200, result)
+}
+
+func handleStatsAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStore) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	db := st.GetDB()
+	ctx := context.Background()
+
+	var facts, memories, edges int
+	var avgConf float64
+
+	db.QueryRowContext(ctx, "SELECT COUNT(*) FROM facts WHERE superseded_by IS NULL OR superseded_by = 0").Scan(&facts)
+	db.QueryRowContext(ctx, "SELECT COUNT(*) FROM memories").Scan(&memories)
+	db.QueryRowContext(ctx, "SELECT COUNT(*) FROM fact_edges_v1").Scan(&edges)
+	db.QueryRowContext(ctx, "SELECT COALESCE(AVG(confidence), 0) FROM facts WHERE superseded_by IS NULL OR superseded_by = 0").Scan(&avgConf)
+
+	writeJSON(w, 200, map[string]interface{}{
+		"facts":          facts,
+		"memories":       memories,
+		"edges":          edges,
+		"avg_confidence": avgConf,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, data interface{}) {
