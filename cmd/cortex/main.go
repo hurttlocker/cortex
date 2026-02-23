@@ -874,6 +874,18 @@ func runStale(args []string) error {
 }
 
 func runAlerts(args []string) error {
+	// Check for subcommands first
+	if len(args) > 0 {
+		switch args[0] {
+		case "check-decay":
+			return runAlertsCheckDecay(args[1:])
+		case "digest":
+			return runAlertsDigest(args[1:])
+		case "reinforce":
+			return runAlertsReinforce(args[1:])
+		}
+	}
+
 	jsonOutput := false
 	ackID := int64(0)
 	ackAll := false
@@ -915,12 +927,22 @@ func runAlerts(args []string) error {
 			fmt.Println(`cortex alerts — View and manage proactive alerts
 
 Usage:
-  cortex alerts                  List unacknowledged alerts
-  cortex alerts --ack <id>       Acknowledge an alert
-  cortex alerts --ack-all        Acknowledge all alerts
-  cortex alerts --type conflict  Filter by type (conflict, decay, match)
-  cortex alerts --json           Output as JSON
-  cortex alerts --limit 50       Max results (default: 20)`)
+  cortex alerts                     List unacknowledged alerts
+  cortex alerts --ack <id>          Acknowledge an alert
+  cortex alerts --ack-all           Acknowledge all alerts
+  cortex alerts --type conflict     Filter by type (conflict, decay, match)
+  cortex alerts --json              Output as JSON
+  cortex alerts --limit 50          Max results (default: 20)
+
+Decay Notifications:
+  cortex alerts check-decay         Scan facts and generate decay alerts
+  cortex alerts digest              Grouped summary of fading facts
+  cortex alerts reinforce <id>      Reinforce fact from alert ("still true")
+
+Options for check-decay:
+  --warning 0.5                     Warning threshold (default: 0.5)
+  --critical 0.3                    Critical threshold (default: 0.3)
+  --json                            Output as JSON`)
 			return nil
 		}
 	}
@@ -1002,6 +1024,231 @@ Usage:
 	}
 
 	fmt.Printf("Acknowledge: cortex alerts --ack <id> | cortex alerts --ack-all\n")
+	return nil
+}
+
+// runAlertsCheckDecay scans all facts and creates decay alerts for those crossing thresholds.
+func runAlertsCheckDecay(args []string) error {
+	thresholds := store.DefaultDecayThresholds()
+	jsonOutput := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--warning" && i+1 < len(args):
+			i++
+			v, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --warning value: %s", args[i])
+			}
+			thresholds.Warning = v
+		case strings.HasPrefix(args[i], "--warning="):
+			v, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--warning="), 64)
+			if err != nil {
+				return fmt.Errorf("invalid --warning value: %s", args[i])
+			}
+			thresholds.Warning = v
+		case args[i] == "--critical" && i+1 < len(args):
+			i++
+			v, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --critical value: %s", args[i])
+			}
+			thresholds.Critical = v
+		case strings.HasPrefix(args[i], "--critical="):
+			v, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--critical="), 64)
+			if err != nil {
+				return fmt.Errorf("invalid --critical value: %s", args[i])
+			}
+			thresholds.Critical = v
+		case args[i] == "--json":
+			jsonOutput = true
+		case args[i] == "-h" || args[i] == "--help":
+			fmt.Println(`cortex alerts check-decay — Scan facts for confidence decay
+
+Usage:
+  cortex alerts check-decay                    Run decay scan with defaults
+  cortex alerts check-decay --warning 0.5      Set warning threshold
+  cortex alerts check-decay --critical 0.3     Set critical threshold
+  cortex alerts check-decay --json             Output results as JSON
+
+Thresholds (effective confidence = base × e^(-decay_rate × days)):
+  Warning:  < 0.5 (default) — fact is losing reliability
+  Critical: < 0.3 (default) — fact is unreliable, needs reinforcement`)
+			return nil
+		}
+	}
+
+	storeIface, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return err
+	}
+	defer storeIface.Close()
+
+	s, ok := storeIface.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("decay check requires SQLiteStore backend")
+	}
+
+	ctx := context.Background()
+	result, err := s.CheckDecayAlerts(ctx, thresholds)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(result)
+	}
+
+	fmt.Printf("🔍 Decay scan complete\n")
+	fmt.Printf("   Facts scanned:   %d\n", result.FactsScanned)
+	fmt.Printf("   Alerts created:  %d (%d warning, %d critical)\n",
+		result.AlertsCreated, result.WarningCount, result.CriticalCount)
+	if result.AlertsSkipped > 0 {
+		fmt.Printf("   Skipped (exist): %d\n", result.AlertsSkipped)
+	}
+
+	if len(result.SubjectGroups) > 0 {
+		fmt.Printf("\n📊 Fading by subject:\n")
+		for subject, count := range result.SubjectGroups {
+			fmt.Printf("   %s: %d fact(s)\n", subject, count)
+		}
+	}
+
+	if result.AlertsCreated > 0 {
+		fmt.Printf("\nView: cortex alerts --type decay\n")
+		fmt.Printf("Reinforce: cortex alerts reinforce <alert-id>\n")
+	}
+
+	return nil
+}
+
+// runAlertsDigest shows a grouped summary of fading facts.
+func runAlertsDigest(args []string) error {
+	thresholds := store.DefaultDecayThresholds()
+	jsonOutput := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--warning" && i+1 < len(args):
+			i++
+			v, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --warning value: %s", args[i])
+			}
+			thresholds.Warning = v
+		case args[i] == "--critical" && i+1 < len(args):
+			i++
+			v, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --critical value: %s", args[i])
+			}
+			thresholds.Critical = v
+		case args[i] == "--json":
+			jsonOutput = true
+		case args[i] == "-h" || args[i] == "--help":
+			fmt.Println(`cortex alerts digest — Grouped summary of fading facts
+
+Usage:
+  cortex alerts digest              Show fading facts grouped by subject
+  cortex alerts digest --json       Output as JSON
+  cortex alerts digest --warning 0.5 --critical 0.3`)
+			return nil
+		}
+	}
+
+	storeIface, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return err
+	}
+	defer storeIface.Close()
+
+	s, ok := storeIface.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("digest requires SQLiteStore backend")
+	}
+
+	ctx := context.Background()
+	groups, err := s.GetDecayDigest(ctx, thresholds)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(groups)
+	}
+
+	if len(groups) == 0 {
+		fmt.Println("No fading facts. All knowledge is fresh. ✓")
+		return nil
+	}
+
+	totalFacts := 0
+	totalCritical := 0
+	for _, g := range groups {
+		totalFacts += g.FactCount
+		totalCritical += g.CriticalCount
+	}
+
+	fmt.Printf("📉 Decay Digest: %d fading fact(s) across %d subject(s)\n\n", totalFacts, len(groups))
+
+	for _, g := range groups {
+		icon := "🟡"
+		if g.CriticalCount > 0 {
+			icon = "🔴"
+		}
+		fmt.Printf("%s %s — %d fact(s) fading (worst: %.0f%%)\n",
+			icon, g.Subject, g.FactCount, g.WorstConfidence*100)
+
+		for _, sf := range g.SampleFacts {
+			marker := "  "
+			if sf.Effective < thresholds.Critical {
+				marker = "!!"
+			}
+			fmt.Printf("   %s #%d: %s = %s (%.0f%%)\n",
+				marker, sf.FactID, sf.Predicate, sf.Object, sf.Effective*100)
+		}
+		if g.FactCount > len(g.SampleFacts) {
+			fmt.Printf("   ... and %d more\n", g.FactCount-len(g.SampleFacts))
+		}
+		fmt.Println()
+	}
+
+	fmt.Printf("Reinforce: cortex reinforce <fact-id> | cortex alerts reinforce <alert-id>\n")
+	return nil
+}
+
+// runAlertsReinforce reinforces a fact from its decay alert and acknowledges the alert.
+func runAlertsReinforce(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex alerts reinforce <alert-id>")
+	}
+
+	alertID, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid alert ID: %s", args[0])
+	}
+
+	storeIface, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return err
+	}
+	defer storeIface.Close()
+
+	s, ok := storeIface.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("reinforce requires SQLiteStore backend")
+	}
+
+	ctx := context.Background()
+	if err := s.ReinforceFromAlert(ctx, alertID); err != nil {
+		return err
+	}
+
+	fmt.Printf("✓ Fact reinforced and alert #%d acknowledged. Confidence reset.\n", alertID)
 	return nil
 }
 
