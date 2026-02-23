@@ -224,7 +224,7 @@ func (s *SQLiteStore) CheckConflictsForFact(ctx context.Context, fact *Fact) ([]
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, memory_id, subject, predicate, object, fact_type,
-		        confidence, decay_rate, last_reinforced, source_quote, created_at, superseded_by
+		        confidence, decay_rate, last_reinforced, source_quote, created_at, superseded_by, agent_id
 		 FROM facts
 		 WHERE LOWER(subject) = LOWER(?)
 		   AND LOWER(predicate) = LOWER(?)
@@ -247,6 +247,7 @@ func (s *SQLiteStore) CheckConflictsForFact(ctx context.Context, fact *Fact) ([]
 			&existing.ID, &existing.MemoryID, &existing.Subject, &existing.Predicate,
 			&existing.Object, &existing.FactType, &existing.Confidence, &existing.DecayRate,
 			&existing.LastReinforced, &existing.SourceQuote, &existing.CreatedAt, &supersededBy,
+			&existing.AgentID,
 		); err != nil {
 			return nil, fmt.Errorf("scanning existing fact: %w", err)
 		}
@@ -260,11 +261,15 @@ func (s *SQLiteStore) CheckConflictsForFact(ctx context.Context, fact *Fact) ([]
 			continue
 		}
 
+		crossAgent := fact.AgentID != existing.AgentID &&
+			(fact.AgentID != "" || existing.AgentID != "")
+
 		conflicts = append(conflicts, Conflict{
 			Fact1:        *fact,
 			Fact2:        existing,
 			ConflictType: "attribute",
 			Similarity:   1.0, // Exact subject+predicate match
+			CrossAgent:   crossAgent,
 		})
 	}
 

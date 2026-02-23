@@ -455,11 +455,14 @@ func (s *SQLiteStore) GetAttributeConflictsLimitWithSuperseded(ctx context.Conte
 		for i := 0; i < len(facts); i++ {
 			for j := i + 1; j < len(facts); j++ {
 				if facts[i].Object != facts[j].Object {
+					crossAgent := facts[i].AgentID != facts[j].AgentID &&
+						(facts[i].AgentID != "" || facts[j].AgentID != "")
 					conflicts = append(conflicts, Conflict{
 						Fact1:        facts[i],
 						Fact2:        facts[j],
 						ConflictType: "attribute",
 						Similarity:   1.0,
+						CrossAgent:   crossAgent,
 					})
 				}
 			}

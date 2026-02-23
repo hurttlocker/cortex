@@ -100,6 +100,7 @@ type Conflict struct {
 	Fact2        store.Fact `json:"fact2"`
 	ConflictType string     `json:"conflict_type"` // "attribute"
 	Similarity   float64    `json:"similarity"`
+	CrossAgent   bool       `json:"cross_agent,omitempty"`
 }
 
 // Engine provides memory observability capabilities.
@@ -549,6 +550,7 @@ func (e *Engine) GetConflictsLimitWithSuperseded(ctx context.Context, limit int,
 			Fact2:        sc.Fact2,
 			ConflictType: sc.ConflictType,
 			Similarity:   sc.Similarity,
+			CrossAgent:   sc.CrossAgent,
 		}
 	}
 
