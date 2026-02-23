@@ -37,7 +37,7 @@ type GitHubConfig struct {
 
 func (c *GitHubConfig) includeIssues() bool   { return c.IncludeIssues == nil || *c.IncludeIssues }
 func (c *GitHubConfig) includePRs() bool      { return c.IncludePRs == nil || *c.IncludePRs }
-func (c *GitHubConfig) includeComments() bool  { return c.IncludeComments == nil || *c.IncludeComments }
+func (c *GitHubConfig) includeComments() bool { return c.IncludeComments == nil || *c.IncludeComments }
 
 func init() {
 	DefaultRegistry.Register(&GitHubProvider{})
@@ -299,18 +299,18 @@ func classifyIssue(issue gitHubIssue) string {
 // --- GitHub API types ---
 
 type gitHubIssue struct {
-	Number      int             `json:"number"`
-	Title       string          `json:"title"`
-	Body        string          `json:"body"`
-	State       string          `json:"state"`
-	User        gitHubUser      `json:"user"`
-	Labels      []gitHubLabel   `json:"labels"`
+	Number      int              `json:"number"`
+	Title       string           `json:"title"`
+	Body        string           `json:"body"`
+	State       string           `json:"state"`
+	User        gitHubUser       `json:"user"`
+	Labels      []gitHubLabel    `json:"labels"`
 	Milestone   *gitHubMilestone `json:"milestone"`
 	PullRequest *json.RawMessage `json:"pull_request"`
-	Comments    int             `json:"comments"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
-	ClosedAt    *time.Time      `json:"closed_at"`
+	Comments    int              `json:"comments"`
+	CreatedAt   time.Time        `json:"created_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+	ClosedAt    *time.Time       `json:"closed_at"`
 }
 
 type gitHubComment struct {

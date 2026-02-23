@@ -351,15 +351,15 @@ type driveFileList struct {
 }
 
 type driveFile struct {
-	ID           string        `json:"id"`
-	Name         string        `json:"name"`
-	MimeType     string        `json:"mimeType"`
-	ModifiedTime string        `json:"modifiedTime"`
-	Size         string        `json:"size"`
-	Owners       []driveOwner  `json:"owners"`
-	WebViewLink  string        `json:"webViewLink"`
-	Description  string        `json:"description"`
-	Starred      bool          `json:"starred"`
+	ID           string       `json:"id"`
+	Name         string       `json:"name"`
+	MimeType     string       `json:"mimeType"`
+	ModifiedTime string       `json:"modifiedTime"`
+	Size         string       `json:"size"`
+	Owners       []driveOwner `json:"owners"`
+	WebViewLink  string       `json:"webViewLink"`
+	Description  string       `json:"description"`
+	Starred      bool         `json:"starred"`
 }
 
 type driveOwner struct {
