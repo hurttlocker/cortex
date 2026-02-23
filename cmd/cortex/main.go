@@ -2523,7 +2523,7 @@ func runInfer(args []string) error {
 
 func runGraph(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex graph <fact_id> [--depth 2] [--min-confidence 0.5]")
+		return fmt.Errorf("usage: cortex graph <fact_id> [--depth 2] [--min-confidence 0.5] [--export json] [--agent <id>]")
 	}
 
 	factID, err := strconv.ParseInt(args[0], 10, 64)
@@ -2533,6 +2533,8 @@ func runGraph(args []string) error {
 
 	depth := 2
 	minConf := 0.0
+	exportJSON := false
+	agentFilter := ""
 	for i := 1; i < len(args); i++ {
 		switch {
 		case args[i] == "--depth" && i+1 < len(args):
@@ -2552,6 +2554,18 @@ func runGraph(args []string) error {
 				return fmt.Errorf("invalid --min-confidence: %s", args[i])
 			}
 			minConf = c
+		case args[i] == "--export" && i+1 < len(args):
+			i++
+			if args[i] == "json" {
+				exportJSON = true
+			} else {
+				return fmt.Errorf("unsupported export format %q (supported: json)", args[i])
+			}
+		case args[i] == "--json":
+			exportJSON = true
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentFilter = args[i]
 		}
 	}
 
@@ -2566,14 +2580,23 @@ func runGraph(args []string) error {
 		return fmt.Errorf("graph requires SQLiteStore")
 	}
 
-	nodes, err := sqlStore.TraverseGraph(context.Background(), factID, depth, minConf)
+	ctx := context.Background()
+	nodes, err := sqlStore.TraverseGraph(ctx, factID, depth, minConf)
 	if err != nil {
 		return err
 	}
 
 	if len(nodes) == 0 {
-		fmt.Printf("No graph found from fact #%d\n", factID)
+		if exportJSON {
+			fmt.Println("{}")
+		} else {
+			fmt.Printf("No graph found from fact #%d\n", factID)
+		}
 		return nil
+	}
+
+	if exportJSON {
+		return runGraphExportJSON(ctx, sqlStore, nodes, factID, depth, agentFilter)
 	}
 
 	fmt.Printf("🔗 Knowledge graph from fact #%d (depth %d, %d nodes):\n\n", factID, depth, len(nodes))
@@ -2597,6 +2620,114 @@ func runGraph(args []string) error {
 		}
 	}
 	return nil
+}
+
+// graphExportNode mirrors the MCP export format for CLI output.
+type graphExportNode struct {
+	ID         int64   `json:"id"`
+	Subject    string  `json:"subject"`
+	Predicate  string  `json:"predicate"`
+	Object     string  `json:"object"`
+	Confidence float64 `json:"confidence"`
+	AgentID    string  `json:"agent_id,omitempty"`
+	FactType   string  `json:"type"`
+}
+
+type graphExportEdge struct {
+	Source     int64   `json:"source"`
+	Target     int64   `json:"target"`
+	EdgeType   string  `json:"type"`
+	Confidence float64 `json:"confidence"`
+	SourceType string  `json:"source_type"`
+}
+
+type graphExportCooc struct {
+	A     int64 `json:"a"`
+	B     int64 `json:"b"`
+	Count int   `json:"count"`
+}
+
+type graphExportResult struct {
+	Nodes         []graphExportNode `json:"nodes"`
+	Edges         []graphExportEdge `json:"edges"`
+	Cooccurrences []graphExportCooc `json:"cooccurrences"`
+	Meta          map[string]interface{} `json:"meta"`
+}
+
+func runGraphExportJSON(ctx context.Context, sqlStore *store.SQLiteStore, nodes []store.GraphNode, rootID int64, depth int, agentFilter string) error {
+	result := graphExportResult{
+		Meta: map[string]interface{}{
+			"root_fact_id": rootID,
+			"depth":        depth,
+		},
+	}
+
+	seenNodes := make(map[int64]bool)
+	var allFactIDs []int64
+
+	for _, gn := range nodes {
+		if gn.Fact == nil {
+			continue
+		}
+		if agentFilter != "" && gn.Fact.AgentID != agentFilter && gn.Fact.AgentID != "" {
+			continue
+		}
+		if !seenNodes[gn.Fact.ID] {
+			seenNodes[gn.Fact.ID] = true
+			allFactIDs = append(allFactIDs, gn.Fact.ID)
+			result.Nodes = append(result.Nodes, graphExportNode{
+				ID:         gn.Fact.ID,
+				Subject:    gn.Fact.Subject,
+				Predicate:  gn.Fact.Predicate,
+				Object:     gn.Fact.Object,
+				Confidence: gn.Fact.Confidence,
+				AgentID:    gn.Fact.AgentID,
+				FactType:   gn.Fact.FactType,
+			})
+		}
+		for _, e := range gn.Edges {
+			result.Edges = append(result.Edges, graphExportEdge{
+				Source:     e.SourceFactID,
+				Target:     e.TargetFactID,
+				EdgeType:   string(e.EdgeType),
+				Confidence: e.Confidence,
+				SourceType: string(e.Source),
+			})
+		}
+	}
+
+	// Gather co-occurrences
+	seenCooc := make(map[[2]int64]bool)
+	for _, fid := range allFactIDs {
+		coocs, err := sqlStore.GetCooccurrencesForFact(ctx, fid, 10)
+		if err != nil {
+			continue
+		}
+		for _, c := range coocs {
+			if seenNodes[c.FactIDA] && seenNodes[c.FactIDB] {
+				key := [2]int64{c.FactIDA, c.FactIDB}
+				if c.FactIDA > c.FactIDB {
+					key = [2]int64{c.FactIDB, c.FactIDA}
+				}
+				if !seenCooc[key] {
+					seenCooc[key] = true
+					result.Cooccurrences = append(result.Cooccurrences, graphExportCooc{
+						A:     c.FactIDA,
+						B:     c.FactIDB,
+						Count: c.Count,
+					})
+				}
+			}
+		}
+	}
+
+	result.Meta["total_nodes"] = len(result.Nodes)
+	result.Meta["total_edges"] = len(result.Edges)
+	result.Meta["total_cooccurrences"] = len(result.Cooccurrences)
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(result)
 }
 
 func runUpdate(args []string) error {

@@ -80,6 +80,7 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	registerWatchListTool(s, cfg.Store)
 	registerEdgeAddTool(s, cfg.Store)
 	registerGraphTool(s, cfg.Store)
+	registerGraphExportTool(s, cfg.Store)
 
 	// Register connector management tools
 	if sqlStore, ok := cfg.Store.(*store.SQLiteStore); ok {
@@ -927,6 +928,190 @@ func registerGraphTool(s *server.MCPServer, st store.Store) {
 		data, _ := json.MarshalIndent(nodes, "", "  ")
 		return mcp.NewToolResultText(string(data)), nil
 	})
+}
+
+// GraphExportNode is a fact for the visualization-friendly export format.
+type GraphExportNode struct {
+	ID         int64   `json:"id"`
+	Subject    string  `json:"subject"`
+	Predicate  string  `json:"predicate"`
+	Object     string  `json:"object"`
+	Confidence float64 `json:"confidence"`
+	AgentID    string  `json:"agent_id,omitempty"`
+	FactType   string  `json:"type"`
+}
+
+// GraphExportEdge is an edge for the visualization-friendly export format.
+type GraphExportEdge struct {
+	Source     int64   `json:"source"`
+	Target     int64   `json:"target"`
+	EdgeType   string  `json:"type"`
+	Confidence float64 `json:"confidence"`
+	SourceType string  `json:"source_type"`
+}
+
+// GraphExportCooccurrence is a co-occurrence pair for export.
+type GraphExportCooccurrence struct {
+	A     int64 `json:"a"`
+	B     int64 `json:"b"`
+	Count int   `json:"count"`
+}
+
+// GraphExportResult is the full visualization-ready graph export.
+type GraphExportResult struct {
+	Nodes         []GraphExportNode         `json:"nodes"`
+	Edges         []GraphExportEdge         `json:"edges"`
+	Cooccurrences []GraphExportCooccurrence `json:"cooccurrences"`
+	Meta          map[string]interface{}    `json:"meta"`
+}
+
+func registerGraphExportTool(s *server.MCPServer, st store.Store) {
+	tool := mcp.NewTool("cortex_graph_export",
+		mcp.WithDescription("Export a subgraph in visualization-ready JSON format. Returns nodes (facts), edges, and co-occurrence data. Use for building graph visualizations."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithNumber("fact_id", mcp.Required(),
+			mcp.Description("Starting fact ID for graph traversal"),
+		),
+		mcp.WithNumber("depth",
+			mcp.Description("Maximum traversal depth (default: 2, max: 5)"),
+		),
+		mcp.WithNumber("min_confidence",
+			mcp.Description("Minimum edge confidence to follow (default: 0, range: 0-1)"),
+		),
+		mcp.WithString("agent_id",
+			mcp.Description("Filter to facts from a specific agent (empty = all)"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		sqlStore, ok := st.(*store.SQLiteStore)
+		if !ok {
+			return mcp.NewToolResultError("graph export requires SQLiteStore"), nil
+		}
+
+		factID, err := req.RequireFloat("fact_id")
+		if err != nil {
+			return mcp.NewToolResultError("fact_id required"), nil
+		}
+
+		depth := 2
+		if d, err := req.RequireFloat("depth"); err == nil && d > 0 {
+			depth = int(d)
+			if depth > 5 {
+				depth = 5
+			}
+		}
+
+		minConf := 0.0
+		if c, err := req.RequireFloat("min_confidence"); err == nil {
+			minConf = c
+		}
+
+		agentFilter := ""
+		if a, err := req.RequireString("agent_id"); err == nil {
+			agentFilter = a
+		}
+
+		// Traverse graph
+		graphNodes, err := sqlStore.TraverseGraph(ctx, int64(factID), depth, minConf)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("graph error: %v", err)), nil
+		}
+
+		// Build export format
+		result := GraphExportResult{
+			Meta: map[string]interface{}{
+				"root_fact_id": int64(factID),
+				"depth":        depth,
+			},
+		}
+
+		seenNodes := make(map[int64]bool)
+		var allFactIDs []int64
+
+		for _, gn := range graphNodes {
+			if gn.Fact == nil {
+				continue
+			}
+			// Agent filter
+			if agentFilter != "" && gn.Fact.AgentID != agentFilter && gn.Fact.AgentID != "" {
+				continue
+			}
+
+			if !seenNodes[gn.Fact.ID] {
+				seenNodes[gn.Fact.ID] = true
+				allFactIDs = append(allFactIDs, gn.Fact.ID)
+
+				result.Nodes = append(result.Nodes, GraphExportNode{
+					ID:         gn.Fact.ID,
+					Subject:    gn.Fact.Subject,
+					Predicate:  gn.Fact.Predicate,
+					Object:     gn.Fact.Object,
+					Confidence: gn.Fact.Confidence,
+					AgentID:    gn.Fact.AgentID,
+					FactType:   gn.Fact.FactType,
+				})
+			}
+
+			for _, edge := range gn.Edges {
+				result.Edges = append(result.Edges, GraphExportEdge{
+					Source:     edge.SourceFactID,
+					Target:     edge.TargetFactID,
+					EdgeType:   string(edge.EdgeType),
+					Confidence: edge.Confidence,
+					SourceType: string(edge.Source),
+				})
+			}
+		}
+
+		// Get co-occurrences for all involved facts
+		for _, fid := range allFactIDs {
+			coocs, err := sqlStore.GetCooccurrencesForFact(ctx, fid, 10)
+			if err != nil {
+				continue
+			}
+			for _, c := range coocs {
+				// Only include co-occurrences where both facts are in the graph
+				if seenNodes[c.FactIDA] && seenNodes[c.FactIDB] {
+					result.Cooccurrences = append(result.Cooccurrences, GraphExportCooccurrence{
+						A:     c.FactIDA,
+						B:     c.FactIDB,
+						Count: c.Count,
+					})
+				}
+			}
+		}
+
+		// Deduplicate co-occurrences
+		result.Cooccurrences = dedupeCooccurrences(result.Cooccurrences)
+
+		result.Meta["total_nodes"] = len(result.Nodes)
+		result.Meta["total_edges"] = len(result.Edges)
+		result.Meta["total_cooccurrences"] = len(result.Cooccurrences)
+
+		data, _ := json.MarshalIndent(result, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
+	})
+}
+
+func dedupeCooccurrences(coocs []GraphExportCooccurrence) []GraphExportCooccurrence {
+	seen := make(map[[2]int64]bool)
+	var result []GraphExportCooccurrence
+	for _, c := range coocs {
+		key := [2]int64{c.A, c.B}
+		if c.A > c.B {
+			key = [2]int64{c.B, c.A}
+		}
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, c)
+		}
+	}
+	return result
 }
 
 func registerStatsResource(s *server.MCPServer, engine *observe.Engine) {

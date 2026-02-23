@@ -63,7 +63,26 @@ cortex search "what did I decide about the API design"
 claude mcp add cortex -- cortex mcp
 ```
 
-That's it. Your agent now has persistent memory with 7 MCP tools: search, import, reason, stats, facts, stale, reinforce.
+That's it. Your agent now has persistent memory with 16 MCP tools.
+
+### Next steps
+
+```bash
+# Connect external sources — GitHub, Gmail, Slack, Calendar, Drive
+cortex connect add github --config '{"token": "ghp_...", "repos": ["owner/repo"]}'
+cortex connect sync --all
+
+# Set up alerts — get notified when facts conflict or fade
+cortex watch add "deployment failures" --threshold 0.7
+cortex alerts check-decay
+
+# Multi-agent? Scope facts by agent
+cortex import notes.md --agent mister --extract
+cortex search "config" --agent mister
+```
+
+See [docs/connectors.md](docs/connectors.md) for full connector setup and
+[docs/platform.md](docs/platform.md) for alerts, namespaces, and the knowledge graph.
 
 ## Why Cortex
 
