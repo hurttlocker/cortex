@@ -289,8 +289,8 @@ type gogBody struct {
 }
 
 type gogPart struct {
-	MimeType string  `json:"mimeType"`
-	Body     gogBody `json:"body"`
+	MimeType string    `json:"mimeType"`
+	Body     gogBody   `json:"body"`
 	Parts    []gogPart `json:"parts,omitempty"`
 }
 

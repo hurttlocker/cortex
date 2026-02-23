@@ -287,12 +287,12 @@ func DefaultDecayThresholds() DecayThresholds {
 
 // DecayAlertResult summarizes what CheckDecayAlerts found.
 type DecayAlertResult struct {
-	FactsScanned    int
-	AlertsCreated   int
-	AlertsSkipped   int // Already had unacked decay alert
-	WarningCount    int
-	CriticalCount   int
-	SubjectGroups   map[string]int // subject → count of fading facts
+	FactsScanned  int
+	AlertsCreated int
+	AlertsSkipped int // Already had unacked decay alert
+	WarningCount  int
+	CriticalCount int
+	SubjectGroups map[string]int // subject → count of fading facts
 }
 
 // DecayFactDetail is the JSON detail stored with each decay alert.

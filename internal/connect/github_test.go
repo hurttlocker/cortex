@@ -128,12 +128,12 @@ func TestGitHubConfigDefaults(t *testing.T) {
 
 func TestIssueToRecord(t *testing.T) {
 	issue := gitHubIssue{
-		Number: 42,
-		Title:  "Fix memory leak",
-		Body:   "There's a memory leak in the search engine.",
-		State:  "open",
-		User:   gitHubUser{Login: "testuser"},
-		Labels: []gitHubLabel{{Name: "bug"}, {Name: "P1"}},
+		Number:    42,
+		Title:     "Fix memory leak",
+		Body:      "There's a memory leak in the search engine.",
+		State:     "open",
+		User:      gitHubUser{Login: "testuser"},
+		Labels:    []gitHubLabel{{Name: "bug"}, {Name: "P1"}},
 		Milestone: &gitHubMilestone{Title: "v1.0"},
 		Comments:  3,
 		CreatedAt: time.Date(2026, 2, 20, 10, 0, 0, 0, time.UTC),
@@ -288,11 +288,11 @@ func TestGitHubFetchWithMockServer(t *testing.T) {
 			UpdatedAt: now,
 		},
 		{
-			Number:    2,
-			Title:     "Second issue (PR)",
-			Body:      "A pull request",
-			State:     "closed",
-			User:      gitHubUser{Login: "dev"},
+			Number: 2,
+			Title:  "Second issue (PR)",
+			Body:   "A pull request",
+			State:  "closed",
+			User:   gitHubUser{Login: "dev"},
 			PullRequest: func() *json.RawMessage {
 				r := json.RawMessage(`{"url": "https://api.github.com/repos/o/r/pulls/2"}`)
 				return &r
