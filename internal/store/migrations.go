@@ -74,6 +74,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating connectors table: %w", err)
 	}
 
+	// Schema evolution: alerts table (v1.0 — Issue #162)
+	if err := s.migrateAlertsTable(); err != nil {
+		return fmt.Errorf("migrating alerts table: %w", err)
+	}
+
 	return nil
 }
 
@@ -802,6 +807,50 @@ func (s *SQLiteStore) migrateConnectorsTable() error {
 
 	if _, err := s.db.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('connectors_v1', 'true')`); err != nil {
 		return fmt.Errorf("setting connectors_v1 flag: %w", err)
+	}
+
+	return nil
+}
+
+// migrateAlertsTable creates the alerts table for proactive notifications.
+func (s *SQLiteStore) migrateAlertsTable() error {
+	done, err := s.isMetaFlagEnabled("alerts_v1")
+	if err != nil {
+		return err
+	}
+	if done {
+		return nil
+	}
+
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS alerts (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			alert_type      TEXT NOT NULL,
+			severity        TEXT NOT NULL DEFAULT 'info',
+			fact_id         INTEGER,
+			related_fact_id INTEGER,
+			agent_id        TEXT DEFAULT '',
+			message         TEXT NOT NULL,
+			details         TEXT DEFAULT '',
+			acknowledged    INTEGER NOT NULL DEFAULT 0,
+			acknowledged_at DATETIME,
+			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (fact_id) REFERENCES facts(id),
+			FOREIGN KEY (related_fact_id) REFERENCES facts(id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(alert_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_alerts_unacked ON alerts(acknowledged, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_alerts_fact ON alerts(fact_id)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("creating alerts table: %w", err)
+		}
+	}
+
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('alerts_v1', 'true')`); err != nil {
+		return fmt.Errorf("setting alerts_v1 flag: %w", err)
 	}
 
 	return nil

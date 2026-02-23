@@ -73,6 +73,7 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	registerStaleTool(s, observeEngine)
 	registerReinforceTool(s, cfg.Store)
 	registerReasonTool(s, searchEngine, cfg.Store)
+	registerAlertsTool(s, cfg.Store)
 
 	// Register resources
 	registerStatsResource(s, observeEngine)
@@ -544,6 +545,101 @@ func registerReasonTool(s *server.MCPServer, searchEngine *search.Engine, st sto
 	})
 }
 
+func registerAlertsTool(s *server.MCPServer, st store.Store) {
+	tool := mcp.NewTool("cortex_alerts",
+		mcp.WithDescription("List and manage proactive alerts (conflicts, decay warnings, watch matches). Returns unacknowledged alerts by default."),
+		mcp.WithString("action",
+			mcp.Description("Action: 'list' (default), 'ack' (acknowledge by id), 'ack_all', 'summary'"),
+		),
+		mcp.WithNumber("alert_id",
+			mcp.Description("Alert ID to acknowledge (used with action=ack)"),
+		),
+		mcp.WithString("type",
+			mcp.Description("Filter by alert type: 'conflict', 'decay', 'match' (empty = all)"),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum number of alerts to return (default: 20)"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		sqlStore, ok := st.(*store.SQLiteStore)
+		if !ok {
+			return mcp.NewToolResultError("alerts require SQLiteStore"), nil
+		}
+
+		action := "list"
+		if a, err := req.RequireString("action"); err == nil && a != "" {
+			action = a
+		}
+
+		switch action {
+		case "summary":
+			summary, err := observe.AlertSummary(ctx, sqlStore)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("alert summary error: %v", err)), nil
+			}
+			return mcp.NewToolResultText(summary), nil
+
+		case "ack":
+			alertID := int64(0)
+			if id, err := req.RequireFloat("alert_id"); err == nil {
+				alertID = int64(id)
+			}
+			if alertID <= 0 {
+				return mcp.NewToolResultError("alert_id required for ack action"), nil
+			}
+			if err := sqlStore.AcknowledgeAlert(ctx, alertID); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("ack error: %v", err)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("✓ Alert %d acknowledged.", alertID)), nil
+
+		case "ack_all":
+			alertType := ""
+			if t, err := req.RequireString("type"); err == nil {
+				alertType = t
+			}
+			count, err := sqlStore.AcknowledgeAllAlerts(ctx, store.AlertType(alertType))
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("ack_all error: %v", err)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("✓ %d alert(s) acknowledged.", count)), nil
+
+		default: // "list"
+			unacked := false
+			limit := 20
+			if l, err := req.RequireFloat("limit"); err == nil && l > 0 {
+				limit = int(l)
+			}
+			alertType := ""
+			if t, err := req.RequireString("type"); err == nil {
+				alertType = t
+			}
+
+			filter := store.AlertFilter{
+				Type:         store.AlertType(alertType),
+				Acknowledged: &unacked,
+				Limit:        limit,
+			}
+
+			alerts, err := sqlStore.ListAlerts(ctx, filter)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("list error: %v", err)), nil
+			}
+
+			if len(alerts) == 0 {
+				return mcp.NewToolResultText("No unacknowledged alerts. ✓"), nil
+			}
+
+			data, _ := json.MarshalIndent(alerts, "", "  ")
+			return mcp.NewToolResultText(string(data)), nil
+		}
+	})
+}
+
 func registerStatsResource(s *server.MCPServer, engine *observe.Engine) {
 	resource := mcp.NewResource(
 		"cortex://stats",
@@ -737,6 +833,10 @@ func extractFactsFromMemories(ctx context.Context, st store.Store, memoryIDs []i
 			}
 			if _, err := st.AddFact(ctx, f); err == nil {
 				totalFacts++
+				// Proactive conflict detection (#162)
+				if sqlStore, ok := st.(*store.SQLiteStore); ok {
+					observe.CheckAndAlertConflicts(ctx, sqlStore, f)
+				}
 			}
 		}
 	}

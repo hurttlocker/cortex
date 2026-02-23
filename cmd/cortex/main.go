@@ -159,6 +159,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "alerts":
+		if err := runAlerts(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "mcp":
 		if err := runMCP(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -868,6 +873,138 @@ func runStale(args []string) error {
 	return outputStaleTTY(staleFacts, opts, totalFacts)
 }
 
+func runAlerts(args []string) error {
+	jsonOutput := false
+	ackID := int64(0)
+	ackAll := false
+	alertType := ""
+	limitFlag := 20
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			jsonOutput = true
+		case "--ack":
+			if i+1 < len(args) {
+				i++
+				id, err := strconv.ParseInt(args[i], 10, 64)
+				if err != nil {
+					return fmt.Errorf("invalid alert ID: %s", args[i])
+				}
+				ackID = id
+			} else {
+				return fmt.Errorf("--ack requires an alert ID")
+			}
+		case "--ack-all":
+			ackAll = true
+		case "--type":
+			if i+1 < len(args) {
+				i++
+				alertType = args[i]
+			}
+		case "--limit":
+			if i+1 < len(args) {
+				i++
+				l, err := strconv.Atoi(args[i])
+				if err != nil {
+					return fmt.Errorf("invalid limit: %s", args[i])
+				}
+				limitFlag = l
+			}
+		case "-h", "--help":
+			fmt.Println(`cortex alerts — View and manage proactive alerts
+
+Usage:
+  cortex alerts                  List unacknowledged alerts
+  cortex alerts --ack <id>       Acknowledge an alert
+  cortex alerts --ack-all        Acknowledge all alerts
+  cortex alerts --type conflict  Filter by type (conflict, decay, match)
+  cortex alerts --json           Output as JSON
+  cortex alerts --limit 50       Max results (default: 20)`)
+			return nil
+		}
+	}
+
+	storeIface, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return err
+	}
+	defer storeIface.Close()
+
+	s, ok := storeIface.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("alerts require SQLiteStore backend")
+	}
+
+	ctx := context.Background()
+
+	// Handle acknowledgment
+	if ackID > 0 {
+		if err := s.AcknowledgeAlert(ctx, ackID); err != nil {
+			return err
+		}
+		fmt.Printf("✓ Alert %d acknowledged.\n", ackID)
+		return nil
+	}
+
+	if ackAll {
+		count, err := s.AcknowledgeAllAlerts(ctx, store.AlertType(alertType))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("✓ %d alert(s) acknowledged.\n", count)
+		return nil
+	}
+
+	// List alerts
+	unacked := false
+	filter := store.AlertFilter{
+		Type:         store.AlertType(alertType),
+		Acknowledged: &unacked,
+		Limit:        limitFlag,
+	}
+
+	alerts, err := s.ListAlerts(ctx, filter)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(alerts)
+	}
+
+	if len(alerts) == 0 {
+		fmt.Println("No unacknowledged alerts. ✓")
+		return nil
+	}
+
+	fmt.Printf("📋 %d unacknowledged alert(s):\n\n", len(alerts))
+	for _, a := range alerts {
+		icon := "ℹ️"
+		switch a.Severity {
+		case store.AlertSeverityWarning:
+			icon = "🟡"
+		case store.AlertSeverityCritical:
+			icon = "🔴"
+		}
+		fmt.Printf("%s [%s] #%d (%s) — %s\n", icon, a.AlertType, a.ID, a.Severity, a.Message)
+		fmt.Printf("   Created: %s\n", a.CreatedAt.Format("2006-01-02 15:04:05"))
+		if a.FactID != nil {
+			fmt.Printf("   Facts: #%d", *a.FactID)
+			if a.RelatedFactID != nil {
+				fmt.Printf(" vs #%d", *a.RelatedFactID)
+			}
+			fmt.Println()
+		}
+		fmt.Println()
+	}
+
+	fmt.Printf("Acknowledge: cortex alerts --ack <id> | cortex alerts --ack-all\n")
+	return nil
+}
+
 func runConflicts(args []string) error {
 	jsonOutput := false
 	verboseOutput := globalVerbose
@@ -1314,6 +1451,15 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 			_, err := s.AddFact(ctx, fact)
 			if err != nil {
 				continue // Skip storage errors
+			}
+
+			// Proactive conflict detection (#162): check new fact against existing
+			if sqlStore, ok := s.(*store.SQLiteStore); ok {
+				if alertCount, alertErr := observe.CheckAndAlertConflicts(ctx, sqlStore, fact); alertErr == nil && alertCount > 0 {
+					if globalVerbose {
+						fmt.Printf("  ⚠️  %d conflict alert(s) created for fact #%d\n", alertCount, fact.ID)
+					}
+				}
 			}
 
 			stats.FactsExtracted++
@@ -4964,6 +5110,7 @@ Commands:
   export              Export the full memory store in different formats
   stale               Find outdated memory entries
   conflicts           Detect contradictory facts
+  alerts              View and manage proactive alerts (conflicts, decay, watches)
   cleanup             Remove garbage memories and headless facts
                       --purge-noise  Run fact quality governor to remove noise + enforce caps
   optimize            Manual DB maintenance (integrity check, VACUUM, ANALYZE)
