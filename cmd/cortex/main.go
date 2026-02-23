@@ -109,6 +109,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "fact-history":
+		if err := runFactHistory(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "update":
 		if err := runUpdate(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -2193,6 +2198,69 @@ func runSupersede(args []string) error {
 		fmt.Printf(" (%s)", reason)
 	}
 	fmt.Println()
+	return nil
+}
+
+func runFactHistory(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex fact-history <fact-id>")
+	}
+
+	factID, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid fact id %q", args[0])
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("fact-history requires SQLiteStore")
+	}
+
+	// Get the fact itself
+	fact, err := s.GetFact(ctx, factID)
+	if err != nil {
+		return fmt.Errorf("getting fact: %w", err)
+	}
+	if fact == nil {
+		return fmt.Errorf("fact %d not found", factID)
+	}
+
+	fmt.Printf("Fact #%d: %s %s %s\n", fact.ID, fact.Subject, fact.Predicate, fact.Object)
+	fmt.Printf("  Type: %s · Confidence: %.2f · Decay: %.3f/day\n", fact.FactType, fact.Confidence, fact.DecayRate)
+	eff := store.EffectiveConfidence(fact.Confidence, fact.DecayRate, fact.LastReinforced)
+	fmt.Printf("  Effective confidence: %.2f\n", eff)
+	if fact.AgentID != "" {
+		fmt.Printf("  Owner: %s\n", fact.AgentID)
+	}
+	fmt.Println()
+
+	// Get access summary
+	summary, err := sqlStore.GetFactAccessSummary(ctx, factID)
+	if err != nil {
+		return fmt.Errorf("getting access summary: %w", err)
+	}
+
+	fmt.Printf("📊 Access History:\n")
+	fmt.Printf("  Total accesses: %d\n", summary.TotalAccess)
+	fmt.Printf("  Search hits: %d\n", summary.SearchCount)
+	fmt.Printf("  Unique agents: %d\n", summary.UniqueAgents)
+	if len(summary.AgentIDs) > 0 {
+		fmt.Printf("  Agents: %s\n", strings.Join(summary.AgentIDs, ", "))
+	}
+	if summary.CrossAgent {
+		fmt.Printf("  🔗 Cross-agent: yes (multi-agent amplification active)\n")
+	}
+	if !summary.LastAccess.IsZero() {
+		fmt.Printf("  Last accessed: %s\n", summary.LastAccess.Format("2006-01-02 15:04"))
+	}
+
 	return nil
 }
 
