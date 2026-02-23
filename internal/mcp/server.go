@@ -83,7 +83,7 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 
 	// Register connector management tools
 	if sqlStore, ok := cfg.Store.(*store.SQLiteStore); ok {
-		connStore := connect.NewConnectorStore(sqlStore.DB())
+		connStore := connect.NewConnectorStore(sqlStore.GetDB())
 		registerConnectListTool(s, connStore)
 		registerConnectAddTool(s, connStore)
 		registerConnectSyncTool(s, connStore, cfg.Store)

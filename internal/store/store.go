@@ -242,6 +242,10 @@ type SQLiteStore struct {
 	dbPath    string
 	batchSize int
 	embDims   int
+
+	// Webhook is an optional alert delivery channel. If non-nil and enabled,
+	// alerts are POSTed to the configured URL after creation.
+	Webhook *WebhookNotifier
 }
 
 // ExecContext executes a SQL statement. This is exposed for testing purposes.
@@ -421,12 +425,6 @@ func isSQLiteBusyError(err error) bool {
 	return strings.Contains(msg, "sqlite_busy") ||
 		strings.Contains(msg, "database is locked") ||
 		strings.Contains(msg, "database table is locked")
-}
-
-// DB returns the underlying *sql.DB for use by subsystems that need direct access
-// (e.g., connect.ConnectorStore). The caller must NOT close this connection.
-func (s *SQLiteStore) DB() *sql.DB {
-	return s.db
 }
 
 // Close closes the database connection.

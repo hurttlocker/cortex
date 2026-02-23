@@ -76,6 +76,12 @@ func (s *SQLiteStore) CreateAlert(ctx context.Context, alert *Alert) error {
 
 	alert.ID = id
 	alert.CreatedAt = now
+
+	// Fire webhook notification (non-blocking, best-effort)
+	if s.Webhook != nil {
+		s.Webhook.Notify(alert)
+	}
+
 	return nil
 }
 

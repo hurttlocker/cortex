@@ -251,6 +251,28 @@ func getStoreConfig() store.StoreConfig {
 	return store.StoreConfig{DBPath: getDBPath(), ReadOnly: globalReadOnly}
 }
 
+// wireWebhook sets up webhook notification on a SQLiteStore if CORTEX_ALERT_WEBHOOK_URL is set.
+func wireWebhook(s store.Store) {
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return
+	}
+	cfg := &store.WebhookConfig{
+		URL:     os.Getenv("CORTEX_ALERT_WEBHOOK_URL"),
+		Version: version,
+	}
+	if headerJSON := os.Getenv("CORTEX_ALERT_WEBHOOK_HEADERS"); headerJSON != "" {
+		var headers map[string]string
+		if err := json.Unmarshal([]byte(headerJSON), &headers); err == nil {
+			cfg.Headers = headers
+		}
+	}
+	notifier := store.NewWebhookNotifier(cfg)
+	if notifier.Enabled() {
+		sqlStore.Webhook = notifier
+	}
+}
+
 // getHNSWPath returns the path for the persisted HNSW index file.
 // By default this is ~/.cortex/hnsw.idx. If --db / CORTEX_DB is set,
 // the index is stored alongside that database file.
@@ -447,6 +469,7 @@ func runImport(args []string) error {
 		return fmt.Errorf("opening store: %w", err)
 	}
 	defer s.Close()
+	wireWebhook(s)
 
 	engine := ingest.NewEngine(s)
 	ctx := context.Background()
@@ -1139,6 +1162,7 @@ Thresholds (effective confidence = base × e^(-decay_rate × days)):
 		return err
 	}
 	defer storeIface.Close()
+	wireWebhook(storeIface)
 
 	s, ok := storeIface.(*store.SQLiteStore)
 	if !ok {
@@ -3413,6 +3437,8 @@ Resources:
 		return fmt.Errorf("opening store: %w", err)
 	}
 	defer s.Close()
+
+	wireWebhook(s)
 
 	mcpCfg := cortexmcp.ServerConfig{
 		Store:   s,
