@@ -164,6 +164,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "watch":
+		if err := runWatch(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "mcp":
 		if err := runMCP(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1249,6 +1254,294 @@ func runAlertsReinforce(args []string) error {
 	}
 
 	fmt.Printf("✓ Fact reinforced and alert #%d acknowledged. Confidence reset.\n", alertID)
+	return nil
+}
+
+// runWatch manages persistent watch queries.
+func runWatch(args []string) error {
+	if len(args) == 0 {
+		return runWatchList(nil)
+	}
+
+	switch args[0] {
+	case "add":
+		return runWatchAdd(args[1:])
+	case "list":
+		return runWatchList(args[1:])
+	case "remove", "rm":
+		return runWatchRemove(args[1:])
+	case "pause":
+		return runWatchSetActive(args[1:], false)
+	case "resume":
+		return runWatchSetActive(args[1:], true)
+	case "test":
+		return runWatchTest(args[1:])
+	case "-h", "--help", "help":
+		fmt.Println(`cortex watch — Persistent watch queries with alert notifications
+
+Usage:
+  cortex watch                                    List active watches
+  cortex watch add "deployment failures"          Watch for matching imports
+  cortex watch add "ADA price" --threshold 0.8    Custom match threshold
+  cortex watch list [--all]                       List watches (--all includes paused)
+  cortex watch remove <id>                        Delete a watch
+  cortex watch pause <id>                         Pause a watch
+  cortex watch resume <id>                        Resume a watch
+  cortex watch test <id> --memory <memory-id>     Test a watch against a memory
+
+Options:
+  --threshold 0.7     Minimum match score (0-1, default: 0.7)
+  --agent <id>        Scope watch to a specific agent
+  --json              Output as JSON`)
+		return nil
+	default:
+		return fmt.Errorf("unknown watch subcommand: %s (try: add, list, remove, pause, resume, test)", args[0])
+	}
+}
+
+func runWatchAdd(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex watch add <query> [--threshold 0.7] [--agent <id>]")
+	}
+
+	query := args[0]
+	threshold := 0.7
+	agentID := ""
+
+	for i := 1; i < len(args); i++ {
+		switch {
+		case args[i] == "--threshold" && i+1 < len(args):
+			i++
+			v, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --threshold: %s", args[i])
+			}
+			threshold = v
+		case strings.HasPrefix(args[i], "--threshold="):
+			v, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--threshold="), 64)
+			if err != nil {
+				return fmt.Errorf("invalid --threshold: %s", args[i])
+			}
+			threshold = v
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentID = args[i]
+		}
+	}
+
+	storeIface, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return err
+	}
+	defer storeIface.Close()
+
+	s, ok := storeIface.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("watches require SQLiteStore backend")
+	}
+
+	w := &store.WatchQuery{
+		Query:     query,
+		Threshold: threshold,
+		AgentID:   agentID,
+	}
+
+	if err := s.CreateWatch(context.Background(), w); err != nil {
+		return err
+	}
+
+	fmt.Printf("✓ Watch #%d created: %q (threshold: %.0f%%)\n", w.ID, w.Query, w.Threshold*100)
+	fmt.Printf("  New imports matching this query will generate alerts.\n")
+	return nil
+}
+
+func runWatchList(args []string) error {
+	showAll := false
+	jsonOutput := false
+
+	for _, arg := range args {
+		switch arg {
+		case "--all":
+			showAll = true
+		case "--json":
+			jsonOutput = true
+		}
+	}
+
+	storeIface, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return err
+	}
+	defer storeIface.Close()
+
+	s, ok := storeIface.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("watches require SQLiteStore backend")
+	}
+
+	watches, err := s.ListWatches(context.Background(), !showAll)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(watches)
+	}
+
+	if len(watches) == 0 {
+		fmt.Println("No active watches. Add one: cortex watch add \"your query\"")
+		return nil
+	}
+
+	fmt.Printf("👁️  %d watch(es):\n\n", len(watches))
+	for _, w := range watches {
+		status := "🟢"
+		if !w.Active {
+			status = "⏸️ "
+		}
+		fmt.Printf("%s #%d: %q (threshold: %.0f%%, matches: %d)\n",
+			status, w.ID, w.Query, w.Threshold*100, w.MatchCount)
+		if w.LastMatchedAt != nil {
+			fmt.Printf("   Last match: %s\n", w.LastMatchedAt.Format("2006-01-02 15:04:05"))
+		}
+		if w.AgentID != "" {
+			fmt.Printf("   Agent: %s\n", w.AgentID)
+		}
+	}
+	return nil
+}
+
+func runWatchRemove(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex watch remove <id>")
+	}
+
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid watch ID: %s", args[0])
+	}
+
+	storeIface, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return err
+	}
+	defer storeIface.Close()
+
+	s, ok := storeIface.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("watches require SQLiteStore backend")
+	}
+
+	if err := s.RemoveWatch(context.Background(), id); err != nil {
+		return err
+	}
+
+	fmt.Printf("✓ Watch #%d removed.\n", id)
+	return nil
+}
+
+func runWatchSetActive(args []string, active bool) error {
+	if len(args) == 0 {
+		action := "pause"
+		if active {
+			action = "resume"
+		}
+		return fmt.Errorf("usage: cortex watch %s <id>", action)
+	}
+
+	id, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid watch ID: %s", args[0])
+	}
+
+	storeIface, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return err
+	}
+	defer storeIface.Close()
+
+	s, ok := storeIface.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("watches require SQLiteStore backend")
+	}
+
+	if err := s.SetWatchActive(context.Background(), id, active); err != nil {
+		return err
+	}
+
+	action := "paused"
+	if active {
+		action = "resumed"
+	}
+	fmt.Printf("✓ Watch #%d %s.\n", id, action)
+	return nil
+}
+
+func runWatchTest(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex watch test <watch-id> --memory <memory-id>")
+	}
+
+	watchID, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid watch ID: %s", args[0])
+	}
+
+	memoryID := int64(0)
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--memory" && i+1 < len(args) {
+			i++
+			memoryID, err = strconv.ParseInt(args[i], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid memory ID: %s", args[i])
+			}
+		}
+	}
+
+	if memoryID == 0 {
+		return fmt.Errorf("--memory <id> is required")
+	}
+
+	storeIface, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return err
+	}
+	defer storeIface.Close()
+
+	s, ok := storeIface.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("watches require SQLiteStore backend")
+	}
+
+	ctx := context.Background()
+
+	w, err := s.GetWatch(ctx, watchID)
+	if err != nil {
+		return err
+	}
+
+	// Get memory content
+	var content string
+	row := s.GetDB().QueryRowContext(ctx, "SELECT content FROM memories WHERE id = ?", memoryID)
+	if err := row.Scan(&content); err != nil {
+		return fmt.Errorf("memory %d not found: %w", memoryID, err)
+	}
+
+	score := store.Bm25MatchScoreExported(content, w.Query)
+	snippet := store.ExtractSnippetExported(content, w.Query, 120)
+
+	fmt.Printf("🔍 Watch #%d: %q\n", w.ID, w.Query)
+	fmt.Printf("   Memory #%d: %s\n", memoryID, snippet)
+	fmt.Printf("   Score: %.0f%% (threshold: %.0f%%)\n", score*100, w.Threshold*100)
+
+	if score >= w.Threshold {
+		fmt.Printf("   ✅ MATCH — would trigger alert\n")
+	} else {
+		fmt.Printf("   ❌ No match — below threshold\n")
+	}
+
 	return nil
 }
 

@@ -79,6 +79,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating alerts table: %w", err)
 	}
 
+	// Schema evolution: watches table (v1.0 — Issue #164)
+	if err := s.migrateWatchesTable(); err != nil {
+		return fmt.Errorf("migrating watches table: %w", err)
+	}
+
 	return nil
 }
 
@@ -869,4 +874,37 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// migrateWatchesTable creates the watches table for persistent watch queries.
+func (s *SQLiteStore) migrateWatchesTable() error {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='watches_v1'").Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checking watches_v1: %w", err)
+	}
+	if count > 0 {
+		return nil // Already exists
+	}
+
+	_, err = s.db.Exec(`
+		CREATE TABLE watches_v1 (
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			query             TEXT NOT NULL,
+			threshold         REAL DEFAULT 0.7,
+			delivery_channel  TEXT DEFAULT 'alert',
+			webhook_url       TEXT,
+			agent_id          TEXT,
+			active            INTEGER DEFAULT 1,
+			created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+			last_matched_at   DATETIME,
+			match_count       INTEGER DEFAULT 0
+		);
+		CREATE INDEX idx_watches_active ON watches_v1(active);
+	`)
+	if err != nil {
+		return fmt.Errorf("creating watches_v1 table: %w", err)
+	}
+
+	return nil
 }
