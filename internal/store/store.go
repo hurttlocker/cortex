@@ -423,6 +423,12 @@ func isSQLiteBusyError(err error) bool {
 		strings.Contains(msg, "database table is locked")
 }
 
+// DB returns the underlying *sql.DB for use by subsystems that need direct access
+// (e.g., connect.ConnectorStore). The caller must NOT close this connection.
+func (s *SQLiteStore) DB() *sql.DB {
+	return s.db
+}
+
 // Close closes the database connection.
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()

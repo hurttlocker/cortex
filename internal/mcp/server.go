@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hurttlocker/cortex/internal/connect"
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/observe"
@@ -79,6 +80,15 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	registerWatchListTool(s, cfg.Store)
 	registerEdgeAddTool(s, cfg.Store)
 	registerGraphTool(s, cfg.Store)
+
+	// Register connector management tools
+	if sqlStore, ok := cfg.Store.(*store.SQLiteStore); ok {
+		connStore := connect.NewConnectorStore(sqlStore.DB())
+		registerConnectListTool(s, connStore)
+		registerConnectAddTool(s, connStore)
+		registerConnectSyncTool(s, connStore, cfg.Store)
+		registerConnectStatusTool(s, connStore)
+	}
 
 	// Register resources
 	registerStatsResource(s, observeEngine)
@@ -1159,4 +1169,228 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// --- Connect tools ---
+
+func registerConnectListTool(s *server.MCPServer, connStore *connect.ConnectorStore) {
+	tool := mcp.NewTool("cortex_connect_list",
+		mcp.WithDescription("List configured connectors and their sync status."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithBoolean("enabled_only",
+			mcp.Description("Only show enabled connectors (default: false, show all)"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		enabledOnly := false
+		if e, err := req.RequireString("enabled_only"); err == nil && e == "true" {
+			enabledOnly = true
+		}
+
+		connectors, err := connStore.List(ctx, enabledOnly)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("list connectors error: %v", err)), nil
+		}
+
+		if len(connectors) == 0 {
+			return mcp.NewToolResultText("No connectors configured. Use cortex_connect_add to set one up."), nil
+		}
+
+		type connectorInfo struct {
+			ID              int64      `json:"id"`
+			Provider        string     `json:"provider"`
+			Enabled         bool       `json:"enabled"`
+			LastSyncAt      *time.Time `json:"last_sync_at,omitempty"`
+			LastError       string     `json:"last_error,omitempty"`
+			RecordsImported int64      `json:"records_imported"`
+		}
+
+		var infos []connectorInfo
+		for _, c := range connectors {
+			infos = append(infos, connectorInfo{
+				ID:              c.ID,
+				Provider:        c.Provider,
+				Enabled:         c.Enabled,
+				LastSyncAt:      c.LastSyncAt,
+				LastError:       c.LastError,
+				RecordsImported: c.RecordsImported,
+			})
+		}
+
+		data, _ := json.MarshalIndent(infos, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
+	})
+}
+
+func registerConnectAddTool(s *server.MCPServer, connStore *connect.ConnectorStore) {
+	// Build provider list
+	providerNames := connect.DefaultRegistry.List()
+
+	tool := mcp.NewTool("cortex_connect_add",
+		mcp.WithDescription(fmt.Sprintf("Add a new connector. Available providers: %s. Pass provider-specific config as JSON.", strings.Join(providerNames, ", "))),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithString("provider", mcp.Required(),
+			mcp.Description("Provider name (e.g., github, gmail, slack, calendar, drive)"),
+		),
+		mcp.WithString("config", mcp.Required(),
+			mcp.Description("Provider configuration as JSON string"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		providerName, err := req.RequireString("provider")
+		if err != nil {
+			return mcp.NewToolResultError("provider is required"), nil
+		}
+
+		configStr, err := req.RequireString("config")
+		if err != nil {
+			return mcp.NewToolResultError("config is required"), nil
+		}
+
+		// Validate provider exists
+		provider := connect.DefaultRegistry.Get(providerName)
+		if provider == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("unknown provider %q. Available: %s", providerName, strings.Join(providerNames, ", "))), nil
+		}
+
+		// Validate config
+		configJSON := json.RawMessage(configStr)
+		if err := provider.ValidateConfig(configJSON); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid config: %v", err)), nil
+		}
+
+		// Add connector
+		id, err := connStore.Add(ctx, providerName, configJSON)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("add connector error: %v", err)), nil
+		}
+
+		result := map[string]interface{}{
+			"id":       id,
+			"provider": providerName,
+			"message":  fmt.Sprintf("✅ Connector %q added (id: %d). Run cortex_connect_sync to sync.", providerName, id),
+		}
+		data, _ := json.MarshalIndent(result, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
+	})
+}
+
+func registerConnectSyncTool(s *server.MCPServer, connStore *connect.ConnectorStore, memStore store.Store) {
+	tool := mcp.NewTool("cortex_connect_sync",
+		mcp.WithDescription("Sync a connector (or all connectors if no provider specified). Fetches new data from the source and imports into Cortex."),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithString("provider",
+			mcp.Description("Provider name to sync (e.g., github). Leave empty to sync all enabled connectors."),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		engine := connect.NewSyncEngine(connect.DefaultRegistry, connStore, memStore, false)
+
+		providerName, _ := req.RequireString("provider")
+
+		if providerName != "" {
+			result, err := engine.SyncProvider(ctx, providerName)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("sync error: %v", err)), nil
+			}
+			data, _ := json.MarshalIndent(result, "", "  ")
+			return mcp.NewToolResultText(string(data)), nil
+		}
+
+		// Sync all
+		results, err := engine.SyncAll(ctx)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("sync all error: %v", err)), nil
+		}
+		if len(results) == 0 {
+			return mcp.NewToolResultText("No enabled connectors to sync."), nil
+		}
+
+		data, _ := json.MarshalIndent(results, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
+	})
+}
+
+func registerConnectStatusTool(s *server.MCPServer, connStore *connect.ConnectorStore) {
+	tool := mcp.NewTool("cortex_connect_status",
+		mcp.WithDescription("Get detailed status of a specific connector, including config (redacted), sync history, and error state."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithString("provider", mcp.Required(),
+			mcp.Description("Provider name to get status for"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		providerName, err := req.RequireString("provider")
+		if err != nil {
+			return mcp.NewToolResultError("provider is required"), nil
+		}
+
+		c, err := connStore.Get(ctx, providerName)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("connector %q: %v", providerName, err)), nil
+		}
+
+		// Redact sensitive fields from config
+		redacted := redactConfig(c.Config)
+
+		status := map[string]interface{}{
+			"id":               c.ID,
+			"provider":         c.Provider,
+			"enabled":          c.Enabled,
+			"config":           json.RawMessage(redacted),
+			"last_sync_at":     c.LastSyncAt,
+			"last_error":       c.LastError,
+			"records_imported": c.RecordsImported,
+			"created_at":       c.CreatedAt,
+			"updated_at":       c.UpdatedAt,
+		}
+
+		data, _ := json.MarshalIndent(status, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
+	})
+}
+
+// redactConfig masks sensitive fields (token, password, secret) in connector config.
+func redactConfig(config json.RawMessage) string {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(config, &parsed); err != nil {
+		return "{}"
+	}
+
+	sensitiveKeys := []string{"token", "password", "secret", "api_key", "apikey"}
+	for k, v := range parsed {
+		lk := toLower(k)
+		for _, sk := range sensitiveKeys {
+			if contains(lk, sk) {
+				if s, ok := v.(string); ok && len(s) > 8 {
+					parsed[k] = s[:4] + "..." + s[len(s)-4:]
+				} else {
+					parsed[k] = "***"
+				}
+			}
+		}
+	}
+
+	data, _ := json.MarshalIndent(parsed, "", "  ")
+	return string(data)
 }
