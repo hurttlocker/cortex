@@ -221,10 +221,10 @@ func TestEventToRecordTruncation(t *testing.T) {
 
 func TestClassifyEvent(t *testing.T) {
 	tests := []struct {
-		name     string
-		summary  string
+		name      string
+		summary   string
 		numPeople int
-		expected string
+		expected  string
 	}{
 		{"multi-attendee", "Team meeting", 3, "decision"},
 		{"deadline", "Project deadline", 0, "status"},
