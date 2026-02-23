@@ -216,6 +216,15 @@ func (s *SQLiteStore) SupersedeFact(ctx context.Context, oldFactID, newFactID in
 		Source:    "supersede",
 	})
 
+	// Auto-create 'supersedes' edge in knowledge graph
+	_ = s.AddEdge(ctx, &FactEdge{
+		SourceFactID: newFactID,
+		TargetFactID: oldFactID,
+		EdgeType:     EdgeTypeSupersedes,
+		Confidence:   1.0,
+		Source:       EdgeSourceDetected,
+	})
+
 	return nil
 }
 
