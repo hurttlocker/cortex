@@ -1,0 +1,49 @@
+{
+  "name": "@cortex-ai/mcp",
+  "version": "0.4.0",
+  "description": "Memory that forgets — persistent agent memory with Ebbinghaus decay. Zero-config MCP server.",
+  "keywords": [
+    "mcp",
+    "memory",
+    "ai",
+    "agent",
+    "cortex",
+    "knowledge",
+    "fact-extraction",
+    "ebbinghaus",
+    "decay"
+  ],
+  "homepage": "https://github.com/hurttlocker/cortex",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hurttlocker/cortex.git",
+    "directory": "npm"
+  },
+  "license": "MIT",
+  "author": "hurttlocker",
+  "bin": {
+    "cortex-mcp": "bin/cortex-mcp.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js",
+    "test": "node scripts/test.js"
+  },
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

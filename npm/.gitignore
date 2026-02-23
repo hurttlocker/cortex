@@ -1,0 +1,4 @@
+# Downloaded binaries (postinstall)
+bin/cortex
+bin/cortex.exe
+node_modules/
