@@ -89,6 +89,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating fact agent_id: %w", err)
 	}
 
+	// Schema evolution: fact accesses table (v1.0 — Issue #166)
+	if err := s.migrateFactAccessesTable(); err != nil {
+		return fmt.Errorf("migrating fact accesses table: %w", err)
+	}
+
 	return nil
 }
 
@@ -916,6 +921,37 @@ func (s *SQLiteStore) migrateFactAgentID() error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing agent_id migration: %w", err)
 	}
+	return nil
+}
+
+// migrateFactAccessesTable creates the table for tracking fact access patterns (#166).
+func (s *SQLiteStore) migrateFactAccessesTable() error {
+	_, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS fact_accesses_v1 (
+			id INTEGER PRIMARY KEY,
+			fact_id INTEGER NOT NULL,
+			agent_id TEXT NOT NULL DEFAULT '',
+			access_type TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (fact_id) REFERENCES facts(id)
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("creating fact_accesses_v1 table: %w", err)
+	}
+
+	// Create indexes
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_fact_accesses_fact ON fact_accesses_v1(fact_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_accesses_agent ON fact_accesses_v1(agent_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_accesses_created ON fact_accesses_v1(created_at)`,
+	}
+	for _, idx := range indexes {
+		if _, err := s.db.Exec(idx); err != nil {
+			return fmt.Errorf("creating fact access index: %w", err)
+		}
+	}
+
 	return nil
 }
 
