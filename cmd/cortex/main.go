@@ -21,6 +21,7 @@ import (
 	"github.com/hurttlocker/cortex/internal/connect"
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/extract"
+	"github.com/hurttlocker/cortex/internal/graph"
 	"github.com/hurttlocker/cortex/internal/ingest"
 	cortexmcp "github.com/hurttlocker/cortex/internal/mcp"
 	"github.com/hurttlocker/cortex/internal/observe"
@@ -2523,7 +2524,12 @@ func runInfer(args []string) error {
 
 func runGraph(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex graph <fact_id> [--depth 2] [--min-confidence 0.5] [--export json] [--agent <id>]")
+		return fmt.Errorf("usage: cortex graph <fact_id> [--depth 2] [--min-confidence 0.5] [--export json] [--agent <id>]\n       cortex graph --serve [--port 8090]")
+	}
+
+	// Handle --serve mode
+	if args[0] == "--serve" {
+		return runGraphServe(args[1:])
 	}
 
 	factID, err := strconv.ParseInt(args[0], 10, 64)
@@ -2620,6 +2626,36 @@ func runGraph(args []string) error {
 		}
 	}
 	return nil
+}
+
+func runGraphServe(args []string) error {
+	port := 8090
+	for i := 0; i < len(args); i++ {
+		if (args[i] == "--port" || args[i] == "-p") && i+1 < len(args) {
+			i++
+			p, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --port: %s", args[i])
+			}
+			port = p
+		}
+	}
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: getDBPath(), ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("graph serve requires SQLiteStore")
+	}
+
+	return graph.Serve(graph.ServerConfig{
+		Store: sqlStore,
+		Port:  port,
+	})
 }
 
 // graphExportNode mirrors the MCP export format for CLI output.
