@@ -748,6 +748,70 @@ const cortexPlugin = {
               console.log(`\n❌ Cortex binary not found or not working: ${err.message}`);
               console.log("Install: https://github.com/hurttlocker/cortex/releases");
             }
+
+            // Connector health summary
+            try {
+              const { stdout } = await execFileAsync(cfg.binaryPath, ["connect", "status"], {
+                timeout: 10000,
+                env: { ...process.env, CORTEX_DB: cfg.dbPath },
+              });
+              console.log(`\n📡 Connectors:`);
+              console.log(stdout.trim() || "  No connectors configured");
+            } catch {
+              console.log(`\n📡 Connectors: none configured`);
+            }
+          });
+
+        // --- Connect subcommands ---
+
+        const connectCmd = cortex.command("connect").description("Manage Cortex Connect integrations");
+
+        connectCmd
+          .command("status")
+          .description("Show connector status")
+          .action(async () => {
+            try {
+              const { stdout } = await execFileAsync(cfg.binaryPath, ["connect", "status"], {
+                timeout: 15000,
+                env: { ...process.env, CORTEX_DB: cfg.dbPath },
+              });
+              console.log(stdout.trim());
+            } catch (err: any) {
+              console.error(`Connect status failed: ${err.message}`);
+            }
+          });
+
+        connectCmd
+          .command("sync")
+          .description("Sync connectors")
+          .argument("[provider]", "Specific provider to sync (omit for all)")
+          .action(async (provider?: string) => {
+            try {
+              const args = ["connect", "sync"];
+              if (provider) args.push(provider);
+              const { stdout } = await execFileAsync(cfg.binaryPath, args, {
+                timeout: 60000,
+                env: { ...process.env, CORTEX_DB: cfg.dbPath },
+              });
+              console.log(stdout.trim());
+            } catch (err: any) {
+              console.error(`Connect sync failed: ${err.message}`);
+            }
+          });
+
+        connectCmd
+          .command("providers")
+          .description("List available connector providers")
+          .action(async () => {
+            try {
+              const { stdout } = await execFileAsync(cfg.binaryPath, ["connect", "providers"], {
+                timeout: 10000,
+                env: { ...process.env, CORTEX_DB: cfg.dbPath },
+              });
+              console.log(stdout.trim());
+            } catch (err: any) {
+              console.error(`Connect providers failed: ${err.message}`);
+            }
           });
       },
       { commands: ["cortex"] },

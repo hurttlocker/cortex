@@ -122,8 +122,26 @@ The plugin registers 4 tools the AI can use:
 ```bash
 openclaw cortex search "wedding venue"    # Search memories
 openclaw cortex stats                      # Show statistics
-openclaw cortex setup                      # Verify configuration
+openclaw cortex setup                      # Verify configuration + connector health
+openclaw cortex connect status             # Show connector sync status
+openclaw cortex connect sync               # Sync all connectors
+openclaw cortex connect sync github        # Sync specific provider
+openclaw cortex connect providers          # List available providers
 ```
+
+### Connector Onboarding
+```bash
+# 1. Add a connector (via cortex CLI)
+cortex connect add github --config '{"token": "ghp_...", "repos": ["owner/repo"]}'
+
+# 2. Sync
+cortex connect sync github
+
+# 3. Verify in OpenClaw
+openclaw cortex connect status
+```
+
+Available providers: `github`, `gmail`, `calendar`, `drive`, `slack`
 
 ## Migrating from Supermemory
 

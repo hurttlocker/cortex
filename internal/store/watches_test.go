@@ -120,8 +120,8 @@ func TestWatchPauseResume(t *testing.T) {
 
 func TestBm25MatchScore(t *testing.T) {
 	tests := []struct {
-		content string
-		query   string
+		content  string
+		query    string
 		minScore float64
 		maxScore float64
 	}{
