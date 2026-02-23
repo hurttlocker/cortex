@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -35,6 +36,18 @@ func DefaultGovernorConfig() GovernorConfig {
 		MaxFactsPerMemory:   50,
 		MinObjectLength:     2,
 		MinPredicateLength:  2,
+		DropMarkdownJunk:    true,
+		DropGenericSubjects: true,
+	}
+}
+
+// AutoCaptureGovernorConfig returns stricter settings for conversation captures.
+// Auto-capture text is noisy by nature — only high-signal facts survive.
+func AutoCaptureGovernorConfig() GovernorConfig {
+	return GovernorConfig{
+		MaxFactsPerMemory:   15,
+		MinObjectLength:     3,
+		MinPredicateLength:  3,
 		DropMarkdownJunk:    true,
 		DropGenericSubjects: true,
 	}
@@ -189,11 +202,21 @@ func isMarkdownJunk(s string) bool {
 	return false
 }
 
+// timestampSubjectRE matches subjects that are primarily timestamps or
+// timestamp-prefixed section headers — strong signal of auto-capture noise.
+var timestampSubjectRE = regexp.MustCompile(
+	`^(?:` +
+		`\d{4}-\d{2}-\d{2}` + // ISO date prefix
+		`|\d{1,2}:\d{2}\s*(?:AM|PM)` + // Clock time prefix
+		`)`,
+)
+
 // isGenericSubject detects subjects that carry no useful signal.
 // Empty subjects are allowed (means source wasn't labeled, not necessarily noise).
-// Only explicitly generic labels are dropped.
+// Generic labels, timestamp-prefixed headers, and overly long subjects are dropped.
 func isGenericSubject(subj string) bool {
-	lower := strings.ToLower(strings.TrimSpace(subj))
+	trimmed := strings.TrimSpace(subj)
+	lower := strings.ToLower(trimmed)
 
 	// Empty subject is fine — just means no source_section or source_file.
 	// The quality score penalizes it, but we don't hard-drop it.
@@ -211,6 +234,9 @@ func isGenericSubject(subj string) bool {
 		"(unknown)",
 		"none",
 		"n/a",
+		"assistant",
+		"user",
+		"system",
 	}
 	for _, g := range generic {
 		if lower == g {
@@ -220,6 +246,27 @@ func isGenericSubject(subj string) bool {
 
 	// Subject that starts with "conversation" is likely auto-capture noise
 	if strings.HasPrefix(lower, "conversation ") {
+		return true
+	}
+
+	// Subject that starts with "send this to" is forwarding noise
+	if strings.HasPrefix(lower, "send this to ") {
+		return true
+	}
+
+	// Timestamp-prefixed subjects are section headers, not entities
+	if timestampSubjectRE.MatchString(trimmed) {
+		return true
+	}
+
+	// Subjects containing emoji section markers are usually headers, not entities
+	if strings.ContainsAny(trimmed, "✅🚩📌🌙") && len(trimmed) > 30 {
+		return true
+	}
+
+	// Very long subjects (>50 chars) are almost certainly not real entities.
+	// Real entity names: "Q", "Cortex", "Spear", "SB", "ORB Strategy" — all short.
+	if len(trimmed) > 50 {
 		return true
 	}
 

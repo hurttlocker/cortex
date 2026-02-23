@@ -110,13 +110,59 @@ func NewPipelineWithOptions(opts ...PipelineOption) *Pipeline {
 	return p
 }
 
+// MaxSubjectLength caps subjects to prevent section-header-as-subject noise.
+// Real entities (people, projects, tools) are short. Long subjects are almost
+// always section headers from conversation captures.
+const MaxSubjectLength = 50
+
+// timestampPrefixRE matches common timestamp prefixes at the start of section
+// headers, e.g. "11:27 PM ET — ...", "2026-02-20 16:28 ET — ...",
+// "Conversation Capture — 2026-02-23T04:58:24.112Z > Assistant".
+var timestampPrefixRE = regexp.MustCompile(
+	`^(?:` +
+		// ISO timestamps: "2026-02-20T16:28:00Z" or "2026-02-20 16:28 ET"
+		`\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}[^ ]*)?\s*(?:ET|UTC|PT|CT|MT)?\s*[—–-]\s*` +
+		`|` +
+		// Clock timestamps: "11:27 PM ET —"
+		`\d{1,2}:\d{2}\s*(?:AM|PM)?\s*(?:ET|UTC|PT|CT|MT)?\s*[—–-]\s*` +
+		`|` +
+		// "Conversation Capture — ..."
+		`(?i)conversation\s+capture\s*[—–-]\s*[^\s]*\s*>\s*` +
+		`)`,
+)
+
+// sectionTrailRE matches trailing " > SubSection" fragments from nested headers.
+var sectionTrailRE = regexp.MustCompile(`\s*>\s*[^>]+$`)
+
+// parenthesizedTimeRE matches parenthesized time ranges like "(3:45-4:45 PM)", "(9:00 PM", "(Feb 11,".
+var parenthesizedTimeRE = regexp.MustCompile(`\s*\(\d{1,2}[:\-]\d{2}[^)]*\)?`)
+
+// parenthesizedDateRE matches parenthesized dates like "(Feb 11, 2026)", "(LOCKED 2026-02-10)".
+var parenthesizedDateRE = regexp.MustCompile(`\s*\((?:LOCKED\s+)?\d{4}-\d{2}-\d{2}\)`)
+
+// emojiPrefixRE matches leading emoji + space patterns like "🧠 ", "📊 ", "💥 ".
+var emojiPrefixRE = regexp.MustCompile(`^[\x{1F300}-\x{1FAF8}\x{2600}-\x{27BF}\x{FE00}-\x{FE0F}\x{200D}]+\s*`)
+
 // inferSubject derives a subject string from extraction metadata.
-// First choice: source_section (e.g. "Wedding Planning > Vendor Contacts").
-// Second choice: filename stem from source_file (e.g. "2026-02-17").
-// Returns "" when neither is available.
+//
+// For auto-capture sources (conversation transcripts), subjects are aggressively
+// normalized to avoid section headers becoming fact subjects. The pipeline:
+//  1. Strip timestamp prefixes ("11:27 PM ET — ...")
+//  2. Strip "Conversation Capture" prefixes
+//  3. Strip trailing "> subsection" fragments
+//  4. Cap length at MaxSubjectLength (truncate at last word boundary)
+//  5. For auto-capture: fall back to filename stem if result is still long/noisy
+//
+// For structured documents (MEMORY.md, config), source_section is used as-is
+// (capped at MaxSubjectLength).
 func inferSubject(metadata map[string]string) string {
+	isCapture := isAutoCaptureSource(metadata)
+
 	if section, ok := metadata["source_section"]; ok && section != "" {
-		return section
+		subj := normalizeSubject(section, isCapture)
+		if subj != "" {
+			return subj
+		}
 	}
 	if file, ok := metadata["source_file"]; ok && file != "" {
 		// Strip directory and extension to get filename stem.
@@ -127,9 +173,87 @@ func inferSubject(metadata map[string]string) string {
 		if idx := strings.LastIndex(base, "."); idx > 0 {
 			base = base[:idx]
 		}
-		return base
+		return truncateAtWordBoundary(base, MaxSubjectLength)
 	}
 	return ""
+}
+
+// normalizeSubject cleans a raw source_section into a usable fact subject.
+func normalizeSubject(raw string, isCapture bool) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+
+	// Strip timestamp prefixes
+	s = timestampPrefixRE.ReplaceAllString(s, "")
+	s = strings.TrimSpace(s)
+
+	// Strip trailing "> subsection" fragments
+	s = sectionTrailRE.ReplaceAllString(s, "")
+	s = strings.TrimSpace(s)
+
+	// Strip parenthesized time ranges and dates
+	s = parenthesizedTimeRE.ReplaceAllString(s, "")
+	s = parenthesizedDateRE.ReplaceAllString(s, "")
+	s = strings.TrimSpace(s)
+
+	// Strip leading emoji
+	s = emojiPrefixRE.ReplaceAllString(s, "")
+	s = strings.TrimSpace(s)
+
+	// Strip leading markdown headers (## , ### , etc.)
+	for strings.HasPrefix(s, "#") {
+		s = strings.TrimLeft(s, "#")
+		s = strings.TrimSpace(s)
+	}
+
+	// Strip common noise prefixes
+	noisePrefixes := []string{
+		"Send this to laptop agent next",
+		"Conversation Summary",
+		"Conversation Capture",
+	}
+	lower := strings.ToLower(s)
+	for _, prefix := range noisePrefixes {
+		if strings.HasPrefix(lower, strings.ToLower(prefix)) {
+			s = strings.TrimSpace(s[len(prefix):])
+			s = strings.TrimLeft(s, ">—–- ")
+			s = strings.TrimSpace(s)
+			break
+		}
+	}
+
+	// If still empty after stripping, return empty
+	if s == "" {
+		return ""
+	}
+
+	// For auto-capture: if subject still looks like a long prose header, collapse it
+	if isCapture && len(s) > MaxSubjectLength {
+		// Try to extract just the first meaningful phrase (before any "—", ">", "(")
+		for _, sep := range []string{" — ", " > ", " (", " – "} {
+			if idx := strings.Index(s, sep); idx > 0 && idx <= MaxSubjectLength {
+				s = s[:idx]
+				break
+			}
+		}
+	}
+
+	return truncateAtWordBoundary(strings.TrimSpace(s), MaxSubjectLength)
+}
+
+// truncateAtWordBoundary truncates s to maxLen, cutting at the last space before maxLen.
+func truncateAtWordBoundary(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	// Find last space before maxLen
+	cut := strings.LastIndex(s[:maxLen], " ")
+	if cut <= 0 {
+		cut = maxLen // No space found, hard truncate
+	}
+	return s[:cut]
 }
 
 func stripAutoCaptureScaffold(text string) string {
@@ -184,10 +308,13 @@ func stripAutoCaptureScaffold(text string) string {
 
 // Extract runs extraction on the input text and returns structured facts.
 // Uses both rule-based extraction (Tier 1) and optional LLM extraction (Tier 2).
+// For auto-capture sources (conversation transcripts), a stricter governor is
+// applied to suppress the high noise inherent in conversational text.
 func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string]string) ([]ExtractedFact, error) {
 	var facts []ExtractedFact
+	isCapture := isAutoCaptureSource(metadata)
 
-	if isAutoCaptureSource(metadata) {
+	if isCapture {
 		text = stripAutoCaptureScaffold(text)
 	}
 
@@ -221,7 +348,6 @@ func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string
 		llmFacts, err = p.extractWithLLM(ctx, text)
 		if err != nil {
 			// Log warning but don't fail - fall back to Tier 1 only
-			// TODO: Consider using a logger interface instead of stderr
 			fmt.Fprintf(os.Stderr, "Warning: LLM extraction failed, using rule-based extraction only: %v\n", err)
 		}
 	}
@@ -231,8 +357,13 @@ func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string
 	allFacts = deduplicateFacts(allFacts)
 
 	// 5. Quality governor: filter noise, rank, and cap
-	if p.governor != nil {
-		allFacts = p.governor.Apply(allFacts)
+	// Use stricter governor for auto-capture sources (conversation transcripts)
+	gov := p.governor
+	if isCapture && gov != nil {
+		gov = NewGovernor(AutoCaptureGovernorConfig())
+	}
+	if gov != nil {
+		allFacts = gov.Apply(allFacts)
 	}
 
 	return allFacts, nil
