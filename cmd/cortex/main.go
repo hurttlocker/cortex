@@ -124,6 +124,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "infer":
+		if err := runInfer(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "update":
 		if err := runUpdate(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -2421,6 +2426,70 @@ func runEdgeRemove(args []string) error {
 	}
 
 	fmt.Printf("✓ Edge #%d removed.\n", edgeID)
+	return nil
+}
+
+func runInfer(args []string) error {
+	opts := store.DefaultInferenceOpts()
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--dry-run":
+			opts.DryRun = true
+		case args[i] == "--apply":
+			opts.DryRun = false
+		case args[i] == "--min-confidence" && i+1 < len(args):
+			i++
+			c, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --min-confidence: %s", args[i])
+			}
+			opts.MinConfidence = c
+		case args[i] == "--max-edges" && i+1 < len(args):
+			i++
+			m, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --max-edges: %s", args[i])
+			}
+			opts.MaxEdges = m
+		}
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("infer requires SQLiteStore")
+	}
+
+	result, err := sqlStore.RunInference(context.Background(), opts)
+	if err != nil {
+		return err
+	}
+
+	if opts.DryRun {
+		fmt.Printf("🔍 Inference dry-run: %d proposals\n\n", len(result.Proposals))
+		for i, p := range result.Proposals {
+			fmt.Printf("  %d. fact %d -[%s]→ fact %d (%.0f%%, rule: %s)\n",
+				i+1, p.SourceFactID, p.EdgeType, p.TargetFactID,
+				p.Confidence*100, p.Rule)
+			fmt.Printf("     %s\n", p.Reason)
+		}
+	} else {
+		fmt.Printf("🔗 Inference complete: %d edges created, %d skipped\n", result.EdgesCreated, result.EdgesSkipped)
+	}
+
+	if len(result.RulesApplied) > 0 {
+		fmt.Println("\nRules applied:")
+		for rule, count := range result.RulesApplied {
+			fmt.Printf("  • %s: %d\n", rule, count)
+		}
+	}
+
 	return nil
 }
 
