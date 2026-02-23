@@ -76,6 +76,8 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	registerAlertsTool(s, cfg.Store)
 	registerWatchAddTool(s, cfg.Store)
 	registerWatchListTool(s, cfg.Store)
+	registerEdgeAddTool(s, cfg.Store)
+	registerGraphTool(s, cfg.Store)
 
 	// Register resources
 	registerStatsResource(s, observeEngine)
@@ -777,6 +779,138 @@ func registerWatchListTool(s *server.MCPServer, st store.Store) {
 		}
 
 		data, _ := json.MarshalIndent(watches, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
+	})
+}
+
+func registerEdgeAddTool(s *server.MCPServer, st store.Store) {
+	tool := mcp.NewTool("cortex_edge_add",
+		mcp.WithDescription("Create a typed relationship between two facts (supports, contradicts, relates_to, supersedes, derived_from)."),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithNumber("source_fact_id", mcp.Required(),
+			mcp.Description("Source fact ID"),
+		),
+		mcp.WithNumber("target_fact_id", mcp.Required(),
+			mcp.Description("Target fact ID"),
+		),
+		mcp.WithString("edge_type", mcp.Required(),
+			mcp.Description("Relationship type: supports, contradicts, relates_to, supersedes, derived_from"),
+		),
+		mcp.WithString("agent_id",
+			mcp.Description("Agent creating this edge"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		sqlStore, ok := st.(*store.SQLiteStore)
+		if !ok {
+			return mcp.NewToolResultError("edges require SQLiteStore"), nil
+		}
+
+		sourceID, err := req.RequireFloat("source_fact_id")
+		if err != nil {
+			return mcp.NewToolResultError("source_fact_id required"), nil
+		}
+		targetID, err := req.RequireFloat("target_fact_id")
+		if err != nil {
+			return mcp.NewToolResultError("target_fact_id required"), nil
+		}
+		edgeTypeStr, err := req.RequireString("edge_type")
+		if err != nil {
+			return mcp.NewToolResultError("edge_type required"), nil
+		}
+
+		edgeType, err := store.ParseEdgeType(edgeTypeStr)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		agentID := ""
+		if a, err := req.RequireString("agent_id"); err == nil && a != "" {
+			agentID = a
+		}
+
+		edge := &store.FactEdge{
+			SourceFactID: int64(sourceID),
+			TargetFactID: int64(targetID),
+			EdgeType:     edgeType,
+			Source:       store.EdgeSourceExplicit,
+			AgentID:      agentID,
+		}
+
+		if err := sqlStore.AddEdge(ctx, edge); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("add edge error: %v", err)), nil
+		}
+
+		result := map[string]interface{}{
+			"id":             edge.ID,
+			"source_fact_id": edge.SourceFactID,
+			"target_fact_id": edge.TargetFactID,
+			"edge_type":      edge.EdgeType,
+			"message":        fmt.Sprintf("🔗 Edge created: fact %d -[%s]→ fact %d", int64(sourceID), edgeType, int64(targetID)),
+		}
+		data, _ := json.MarshalIndent(result, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
+	})
+}
+
+func registerGraphTool(s *server.MCPServer, st store.Store) {
+	tool := mcp.NewTool("cortex_graph",
+		mcp.WithDescription("Traverse the knowledge graph from a starting fact, following typed edges up to N hops deep."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithNumber("fact_id", mcp.Required(),
+			mcp.Description("Starting fact ID for graph traversal"),
+		),
+		mcp.WithNumber("depth",
+			mcp.Description("Maximum traversal depth (default: 2, max: 5)"),
+		),
+		mcp.WithNumber("min_confidence",
+			mcp.Description("Minimum edge confidence to follow (default: 0, range: 0-1)"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		sqlStore, ok := st.(*store.SQLiteStore)
+		if !ok {
+			return mcp.NewToolResultError("graph requires SQLiteStore"), nil
+		}
+
+		factID, err := req.RequireFloat("fact_id")
+		if err != nil {
+			return mcp.NewToolResultError("fact_id required"), nil
+		}
+
+		depth := 2
+		if d, err := req.RequireFloat("depth"); err == nil && d > 0 {
+			depth = int(d)
+			if depth > 5 {
+				depth = 5
+			}
+		}
+
+		minConf := 0.0
+		if c, err := req.RequireFloat("min_confidence"); err == nil {
+			minConf = c
+		}
+
+		nodes, err := sqlStore.TraverseGraph(ctx, int64(factID), depth, minConf)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("graph error: %v", err)), nil
+		}
+
+		if len(nodes) == 0 {
+			return mcp.NewToolResultText(fmt.Sprintf("No graph found from fact #%d", int64(factID))), nil
+		}
+
+		data, _ := json.MarshalIndent(nodes, "", "  ")
 		return mcp.NewToolResultText(string(data)), nil
 	})
 }

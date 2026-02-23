@@ -94,6 +94,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating fact accesses table: %w", err)
 	}
 
+	// Schema evolution: fact edges table (v1.0 — Issue #168)
+	if err := s.migrateFactEdgesTable(); err != nil {
+		return fmt.Errorf("migrating fact edges table: %w", err)
+	}
+
 	return nil
 }
 
@@ -920,6 +925,40 @@ func (s *SQLiteStore) migrateFactAgentID() error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing agent_id migration: %w", err)
+	}
+	return nil
+}
+
+// migrateFactEdgesTable creates the table for fact relationship edges (#168).
+func (s *SQLiteStore) migrateFactEdgesTable() error {
+	_, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS fact_edges_v1 (
+			id INTEGER PRIMARY KEY,
+			source_fact_id INTEGER NOT NULL,
+			target_fact_id INTEGER NOT NULL,
+			edge_type TEXT NOT NULL,
+			confidence REAL DEFAULT 1.0,
+			source TEXT NOT NULL DEFAULT 'explicit',
+			agent_id TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (source_fact_id) REFERENCES facts(id),
+			FOREIGN KEY (target_fact_id) REFERENCES facts(id),
+			UNIQUE(source_fact_id, target_fact_id, edge_type)
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("creating fact_edges_v1 table: %w", err)
+	}
+
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_fact_edges_source ON fact_edges_v1(source_fact_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_edges_target ON fact_edges_v1(target_fact_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_edges_type ON fact_edges_v1(edge_type)`,
+	}
+	for _, idx := range indexes {
+		if _, err := s.db.Exec(idx); err != nil {
+			return fmt.Errorf("creating fact edge index: %w", err)
+		}
 	}
 	return nil
 }

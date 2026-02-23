@@ -114,6 +114,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "edge":
+		if err := runEdge(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "graph":
+		if err := runGraph(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "update":
 		if err := runUpdate(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -2261,6 +2271,231 @@ func runFactHistory(args []string) error {
 		fmt.Printf("  Last accessed: %s\n", summary.LastAccess.Format("2006-01-02 15:04"))
 	}
 
+	return nil
+}
+
+func runEdge(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex edge [add|list|remove] ...")
+	}
+
+	switch args[0] {
+	case "add":
+		return runEdgeAdd(args[1:])
+	case "list":
+		return runEdgeList(args[1:])
+	case "remove":
+		return runEdgeRemove(args[1:])
+	default:
+		return fmt.Errorf("unknown edge subcommand: %s (use add, list, remove)", args[0])
+	}
+}
+
+func runEdgeAdd(args []string) error {
+	if len(args) < 3 {
+		return fmt.Errorf("usage: cortex edge add <source_fact_id> <target_fact_id> <type> [--agent <id>]")
+	}
+
+	sourceID, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid source fact id: %s", args[0])
+	}
+	targetID, err := strconv.ParseInt(args[1], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid target fact id: %s", args[1])
+	}
+
+	edgeType, err := store.ParseEdgeType(args[2])
+	if err != nil {
+		return err
+	}
+
+	agentID := ""
+	for i := 3; i < len(args); i++ {
+		if args[i] == "--agent" && i+1 < len(args) {
+			i++
+			agentID = args[i]
+		}
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("edges require SQLiteStore")
+	}
+
+	edge := &store.FactEdge{
+		SourceFactID: sourceID,
+		TargetFactID: targetID,
+		EdgeType:     edgeType,
+		Source:       store.EdgeSourceExplicit,
+		AgentID:      agentID,
+	}
+
+	if err := sqlStore.AddEdge(context.Background(), edge); err != nil {
+		return err
+	}
+
+	fmt.Printf("✓ Edge #%d: fact %d -[%s]→ fact %d\n", edge.ID, sourceID, edgeType, targetID)
+	return nil
+}
+
+func runEdgeList(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex edge list <fact_id>")
+	}
+
+	factID, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid fact id: %s", args[0])
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("edges require SQLiteStore")
+	}
+
+	edges, err := sqlStore.GetEdgesForFact(context.Background(), factID)
+	if err != nil {
+		return err
+	}
+
+	if len(edges) == 0 {
+		fmt.Printf("No edges for fact #%d\n", factID)
+		return nil
+	}
+
+	fmt.Printf("Edges for fact #%d (%d):\n\n", factID, len(edges))
+	for _, e := range edges {
+		direction := "→"
+		otherID := e.TargetFactID
+		if e.TargetFactID == factID {
+			direction = "←"
+			otherID = e.SourceFactID
+		}
+		agentStr := ""
+		if e.AgentID != "" {
+			agentStr = fmt.Sprintf(" [%s]", e.AgentID)
+		}
+		fmt.Printf("  #%d %s -[%s]%s fact #%d (%.0f%%, %s)%s\n",
+			e.ID, direction, e.EdgeType, direction, otherID,
+			e.Confidence*100, e.Source, agentStr)
+	}
+	return nil
+}
+
+func runEdgeRemove(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex edge remove <edge_id>")
+	}
+
+	edgeID, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid edge id: %s", args[0])
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("edges require SQLiteStore")
+	}
+
+	if err := sqlStore.RemoveEdge(context.Background(), edgeID); err != nil {
+		return err
+	}
+
+	fmt.Printf("✓ Edge #%d removed.\n", edgeID)
+	return nil
+}
+
+func runGraph(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex graph <fact_id> [--depth 2] [--min-confidence 0.5]")
+	}
+
+	factID, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid fact id: %s", args[0])
+	}
+
+	depth := 2
+	minConf := 0.0
+	for i := 1; i < len(args); i++ {
+		switch {
+		case args[i] == "--depth" && i+1 < len(args):
+			i++
+			d, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --depth: %s", args[i])
+			}
+			depth = d
+		case args[i] == "--min-confidence" && i+1 < len(args):
+			i++
+			c, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --min-confidence: %s", args[i])
+			}
+			minConf = c
+		}
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("graph requires SQLiteStore")
+	}
+
+	nodes, err := sqlStore.TraverseGraph(context.Background(), factID, depth, minConf)
+	if err != nil {
+		return err
+	}
+
+	if len(nodes) == 0 {
+		fmt.Printf("No graph found from fact #%d\n", factID)
+		return nil
+	}
+
+	fmt.Printf("🔗 Knowledge graph from fact #%d (depth %d, %d nodes):\n\n", factID, depth, len(nodes))
+	for _, node := range nodes {
+		indent := strings.Repeat("  ", node.Depth)
+		factText := fmt.Sprintf("%s %s %s", node.Fact.Subject, node.Fact.Predicate, node.Fact.Object)
+		if len(factText) > 60 {
+			factText = factText[:57] + "..."
+		}
+		agentStr := ""
+		if node.Fact.AgentID != "" {
+			agentStr = fmt.Sprintf(" [%s]", node.Fact.AgentID)
+		}
+		fmt.Printf("%s• #%d: %s (%.2f)%s\n", indent, node.Fact.ID, factText, node.Fact.Confidence, agentStr)
+		for _, e := range node.Edges {
+			otherID := e.TargetFactID
+			if otherID == node.Fact.ID {
+				otherID = e.SourceFactID
+			}
+			fmt.Printf("%s  └─[%s]→ #%d (%.0f%%)\n", indent, e.EdgeType, otherID, e.Confidence*100)
+		}
+	}
 	return nil
 }
 

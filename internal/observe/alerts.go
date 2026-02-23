@@ -105,6 +105,16 @@ func CheckAndAlertConflicts(ctx context.Context, s *store.SQLiteStore, fact *sto
 		if err := s.CreateAlert(ctx, alert); err != nil {
 			return created, fmt.Errorf("creating conflict alert: %w", err)
 		}
+
+		// Auto-create 'contradicts' edge in knowledge graph
+		_ = s.AddEdge(ctx, &store.FactEdge{
+			SourceFactID: c.Fact1.ID,
+			TargetFactID: c.Fact2.ID,
+			EdgeType:     store.EdgeTypeContradicts,
+			Confidence:   1.0,
+			Source:       store.EdgeSourceDetected,
+		})
+
 		created++
 	}
 
