@@ -314,7 +314,7 @@ func (s *SQLiteStore) CheckDecayAlerts(ctx context.Context, thresholds DecayThre
 	// Get all active facts with their decay parameters
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, memory_id, subject, predicate, object, fact_type,
-		        confidence, decay_rate, last_reinforced, source_quote, created_at
+		        confidence, decay_rate, last_reinforced, source_quote, created_at, agent_id
 		 FROM facts
 		 WHERE superseded_by IS NULL
 		   AND confidence > 0`)
@@ -340,7 +340,7 @@ func (s *SQLiteStore) CheckDecayAlerts(ctx context.Context, thresholds DecayThre
 		var f Fact
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt); err != nil {
+			&f.SourceQuote, &f.CreatedAt, &f.AgentID); err != nil {
 			return nil, fmt.Errorf("scanning fact: %w", err)
 		}
 		result.FactsScanned++

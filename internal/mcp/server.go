@@ -105,6 +105,9 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 		mcp.WithString("project",
 			mcp.Description("Scope search to a specific project (e.g., 'trading', 'eyes-web'). Empty = search all."),
 		),
+		mcp.WithString("agent_id",
+			mcp.Description("Filter and boost results for a specific agent (e.g., 'mister', 'hawk'). Agent's facts rank higher; global facts still visible."),
+		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -140,6 +143,11 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 			opts.Project = project
 		}
 
+		if agentID, err := req.RequireString("agent_id"); err == nil && agentID != "" {
+			opts.Agent = agentID
+			opts.BoostAgent = agentID
+		}
+
 		results, err := engine.Search(ctx, query, opts)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search error: %v", err)), nil
@@ -167,6 +175,9 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 		),
 		mcp.WithString("project",
 			mcp.Description("Project tag for imported memories (e.g., 'trading', 'eyes-web'). Empty = untagged."),
+		),
+		mcp.WithString("agent_id",
+			mcp.Description("Agent identity for imported content (e.g., 'mister', 'hawk'). Tags both memories and extracted facts."),
 		),
 	)
 
@@ -206,6 +217,11 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 			project = p
 		}
 
+		agentID := ""
+		if a, err := req.RequireString("agent_id"); err == nil && a != "" {
+			agentID = a
+		}
+
 		// Chunk large content (same 1500-char max as CLI import)
 		chunks := chunkContent(content, 1500)
 
@@ -218,6 +234,9 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 				Project:    project,
 				ImportedAt: time.Now().UTC(),
 				UpdatedAt:  time.Now().UTC(),
+			}
+			if agentID != "" {
+				mem.Metadata = &store.Metadata{AgentID: agentID}
 			}
 
 			id, err := st.AddMemory(ctx, mem)
@@ -299,6 +318,9 @@ func registerFactsTool(s *server.MCPServer, st store.Store) {
 		mcp.WithNumber("limit",
 			mcp.Description("Maximum number of facts to return (default: 20, max: 100)"),
 		),
+		mcp.WithString("agent_id",
+			mcp.Description("Filter facts by agent (returns agent's facts + global facts). Empty = all facts."),
+		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -319,6 +341,10 @@ func registerFactsTool(s *server.MCPServer, st store.Store) {
 
 		if factType, err := req.RequireString("type"); err == nil && factType != "" {
 			opts.FactType = factType
+		}
+
+		if agentID, err := req.RequireString("agent_id"); err == nil && agentID != "" {
+			opts.Agent = agentID
 		}
 
 		facts, err := st.ListFacts(ctx, opts)

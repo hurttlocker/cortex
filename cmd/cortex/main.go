@@ -1797,7 +1797,7 @@ func runExtract(args []string) error {
 func runList(args []string) error {
 	// Parse flags
 	var limit int = 20
-	var sourceFile, factType, classFlag string
+	var sourceFile, factType, classFlag, agentFlag string
 	var listFacts, jsonOutput, includeSuperseded bool
 
 	for i := 0; i < len(args); i++ {
@@ -1830,6 +1830,11 @@ func runList(args []string) error {
 			factType = args[i]
 		case strings.HasPrefix(args[i], "--type="):
 			factType = strings.TrimPrefix(args[i], "--type=")
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentFlag = args[i]
+		case strings.HasPrefix(args[i], "--agent="):
+			agentFlag = strings.TrimPrefix(args[i], "--agent=")
 		case args[i] == "--json":
 			jsonOutput = true
 		case args[i] == "--include-superseded":
@@ -1864,6 +1869,7 @@ func runList(args []string) error {
 		FactType:          factType,
 		MemoryClasses:     classes,
 		IncludeSuperseded: includeSuperseded,
+		Agent:             agentFlag,
 	}
 
 	if listFacts {
@@ -3768,6 +3774,9 @@ func outputListFactsTTY(facts []*store.Fact, opts store.ListOpts) error {
 		fmt.Printf("  %d. [%s] %s\n", i+1, fact.FactType, factContent)
 		fmt.Printf("     Confidence: %.2f · Decay: %.3f/day\n",
 			fact.Confidence, fact.DecayRate)
+		if fact.AgentID != "" {
+			fmt.Printf("     Agent: %s\n", fact.AgentID)
+		}
 		if fact.SupersededBy != nil {
 			fmt.Printf("     Superseded by fact: %d\n", *fact.SupersededBy)
 		}

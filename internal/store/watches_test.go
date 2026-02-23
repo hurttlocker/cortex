@@ -257,3 +257,83 @@ func TestCheckWatchesForMemories_Batch(t *testing.T) {
 		t.Fatalf("Expected 2 batch matches, got %d", len(matches))
 	}
 }
+
+func TestFactAgentID(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{
+		Content: "Test content", SourceFile: "test.md",
+	})
+
+	f := &Fact{
+		MemoryID: memID, Subject: "trading", Predicate: "strategy",
+		Object: "ORB", FactType: "kv", Confidence: 0.9, AgentID: "mister",
+	}
+	id, err := s.AddFact(ctx, f)
+	if err != nil {
+		t.Fatalf("AddFact with agent_id: %v", err)
+	}
+
+	got, err := s.GetFact(ctx, id)
+	if err != nil {
+		t.Fatalf("GetFact: %v", err)
+	}
+	if got.AgentID != "mister" {
+		t.Fatalf("Expected agent_id 'mister', got %q", got.AgentID)
+	}
+}
+
+func TestFactAgentID_DefaultEmpty(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{
+		Content: "Global fact", SourceFile: "global.md",
+	})
+
+	f := &Fact{
+		MemoryID: memID, Subject: "cortex", Predicate: "language",
+		Object: "Go", FactType: "kv", Confidence: 0.9,
+	}
+	id, _ := s.AddFact(ctx, f)
+
+	got, _ := s.GetFact(ctx, id)
+	if got.AgentID != "" {
+		t.Fatalf("Expected empty agent_id for global fact, got %q", got.AgentID)
+	}
+}
+
+func TestListFacts_AgentFilter(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{
+		Content: "Multi-agent facts", SourceFile: "test.md",
+	})
+
+	s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "trading", Predicate: "strategy", Object: "ORB", FactType: "kv", AgentID: "mister"})
+	s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "code", Predicate: "language", Object: "TypeScript", FactType: "kv", AgentID: "niot"})
+	s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "cortex", Predicate: "type", Object: "memory", FactType: "kv", AgentID: ""})
+
+	// Mister's view: own + global
+	misterFacts, err := s.ListFacts(ctx, ListOpts{Agent: "mister"})
+	if err != nil {
+		t.Fatalf("ListFacts agent=mister: %v", err)
+	}
+	if len(misterFacts) != 2 {
+		t.Fatalf("Expected 2 facts for mister (own + global), got %d", len(misterFacts))
+	}
+
+	// Niot's view: own + global
+	niotFacts, _ := s.ListFacts(ctx, ListOpts{Agent: "niot"})
+	if len(niotFacts) != 2 {
+		t.Fatalf("Expected 2 facts for niot, got %d", len(niotFacts))
+	}
+
+	// Global view: all facts
+	allFacts, _ := s.ListFacts(ctx, ListOpts{})
+	if len(allFacts) != 3 {
+		t.Fatalf("Expected 3 total facts, got %d", len(allFacts))
+	}
+}
