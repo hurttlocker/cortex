@@ -11,11 +11,12 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
-//go:embed visualizer.html
+//go:embed visualizer.html cortex-icon-192.png
 var visualizerFS embed.FS
 
 // ServerConfig holds settings for the graph visualization server.
@@ -53,11 +54,29 @@ type ExportCooccurrence struct {
 
 // ExportResult is the full graph export payload.
 type ExportResult struct {
-	Nodes         []ExportNode         `json:"nodes"`
-	Edges         []ExportEdge         `json:"edges"`
-	Cooccurrences []ExportCooccurrence `json:"cooccurrences"`
+	Nodes         []ExportNode           `json:"nodes"`
+	Edges         []ExportEdge           `json:"edges"`
+	Cooccurrences []ExportCooccurrence   `json:"cooccurrences"`
 	Meta          map[string]interface{} `json:"meta"`
 }
+
+const (
+	defaultSearchLimit  = 15
+	maxSearchLimit      = 100
+	defaultGraphDepth   = 2
+	maxGraphDepth       = 5
+	defaultClusterLimit = 150
+	maxClusterLimit     = 400
+
+	clusterSubjectMinFacts  = 3
+	clusterSubjectMaxFacts  = 200
+	clusterFactsPerSubject  = 6
+	clusterMinSubjectGroups = 12
+	clusterMaxSubjectGroups = 90
+
+	defaultSubjectGraphLimit = 120
+	maxSubjectGraphLimit     = 300
+)
 
 // Serve starts the graph visualization web server.
 func Serve(cfg ServerConfig) error {
@@ -71,6 +90,18 @@ func Serve(cfg ServerConfig) error {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(data)
+	})
+
+	// Serve embedded brand asset used by the visualizer UI.
+	mux.HandleFunc("/assets/cortex-icon-192.png", func(w http.ResponseWriter, r *http.Request) {
+		data, err := visualizerFS.ReadFile("cortex-icon-192.png")
+		if err != nil {
+			http.Error(w, "asset not found", 404)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
 		w.Write(data)
 	})
 
@@ -96,7 +127,7 @@ func Serve(cfg ServerConfig) error {
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	fmt.Printf("🧠 Cortex graph visualizer: http://localhost%s\n", addr)
-	fmt.Printf("   Open in browser to explore your knowledge graph in 3D.\n")
+	fmt.Printf("   Open in browser to explore your knowledge graph in 2D/3D.\n")
 	return http.ListenAndServe(addr, mux)
 }
 
@@ -104,10 +135,32 @@ func handleGraphAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStor
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	// Parse parameters
+	minConf := 0.0
+	if c := r.URL.Query().Get("min_confidence"); c != "" {
+		if v, err := strconv.ParseFloat(c, 64); err == nil {
+			minConf = v
+		}
+	}
+
+	agentFilter := strings.TrimSpace(r.URL.Query().Get("agent"))
+	subject := strings.TrimSpace(r.URL.Query().Get("subject"))
+	ctx := context.Background()
+
+	if subject != "" {
+		limit := parseBoundedInt(r.URL.Query().Get("limit"), defaultSubjectGraphLimit, 1, maxSubjectGraphLimit)
+		result, err := buildSubjectGraphResult(ctx, st.GetDB(), subject, limit, minConf, agentFilter)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, result)
+		return
+	}
+
+	// Parse fact_id parameters
 	factIDStr := r.URL.Query().Get("fact_id")
 	if factIDStr == "" {
-		writeJSON(w, 400, map[string]string{"error": "fact_id parameter required"})
+		writeJSON(w, 400, map[string]string{"error": "fact_id or subject parameter required"})
 		return
 	}
 
@@ -117,26 +170,15 @@ func handleGraphAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStor
 		return
 	}
 
-	depth := 2
+	depth := defaultGraphDepth
 	if d := r.URL.Query().Get("depth"); d != "" {
 		if v, err := strconv.Atoi(d); err == nil && v > 0 {
 			depth = v
-			if depth > 5 {
-				depth = 5
+			if depth > maxGraphDepth {
+				depth = maxGraphDepth
 			}
 		}
 	}
-
-	minConf := 0.0
-	if c := r.URL.Query().Get("min_confidence"); c != "" {
-		if v, err := strconv.ParseFloat(c, 64); err == nil {
-			minConf = v
-		}
-	}
-
-	agentFilter := r.URL.Query().Get("agent")
-
-	ctx := context.Background()
 
 	// Traverse graph
 	graphNodes, err := st.TraverseGraph(ctx, factID, depth, minConf)
@@ -154,6 +196,7 @@ func handleGraphAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStor
 	}
 
 	seenNodes := make(map[int64]bool)
+	seenEdges := make(map[string]bool)
 	var allFactIDs []int64
 
 	for _, gn := range graphNodes {
@@ -177,6 +220,11 @@ func handleGraphAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStor
 			})
 		}
 		for _, e := range gn.Edges {
+			key := edgeKey(e.SourceFactID, e.TargetFactID, string(e.EdgeType))
+			if seenEdges[key] {
+				continue
+			}
+			seenEdges[key] = true
 			result.Edges = append(result.Edges, ExportEdge{
 				Source:     e.SourceFactID,
 				Target:     e.TargetFactID,
@@ -186,6 +234,15 @@ func handleGraphAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStor
 			})
 		}
 	}
+
+	// Keep only edges where both endpoints are present.
+	filteredEdges := result.Edges[:0]
+	for _, e := range result.Edges {
+		if seenNodes[e.Source] && seenNodes[e.Target] {
+			filteredEdges = append(filteredEdges, e)
+		}
+	}
+	result.Edges = filteredEdges
 
 	// Co-occurrences
 	seenCooc := make(map[[2]int64]bool)
@@ -246,9 +303,9 @@ func handleSearchAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSto
 		return
 	}
 
-	limit := 15
+	limit := defaultSearchLimit
 	if l := r.URL.Query().Get("limit"); l != "" {
-		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 100 {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= maxSearchLimit {
 			limit = v
 		}
 	}
@@ -285,14 +342,9 @@ func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSt
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	limit := 50
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 200 {
-			limit = v
-		}
-	}
+	limit := parseBoundedInt(r.URL.Query().Get("limit"), defaultClusterLimit, 1, maxClusterLimit)
 
-	query := r.URL.Query().Get("q")
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	db := st.GetDB()
 	ctx := context.Background()
@@ -311,29 +363,46 @@ func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSt
 			 ORDER BY confidence DESC
 			 LIMIT ?`, q, q, q, limit)
 	} else {
-		// Sample facts across diverse subjects using window functions
-		// Take top 5 facts per subject from subjects with 3-50 facts (skip mega-subjects)
+		subjectLimit := limit / clusterFactsPerSubject
+		if subjectLimit < clusterMinSubjectGroups {
+			subjectLimit = clusterMinSubjectGroups
+		}
+		if subjectLimit > clusterMaxSubjectGroups {
+			subjectLimit = clusterMaxSubjectGroups
+		}
+
+		// Sample facts across diverse subjects using widened quality bounds now that
+		// subject normalization is cleaner.
 		rows, err = db.QueryContext(ctx,
-			`WITH ranked AS (
+			`WITH top_subjects AS (
+			   SELECT subject, COUNT(*) as cnt
+			   FROM facts
+			   WHERE (superseded_by IS NULL OR superseded_by = 0)
+			     AND subject IS NOT NULL
+			     AND TRIM(subject) != ''
+			   GROUP BY subject
+			   HAVING cnt BETWEEN ? AND ?
+			   ORDER BY cnt DESC
+			   LIMIT ?
+			 ), ranked AS (
 			   SELECT f.id, f.subject, f.predicate, f.object, f.confidence, f.fact_type,
 			          COALESCE(f.agent_id, '') as agent_id,
-			          ROW_NUMBER() OVER (PARTITION BY f.subject ORDER BY f.confidence DESC) as rn
+			          ROW_NUMBER() OVER (PARTITION BY f.subject ORDER BY f.confidence DESC, f.id DESC) as rn
 			   FROM facts f
-			   INNER JOIN (
-			     SELECT subject, COUNT(*) as cnt
-			     FROM facts
-			     WHERE superseded_by IS NULL OR superseded_by = 0
-			     GROUP BY subject
-			     HAVING cnt BETWEEN 3 AND 50
-			     ORDER BY cnt DESC
-			     LIMIT 15
-			   ) top ON f.subject = top.subject
+			   INNER JOIN top_subjects s ON s.subject = f.subject
 			   WHERE (f.superseded_by IS NULL OR f.superseded_by = 0)
 			 )
 			 SELECT id, subject, predicate, object, confidence, fact_type, agent_id
 			 FROM ranked
-			 WHERE rn <= 5
-			 LIMIT ?`, limit)
+			 WHERE rn <= ?
+			 ORDER BY confidence DESC, id DESC
+			 LIMIT ?`,
+			clusterSubjectMinFacts,
+			clusterSubjectMaxFacts,
+			subjectLimit,
+			clusterFactsPerSubject,
+			limit,
+		)
 	}
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
@@ -342,6 +411,7 @@ func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSt
 	defer rows.Close()
 
 	var nodes []ExportNode
+	var nodeIDs []int64
 	subjectGroups := make(map[string][]int64) // subject -> fact IDs
 
 	for rows.Next() {
@@ -350,50 +420,336 @@ func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSt
 			continue
 		}
 		nodes = append(nodes, n)
+		nodeIDs = append(nodeIDs, n.ID)
 		subjectGroups[n.Subject] = append(subjectGroups[n.Subject], n.ID)
 	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
 
-	// Create edges between facts that share the same subject (natural clustering)
+	edges, edgeErr := loadEdgesForNodeIDs(ctx, db, nodeIDs, 0.0)
+	edgeMode := "fact_edges_v1"
+	if edgeErr != nil {
+		if !isMissingTableErr(edgeErr, "fact_edges_v1") {
+			writeJSON(w, 500, map[string]string{"error": edgeErr.Error()})
+			return
+		}
+		edges = nil
+	}
+
+	fallbackEdges := 0
+	if len(edges) == 0 {
+		edges = buildSubjectClusterEdges(subjectGroups)
+		edgeMode = "subject_cluster_fallback"
+		fallbackEdges = len(edges)
+	} else {
+		extra := buildSparseSubjectFallbackEdges(subjectGroups, edges)
+		if len(extra) > 0 {
+			edges = append(edges, extra...)
+			edgeMode = "fact_edges_v1+subject_cluster"
+			fallbackEdges = len(extra)
+		}
+	}
+
+	cooccurrences, coocErr := loadCooccurrencesForNodeIDs(ctx, db, nodeIDs, 200)
+	if coocErr != nil && !isMissingTableErr(coocErr, "fact_cooccurrence_v1") {
+		cooccurrences = nil
+	}
+
+	result := ExportResult{
+		Nodes:         nodes,
+		Edges:         edges,
+		Cooccurrences: cooccurrences,
+		Meta: map[string]interface{}{
+			"mode":                "cluster",
+			"query":               query,
+			"total_nodes":         len(nodes),
+			"total_edges":         len(edges),
+			"total_cooccurrences": len(cooccurrences),
+			"subjects":            len(subjectGroups),
+			"edge_mode":           edgeMode,
+			"fallback_edges":      fallbackEdges,
+			"subject_min_facts":   clusterSubjectMinFacts,
+			"subject_max_facts":   clusterSubjectMaxFacts,
+		},
+	}
+
+	writeJSON(w, 200, result)
+}
+
+func buildSubjectGraphResult(ctx context.Context, db *sql.DB, subject string, limit int, minConf float64, agentFilter string) (ExportResult, error) {
+	query := `SELECT id, subject, predicate, object, confidence, fact_type, COALESCE(agent_id, '')
+	          FROM facts
+	          WHERE LOWER(subject) = LOWER(?)
+	            AND (superseded_by IS NULL OR superseded_by = 0)
+	            AND confidence >= ?`
+	args := []interface{}{subject, minConf}
+	if agentFilter != "" {
+		query += " AND (agent_id = ? OR agent_id = '')"
+		args = append(args, agentFilter)
+	}
+	query += " ORDER BY confidence DESC, id DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return ExportResult{}, err
+	}
+	defer rows.Close()
+
+	var nodes []ExportNode
+	var nodeIDs []int64
+	subjectGroups := make(map[string][]int64)
+	for rows.Next() {
+		var n ExportNode
+		if err := rows.Scan(&n.ID, &n.Subject, &n.Predicate, &n.Object, &n.Confidence, &n.FactType, &n.AgentID); err != nil {
+			continue
+		}
+		nodes = append(nodes, n)
+		nodeIDs = append(nodeIDs, n.ID)
+		subjectGroups[n.Subject] = append(subjectGroups[n.Subject], n.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return ExportResult{}, err
+	}
+
+	edges, edgeErr := loadEdgesForNodeIDs(ctx, db, nodeIDs, minConf)
+	edgeMode := "fact_edges_v1"
+	if edgeErr != nil {
+		if !isMissingTableErr(edgeErr, "fact_edges_v1") {
+			return ExportResult{}, edgeErr
+		}
+		edges = nil
+	}
+
+	fallbackEdges := 0
+	if len(edges) == 0 {
+		edges = buildSubjectClusterEdges(subjectGroups)
+		edgeMode = "subject_cluster_fallback"
+		fallbackEdges = len(edges)
+	} else {
+		extra := buildSparseSubjectFallbackEdges(subjectGroups, edges)
+		if len(extra) > 0 {
+			edges = append(edges, extra...)
+			edgeMode = "fact_edges_v1+subject_cluster"
+			fallbackEdges = len(extra)
+		}
+	}
+
+	cooccurrences, coocErr := loadCooccurrencesForNodeIDs(ctx, db, nodeIDs, 300)
+	if coocErr != nil && !isMissingTableErr(coocErr, "fact_cooccurrence_v1") {
+		cooccurrences = nil
+	}
+
+	return ExportResult{
+		Nodes:         nodes,
+		Edges:         edges,
+		Cooccurrences: cooccurrences,
+		Meta: map[string]interface{}{
+			"mode":                "subject",
+			"subject":             subject,
+			"limit":               limit,
+			"total_nodes":         len(nodes),
+			"total_edges":         len(edges),
+			"total_cooccurrences": len(cooccurrences),
+			"edge_mode":           edgeMode,
+			"fallback_edges":      fallbackEdges,
+		},
+	}, nil
+}
+
+func parseBoundedInt(raw string, fallback, min, max int) int {
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+func loadEdgesForNodeIDs(ctx context.Context, db *sql.DB, ids []int64, minConf float64) ([]ExportEdge, error) {
+	if len(ids) < 2 {
+		return nil, nil
+	}
+	ph := make([]string, len(ids))
+	args := make([]interface{}, 0, len(ids)*2+2)
+	for i, id := range ids {
+		ph[i] = "?"
+		args = append(args, id)
+	}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	edgeLimit := len(ids) * 12
+	if edgeLimit > 6000 {
+		edgeLimit = 6000
+	}
+	args = append(args, minConf, edgeLimit)
+
+	query := fmt.Sprintf(
+		`SELECT source_fact_id, target_fact_id, edge_type, confidence, source
+		 FROM fact_edges_v1
+		 WHERE source_fact_id IN (%s)
+		   AND target_fact_id IN (%s)
+		   AND confidence >= ?
+		 ORDER BY confidence DESC, id DESC
+		 LIMIT ?`,
+		strings.Join(ph, ","),
+		strings.Join(ph, ","),
+	)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	seen := make(map[string]bool)
+	edges := make([]ExportEdge, 0, edgeLimit)
+	for rows.Next() {
+		var e ExportEdge
+		if err := rows.Scan(&e.Source, &e.Target, &e.EdgeType, &e.Confidence, &e.SourceType); err != nil {
+			continue
+		}
+		key := edgeKey(e.Source, e.Target, e.EdgeType)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		edges = append(edges, e)
+	}
+	return edges, rows.Err()
+}
+
+func loadCooccurrencesForNodeIDs(ctx context.Context, db *sql.DB, ids []int64, limit int) ([]ExportCooccurrence, error) {
+	if len(ids) < 2 {
+		return nil, nil
+	}
+
+	ph := make([]string, len(ids))
+	args := make([]interface{}, 0, len(ids)*2+1)
+	for i, id := range ids {
+		ph[i] = "?"
+		args = append(args, id)
+	}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	args = append(args, limit)
+
+	query := fmt.Sprintf(
+		`SELECT fact_id_a, fact_id_b, count
+		 FROM fact_cooccurrence_v1
+		 WHERE fact_id_a IN (%s)
+		   AND fact_id_b IN (%s)
+		 ORDER BY count DESC
+		 LIMIT ?`,
+		strings.Join(ph, ","),
+		strings.Join(ph, ","),
+	)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var coocs []ExportCooccurrence
+	for rows.Next() {
+		var c ExportCooccurrence
+		if err := rows.Scan(&c.A, &c.B, &c.Count); err != nil {
+			continue
+		}
+		coocs = append(coocs, c)
+	}
+	return coocs, rows.Err()
+}
+
+func buildSubjectClusterEdges(subjectGroups map[string][]int64) []ExportEdge {
 	var edges []ExportEdge
 	for _, ids := range subjectGroups {
 		if len(ids) < 2 {
 			continue
 		}
-		// Connect facts in a chain within the same subject group
 		for i := 0; i < len(ids)-1; i++ {
 			edges = append(edges, ExportEdge{
 				Source:     ids[i],
 				Target:     ids[i+1],
 				EdgeType:   "relates_to",
-				Confidence: 0.6,
+				Confidence: 0.5,
 				SourceType: "subject_cluster",
 			})
 		}
-		// Also connect last to first for a loop if 3+ facts
 		if len(ids) >= 3 {
 			edges = append(edges, ExportEdge{
 				Source:     ids[len(ids)-1],
 				Target:     ids[0],
 				EdgeType:   "relates_to",
-				Confidence: 0.4,
+				Confidence: 0.35,
 				SourceType: "subject_cluster",
 			})
 		}
 	}
+	return edges
+}
 
-	result := ExportResult{
-		Nodes: nodes,
-		Edges: edges,
-		Meta: map[string]interface{}{
-			"mode":        "cluster",
-			"total_nodes": len(nodes),
-			"total_edges": len(edges),
-			"total_cooccurrences": 0,
-			"subjects":    len(subjectGroups),
-		},
+func buildSparseSubjectFallbackEdges(subjectGroups map[string][]int64, existing []ExportEdge) []ExportEdge {
+	if len(subjectGroups) == 0 {
+		return nil
 	}
 
-	writeJSON(w, 200, result)
+	nodeSubject := make(map[int64]string, len(subjectGroups)*clusterFactsPerSubject)
+	groupHasIntraEdge := make(map[string]bool, len(subjectGroups))
+	for subject, ids := range subjectGroups {
+		for _, id := range ids {
+			nodeSubject[id] = subject
+		}
+	}
+
+	for _, e := range existing {
+		sA, okA := nodeSubject[e.Source]
+		sB, okB := nodeSubject[e.Target]
+		if okA && okB && sA == sB && sA != "" {
+			groupHasIntraEdge[sA] = true
+		}
+	}
+
+	var extra []ExportEdge
+	for subject, ids := range subjectGroups {
+		if len(ids) < 2 || groupHasIntraEdge[subject] {
+			continue
+		}
+		for i := 0; i < len(ids)-1; i++ {
+			extra = append(extra, ExportEdge{
+				Source:     ids[i],
+				Target:     ids[i+1],
+				EdgeType:   "relates_to",
+				Confidence: 0.45,
+				SourceType: "subject_cluster",
+			})
+		}
+	}
+	return extra
+}
+
+func edgeKey(source, target int64, edgeType string) string {
+	return fmt.Sprintf("%d:%d:%s", source, target, edgeType)
+}
+
+func isMissingTableErr(err error, table string) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no such table: "+strings.ToLower(table))
 }
 
 func handleStatsAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStore) {
