@@ -537,16 +537,30 @@ function setGraphSpace(space) {
   const w = outer.clientWidth || window.innerWidth - 340;
   const h = outer.clientHeight || window.innerHeight;
 
+  if (!use2D && !Graph3D) {
+    init3DGraph(container3D, w, h);
+  }
+
   container3D.style.display = use2D ? 'none' : 'block';
   container2D.style.display = use2D ? 'block' : 'none';
   container3D.style.pointerEvents = use2D ? 'none' : 'auto';
   container2D.style.pointerEvents = use2D ? 'auto' : 'none';
+  container3D.style.zIndex = use2D ? '1' : '3';
+  container2D.style.zIndex = use2D ? '3' : '1';
 
   if (Graph3D) {
     Graph3D.width(w).height(h);
     if (!use2D) {
       Graph3D.enableNavigationControls(true);
-      Graph3D.resumeAnimation();
+      if (typeof Graph3D.resumeAnimation === 'function') Graph3D.resumeAnimation();
+      const controls = typeof Graph3D.controls === 'function' ? Graph3D.controls() : null;
+      if (controls) {
+        controls.enabled = true;
+        controls.enableRotate = true;
+        controls.enablePan = true;
+        controls.enableZoom = true;
+        if (controls.mouseButtons) controls.mouseButtons = { LEFT: 0, MIDDLE: 1, RIGHT: 2 };
+      }
     }
   }
   if (Graph2D) {
@@ -559,7 +573,7 @@ function setGraphSpace(space) {
   Graph = use2D ? Graph2D : Graph3D;
   updateControlsHelp();
   if (graphData) {
-    updateGraphStyling();
+    renderGraph();
     const q = document.getElementById('searchInput').value.trim();
     if (q) highlightSearch(q);
   }
@@ -868,18 +882,14 @@ function handleNodeClick(node, source) {
   if (isDoubleClick) loadSubject(node.subject);
 }
 
-function initGraph() {
-  const outer = document.getElementById('graphCanvas');
-  const container3D = document.getElementById('graphContainer');
-  const container2D = document.getElementById('graph2DContainer');
-  const w = outer.clientWidth || window.innerWidth - 340;
-  const h = outer.clientHeight || window.innerHeight;
-
+function init3DGraph(container3D, w, h) {
+  if (Graph3D) return;
   Graph3D = ForceGraph3D()(container3D)
     .backgroundColor('#07080d')
     .width(w)
     .height(h)
     .showNavInfo(false)
+    .enableNodeDrag(false)
     .nodeRelSize(5)
     .nodeVal(n => 0.8 + (n.confidence || 0) * 2.2)
     .nodeColor(nodeColorFor)
@@ -907,6 +917,17 @@ function initGraph() {
     })
     .warmupTicks(120)
     .cooldownTicks(180);
+}
+
+function initGraph() {
+  const outer = document.getElementById('graphCanvas');
+  const container3D = document.getElementById('graphContainer');
+  const container2D = document.getElementById('graph2DContainer');
+  const w = outer.clientWidth || window.innerWidth - 340;
+  const h = outer.clientHeight || window.innerHeight;
+  if (activeGraphSpace === '3d') {
+    init3DGraph(container3D, w, h);
+  }
 
   Graph2D = ForceGraph()(container2D)
     .backgroundColor('#07080d')
@@ -943,7 +964,7 @@ function initGraph() {
       container2D.style.cursor = node ? 'pointer' : 'default';
     });
 
-  Graph = Graph3D;
+  Graph = Graph2D;
   setGraphSpace(activeGraphSpace);
   startLabelLoop();
 
