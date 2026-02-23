@@ -186,6 +186,22 @@ func (s *SQLiteStore) TraverseGraph(ctx context.Context, startFactID int64, maxD
 					queue = append(queue, queueItem{neighborID, item.depth + 1})
 				}
 			}
+
+			// Also follow strong co-occurrence links (count >= 5)
+			coocs, _ := s.GetCooccurrencesForFact(ctx, item.factID, 10)
+			for _, c := range coocs {
+				if c.Count < 5 {
+					continue
+				}
+				neighborID := c.FactIDB
+				if neighborID == item.factID {
+					neighborID = c.FactIDA
+				}
+				if !visited[neighborID] {
+					visited[neighborID] = true
+					queue = append(queue, queueItem{neighborID, item.depth + 1})
+				}
+			}
 		}
 	}
 

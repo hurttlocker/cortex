@@ -99,6 +99,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating fact edges table: %w", err)
 	}
 
+	// Schema evolution: fact co-occurrence table (v1.0 — Issue #169)
+	if err := s.migrateFactCooccurrenceTable(); err != nil {
+		return fmt.Errorf("migrating fact co-occurrence table: %w", err)
+	}
+
 	return nil
 }
 
@@ -925,6 +930,25 @@ func (s *SQLiteStore) migrateFactAgentID() error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing agent_id migration: %w", err)
+	}
+	return nil
+}
+
+// migrateFactCooccurrenceTable creates the table for tracking fact co-occurrence (#169).
+func (s *SQLiteStore) migrateFactCooccurrenceTable() error {
+	_, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS fact_cooccurrence_v1 (
+			fact_id_a INTEGER NOT NULL,
+			fact_id_b INTEGER NOT NULL,
+			count INTEGER DEFAULT 1,
+			last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (fact_id_a, fact_id_b),
+			FOREIGN KEY (fact_id_a) REFERENCES facts(id),
+			FOREIGN KEY (fact_id_b) REFERENCES facts(id)
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("creating fact_cooccurrence_v1 table: %w", err)
 	}
 	return nil
 }
