@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -267,6 +269,334 @@ func (s *SQLiteStore) CheckConflictsForFact(ctx context.Context, fact *Fact) ([]
 	}
 
 	return conflicts, rows.Err()
+}
+
+// DecayThresholds configures when decay alerts fire.
+type DecayThresholds struct {
+	Warning  float64 // Alert when effective confidence drops below this (default 0.5)
+	Critical float64 // Alert when effective confidence drops below this (default 0.3)
+}
+
+// DefaultDecayThresholds returns sensible defaults.
+func DefaultDecayThresholds() DecayThresholds {
+	return DecayThresholds{
+		Warning:  0.5,
+		Critical: 0.3,
+	}
+}
+
+// DecayAlertResult summarizes what CheckDecayAlerts found.
+type DecayAlertResult struct {
+	FactsScanned    int
+	AlertsCreated   int
+	AlertsSkipped   int // Already had unacked decay alert
+	WarningCount    int
+	CriticalCount   int
+	SubjectGroups   map[string]int // subject → count of fading facts
+}
+
+// DecayFactDetail is the JSON detail stored with each decay alert.
+type DecayFactDetail struct {
+	FactID              int64   `json:"fact_id"`
+	Subject             string  `json:"subject"`
+	Predicate           string  `json:"predicate"`
+	Object              string  `json:"object"`
+	BaseConfidence      float64 `json:"base_confidence"`
+	EffectiveConfidence float64 `json:"effective_confidence"`
+	DecayRate           float64 `json:"decay_rate"`
+	DaysSinceReinforced float64 `json:"days_since_reinforced"`
+}
+
+// CheckDecayAlerts scans all active facts, computes effective confidence via
+// Ebbinghaus decay, and creates alerts for facts that have crossed the thresholds.
+// It deduplicates: if a fact already has an unacknowledged decay alert, it won't create another.
+func (s *SQLiteStore) CheckDecayAlerts(ctx context.Context, thresholds DecayThresholds) (*DecayAlertResult, error) {
+	// Get all active facts with their decay parameters
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, memory_id, subject, predicate, object, fact_type,
+		        confidence, decay_rate, last_reinforced, source_quote, created_at
+		 FROM facts
+		 WHERE superseded_by IS NULL
+		   AND confidence > 0`)
+	if err != nil {
+		return nil, fmt.Errorf("querying facts for decay check: %w", err)
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC()
+	result := &DecayAlertResult{
+		SubjectGroups: make(map[string]int),
+	}
+
+	type fadingFact struct {
+		fact                Fact
+		effectiveConfidence float64
+		daysSinceReinforced float64
+		severity            AlertSeverity
+	}
+	var fading []fadingFact
+
+	for rows.Next() {
+		var f Fact
+		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
+			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
+			&f.SourceQuote, &f.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scanning fact: %w", err)
+		}
+		result.FactsScanned++
+
+		// Calculate effective confidence: confidence * exp(-decay_rate * days)
+		daysSince := now.Sub(f.LastReinforced).Hours() / 24
+		effective := f.Confidence * math.Exp(-f.DecayRate*daysSince)
+
+		// Determine if this fact crosses a threshold
+		var severity AlertSeverity
+		if effective < thresholds.Critical {
+			severity = AlertSeverityCritical
+		} else if effective < thresholds.Warning {
+			severity = AlertSeverityWarning
+		} else {
+			continue // Above all thresholds, no alert needed
+		}
+
+		fading = append(fading, fadingFact{
+			fact:                f,
+			effectiveConfidence: effective,
+			daysSinceReinforced: daysSince,
+			severity:            severity,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating facts: %w", err)
+	}
+
+	if len(fading) == 0 {
+		return result, nil
+	}
+
+	// Get existing unacknowledged decay alerts to deduplicate
+	existingAlerts, err := s.getUnackedDecayFactIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create alerts for facts that don't already have one
+	for _, ff := range fading {
+		if _, exists := existingAlerts[ff.fact.ID]; exists {
+			result.AlertsSkipped++
+			continue
+		}
+
+		detail := DecayFactDetail{
+			FactID:              ff.fact.ID,
+			Subject:             ff.fact.Subject,
+			Predicate:           ff.fact.Predicate,
+			Object:              ff.fact.Object,
+			BaseConfidence:      ff.fact.Confidence,
+			EffectiveConfidence: ff.effectiveConfidence,
+			DecayRate:           ff.fact.DecayRate,
+			DaysSinceReinforced: ff.daysSinceReinforced,
+		}
+		detailJSON, _ := json.Marshal(detail)
+
+		msg := fmt.Sprintf("Fact #%d fading: \"%s %s %s\" — confidence %.0f%% (was %.0f%%, unreinforced %.0f days)",
+			ff.fact.ID, ff.fact.Subject, ff.fact.Predicate, truncate(ff.fact.Object, 40),
+			ff.effectiveConfidence*100, ff.fact.Confidence*100, ff.daysSinceReinforced)
+
+		factID := ff.fact.ID
+		alert := &Alert{
+			AlertType: AlertTypeDecay,
+			Severity:  ff.severity,
+			FactID:    &factID,
+			Message:   msg,
+			Details:   string(detailJSON),
+		}
+
+		if err := s.CreateAlert(ctx, alert); err != nil {
+			return nil, fmt.Errorf("creating decay alert for fact %d: %w", ff.fact.ID, err)
+		}
+
+		result.AlertsCreated++
+		switch ff.severity {
+		case AlertSeverityWarning:
+			result.WarningCount++
+		case AlertSeverityCritical:
+			result.CriticalCount++
+		}
+
+		// Track subject grouping
+		subject := ff.fact.Subject
+		if subject == "" {
+			subject = "(no subject)"
+		}
+		result.SubjectGroups[subject]++
+	}
+
+	return result, nil
+}
+
+// getUnackedDecayFactIDs returns a set of fact IDs that already have unacknowledged decay alerts.
+func (s *SQLiteStore) getUnackedDecayFactIDs(ctx context.Context) (map[int64]bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT fact_id FROM alerts WHERE alert_type = 'decay' AND acknowledged = 0 AND fact_id IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("querying existing decay alerts: %w", err)
+	}
+	defer rows.Close()
+
+	existing := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning decay alert fact_id: %w", err)
+		}
+		existing[id] = true
+	}
+	return existing, rows.Err()
+}
+
+// GetDecayDigest returns a grouped summary of fading facts for batch notifications.
+// Groups by subject, showing count and worst confidence per group.
+func (s *SQLiteStore) GetDecayDigest(ctx context.Context, thresholds DecayThresholds) ([]DecayDigestGroup, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, subject, predicate, object, confidence, decay_rate, last_reinforced
+		 FROM facts
+		 WHERE superseded_by IS NULL
+		   AND confidence > 0`)
+	if err != nil {
+		return nil, fmt.Errorf("querying facts for decay digest: %w", err)
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC()
+	groups := make(map[string]*DecayDigestGroup)
+
+	for rows.Next() {
+		var id int64
+		var subject, predicate, object string
+		var confidence, decayRate float64
+		var lastReinforced time.Time
+
+		if err := rows.Scan(&id, &subject, &predicate, &object, &confidence, &decayRate, &lastReinforced); err != nil {
+			return nil, fmt.Errorf("scanning fact: %w", err)
+		}
+
+		daysSince := now.Sub(lastReinforced).Hours() / 24
+		effective := confidence * math.Exp(-decayRate*daysSince)
+
+		if effective >= thresholds.Warning {
+			continue // Not fading
+		}
+
+		key := strings.ToLower(subject)
+		if key == "" {
+			key = "(no subject)"
+		}
+
+		g, exists := groups[key]
+		if !exists {
+			g = &DecayDigestGroup{
+				Subject:         subject,
+				WorstConfidence: effective,
+			}
+			groups[key] = g
+		}
+
+		g.FactCount++
+		if effective < g.WorstConfidence {
+			g.WorstConfidence = effective
+		}
+		if effective < thresholds.Critical {
+			g.CriticalCount++
+		} else {
+			g.WarningCount++
+		}
+		g.SampleFacts = append(g.SampleFacts, DecayDigestFact{
+			FactID:    id,
+			Predicate: predicate,
+			Object:    truncate(object, 50),
+			Effective: effective,
+		})
+		// Cap samples at 5 per group for readability
+		if len(g.SampleFacts) > 5 {
+			g.SampleFacts = g.SampleFacts[:5]
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating facts: %w", err)
+	}
+
+	// Convert map to sorted slice (worst first)
+	var result []DecayDigestGroup
+	for _, g := range groups {
+		result = append(result, *g)
+	}
+	// Sort by worst confidence ascending
+	sortDecayDigest(result)
+
+	return result, nil
+}
+
+// DecayDigestGroup represents a cluster of fading facts about the same subject.
+type DecayDigestGroup struct {
+	Subject         string            `json:"subject"`
+	FactCount       int               `json:"fact_count"`
+	WarningCount    int               `json:"warning_count"`
+	CriticalCount   int               `json:"critical_count"`
+	WorstConfidence float64           `json:"worst_confidence"`
+	SampleFacts     []DecayDigestFact `json:"sample_facts"`
+}
+
+// DecayDigestFact is a single fading fact within a digest group.
+type DecayDigestFact struct {
+	FactID    int64   `json:"fact_id"`
+	Predicate string  `json:"predicate"`
+	Object    string  `json:"object"`
+	Effective float64 `json:"effective_confidence"`
+}
+
+// sortDecayDigest sorts groups by worst confidence ascending (most urgent first).
+func sortDecayDigest(groups []DecayDigestGroup) {
+	for i := 1; i < len(groups); i++ {
+		key := groups[i]
+		j := i - 1
+		for j >= 0 && groups[j].WorstConfidence > key.WorstConfidence {
+			groups[j+1] = groups[j]
+			j--
+		}
+		groups[j+1] = key
+	}
+}
+
+// ReinforceFromAlert reinforces a fact referenced by a decay alert and acknowledges the alert.
+// This is the "yes, still true" flow from notifications.
+func (s *SQLiteStore) ReinforceFromAlert(ctx context.Context, alertID int64) error {
+	// Get the alert
+	var factID sql.NullInt64
+	var alertType string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT fact_id, alert_type FROM alerts WHERE id = ?`, alertID,
+	).Scan(&factID, &alertType)
+	if err != nil {
+		return fmt.Errorf("alert %d not found: %w", alertID, err)
+	}
+
+	if alertType != string(AlertTypeDecay) {
+		return fmt.Errorf("alert %d is type %q, not decay", alertID, alertType)
+	}
+
+	if !factID.Valid {
+		return fmt.Errorf("alert %d has no associated fact", alertID)
+	}
+
+	// Reinforce the fact
+	if err := s.ReinforceFact(ctx, factID.Int64); err != nil {
+		return fmt.Errorf("reinforcing fact %d: %w", factID.Int64, err)
+	}
+
+	// Acknowledge the alert
+	return s.AcknowledgeAlert(ctx, alertID)
 }
 
 // nullableInt64 converts a *int64 to sql.NullInt64 for database operations.
