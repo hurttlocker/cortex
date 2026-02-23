@@ -2684,9 +2684,9 @@ type graphExportCooc struct {
 }
 
 type graphExportResult struct {
-	Nodes         []graphExportNode `json:"nodes"`
-	Edges         []graphExportEdge `json:"edges"`
-	Cooccurrences []graphExportCooc `json:"cooccurrences"`
+	Nodes         []graphExportNode      `json:"nodes"`
+	Edges         []graphExportEdge      `json:"edges"`
+	Cooccurrences []graphExportCooc      `json:"cooccurrences"`
 	Meta          map[string]interface{} `json:"meta"`
 }
 
