@@ -5,6 +5,7 @@ package graph
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -81,6 +82,11 @@ func Serve(cfg ServerConfig) error {
 	// Search API endpoint — search facts by text
 	mux.HandleFunc("/api/search", func(w http.ResponseWriter, r *http.Request) {
 		handleSearchAPI(w, r, cfg.Store)
+	})
+
+	// Sample cluster endpoint — returns a cluster of related facts for demo/exploration
+	mux.HandleFunc("/api/cluster", func(w http.ResponseWriter, r *http.Request) {
+		handleClusterAPI(w, r, cfg.Store)
 	})
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
@@ -268,6 +274,121 @@ func handleSearchAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSto
 	}
 
 	writeJSON(w, 200, SearchResult{Facts: facts, Total: len(facts)})
+}
+
+func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStore) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 200 {
+			limit = v
+		}
+	}
+
+	query := r.URL.Query().Get("q")
+
+	db := st.GetDB()
+	ctx := context.Background()
+
+	// Find subjects that have multiple facts (natural clusters)
+	var rows *sql.Rows
+	var err error
+
+	if query != "" {
+		q := "%" + query + "%"
+		rows, err = db.QueryContext(ctx,
+			`SELECT id, subject, predicate, object, confidence, fact_type, COALESCE(agent_id, '')
+			 FROM facts
+			 WHERE (subject LIKE ? OR predicate LIKE ? OR object LIKE ?)
+			   AND (superseded_by IS NULL OR superseded_by = 0)
+			 ORDER BY confidence DESC
+			 LIMIT ?`, q, q, q, limit)
+	} else {
+		// Sample facts across diverse subjects using window functions
+		// Take top 5 facts per subject from subjects with 3-50 facts (skip mega-subjects)
+		rows, err = db.QueryContext(ctx,
+			`WITH ranked AS (
+			   SELECT f.id, f.subject, f.predicate, f.object, f.confidence, f.fact_type,
+			          COALESCE(f.agent_id, '') as agent_id,
+			          ROW_NUMBER() OVER (PARTITION BY f.subject ORDER BY f.confidence DESC) as rn
+			   FROM facts f
+			   INNER JOIN (
+			     SELECT subject, COUNT(*) as cnt
+			     FROM facts
+			     WHERE superseded_by IS NULL OR superseded_by = 0
+			     GROUP BY subject
+			     HAVING cnt BETWEEN 3 AND 50
+			     ORDER BY cnt DESC
+			     LIMIT 15
+			   ) top ON f.subject = top.subject
+			   WHERE (f.superseded_by IS NULL OR f.superseded_by = 0)
+			 )
+			 SELECT id, subject, predicate, object, confidence, fact_type, agent_id
+			 FROM ranked
+			 WHERE rn <= 5
+			 LIMIT ?`, limit)
+	}
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	var nodes []ExportNode
+	subjectGroups := make(map[string][]int64) // subject -> fact IDs
+
+	for rows.Next() {
+		var n ExportNode
+		if err := rows.Scan(&n.ID, &n.Subject, &n.Predicate, &n.Object, &n.Confidence, &n.FactType, &n.AgentID); err != nil {
+			continue
+		}
+		nodes = append(nodes, n)
+		subjectGroups[n.Subject] = append(subjectGroups[n.Subject], n.ID)
+	}
+
+	// Create edges between facts that share the same subject (natural clustering)
+	var edges []ExportEdge
+	for _, ids := range subjectGroups {
+		if len(ids) < 2 {
+			continue
+		}
+		// Connect facts in a chain within the same subject group
+		for i := 0; i < len(ids)-1; i++ {
+			edges = append(edges, ExportEdge{
+				Source:     ids[i],
+				Target:     ids[i+1],
+				EdgeType:   "relates_to",
+				Confidence: 0.6,
+				SourceType: "subject_cluster",
+			})
+		}
+		// Also connect last to first for a loop if 3+ facts
+		if len(ids) >= 3 {
+			edges = append(edges, ExportEdge{
+				Source:     ids[len(ids)-1],
+				Target:     ids[0],
+				EdgeType:   "relates_to",
+				Confidence: 0.4,
+				SourceType: "subject_cluster",
+			})
+		}
+	}
+
+	result := ExportResult{
+		Nodes: nodes,
+		Edges: edges,
+		Meta: map[string]interface{}{
+			"mode":        "cluster",
+			"total_nodes": len(nodes),
+			"total_edges": len(edges),
+			"total_cooccurrences": 0,
+			"subjects":    len(subjectGroups),
+		},
+	}
+
+	writeJSON(w, 200, result)
 }
 
 func writeJSON(w http.ResponseWriter, code int, data interface{}) {

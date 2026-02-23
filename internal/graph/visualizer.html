@@ -110,7 +110,7 @@
   .browse-item .bi-text { color: var(--muted); }
 
   /* ─── Graph Container ─── */
-  .canvas { flex: 1; position: relative; background: var(--bg); }
+  .canvas { flex: 1; position: relative; background: var(--bg); overflow: hidden; }
 
   /* ─── Stats Bar ─── */
   .stats-bar {
@@ -136,7 +136,7 @@
   /* ─── Loading / Empty States ─── */
   .center-msg {
     position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    text-align: center; z-index: 5;
+    text-align: center; z-index: 50; pointer-events: none;
   }
   .center-msg .msg-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.5; }
   .center-msg .msg-title { font-size: 16px; color: var(--text); margin-bottom: 6px; }
@@ -176,9 +176,10 @@
         <input type="range" id="depthSlider" min="1" max="5" value="2" style="flex:1" />
         <span class="range-val" id="depthValue">2</span>
       </div>
-      <button class="btn btn-primary btn-full" onclick="loadGraph()" style="margin-top:8px">
-        Load Graph
-      </button>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button class="btn btn-primary" style="flex:1" onclick="loadGraph()">Load Graph</button>
+        <button class="btn btn-ghost" style="flex:1" onclick="loadCluster()">Explore Clusters</button>
+      </div>
     </div>
 
     <!-- Confidence -->
@@ -222,6 +223,7 @@
 
   <!-- Graph -->
   <div class="canvas" id="graphCanvas">
+    <div id="graphContainer" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:1"></div>
     <div class="center-msg" id="emptyState">
       <div class="msg-icon">🧠</div>
       <div class="msg-title">Cortex Knowledge Graph</div>
@@ -287,61 +289,69 @@ function buildTypeLegend() {
 
 // ─── Initialize 3D Graph ───
 function initGraph() {
-  const container = document.getElementById('graphCanvas');
+  const outer = document.getElementById('graphCanvas');
+  const container = document.getElementById('graphContainer');
+  const w = outer.clientWidth || window.innerWidth - 300;
+  const h = outer.clientHeight || window.innerHeight;
+  console.log('[cortex] Init graph, container:', w, 'x', h);
 
   Graph = ForceGraph3D()(container)
     .backgroundColor('#0a0a0a')
+    .width(w)
+    .height(h)
     .showNavInfo(false)
-    .nodeRelSize(5)
-    .nodeVal(n => 0.5 + n.confidence * 2)
+    .nodeRelSize(6)
+    .nodeVal(n => 1 + n.confidence * 2)
     .nodeColor(n => {
       if (selectedNode && n.id === selectedNode.id) return '#fff';
-      return FACT_TYPE_COLORS[n.type] || '#666';
+      return FACT_TYPE_COLORS[n.type] || '#888';
     })
-    .nodeOpacity(0.92)
-    .nodeLabel(n => `#${n.id}: ${n.subject}\n${n.predicate}: ${truncate(n.object, 60)}\nConfidence: ${(n.confidence * 100).toFixed(0)}%\nType: ${n.type}${n.agent_id ? '\nAgent: ' + n.agent_id : ''}`)
+    .nodeOpacity(0.9)
+    .nodeResolution(16)
+    .nodeLabel(n => `#${n.id}: ${n.subject}\n${n.predicate}: ${truncate(n.object, 80)}\nType: ${n.type} | Conf: ${(n.confidence * 100).toFixed(0)}%${n.agent_id ? '\nAgent: ' + n.agent_id : ''}`)
     .linkColor(link => {
       if (link._isCooc) return '#333';
-      return EDGE_COLORS[link.type] || '#444';
+      return EDGE_COLORS[link.type] || '#555';
     })
-    .linkOpacity(link => link._isCooc ? 0.25 : 0.6)
+    .linkOpacity(link => link._isCooc ? 0.3 : 0.6)
     .linkWidth(link => {
-      if (link._isCooc) return 0.3 + Math.min(link.count / 5, 2);
-      return 0.5 + link.confidence * 3;
+      if (link._isCooc) return 0.5 + Math.min(link.count / 5, 2);
+      return 1.5;
     })
     .linkDirectionalArrowLength(link => {
       if (link._isCooc) return 0;
-      return document.getElementById('showArrows').checked ? 4 : 0;
+      return document.getElementById('showArrows').checked ? 5 : 0;
     })
     .linkDirectionalArrowRelPos(1)
-    .linkLineDash(link => link._isCooc ? [2, 2] : null)
+    .linkDirectionalParticles(link => link._isCooc ? 0 : 2)
+    .linkDirectionalParticleWidth(1.5)
+    .linkDirectionalParticleSpeed(0.005)
+    .linkDirectionalParticleColor(link => EDGE_COLORS[link.type] || '#555')
     .onNodeClick(node => {
       selectedNode = node;
       showDetail(node);
       Graph.nodeColor(Graph.nodeColor()); // force refresh colors
 
-      // Focus on node
-      const dist = 120;
-      const pos = node;
+      // Fly to node
+      const dist = 80;
       Graph.cameraPosition(
-        { x: pos.x + dist, y: pos.y + dist / 2, z: pos.z + dist },
-        pos,
+        { x: node.x + dist, y: node.y + dist / 2, z: node.z + dist },
+        node,
         1200
       );
     })
     .onNodeHover(node => {
       container.style.cursor = node ? 'pointer' : 'default';
     })
-    .warmupTicks(80)
-    .cooldownTicks(120)
-    .d3AlphaDecay(0.04)
-    .d3VelocityDecay(0.3);
+    .warmupTicks(100)
+    .cooldownTicks(150);
 
-  // Add particle effects on edges
-  Graph.linkDirectionalParticles(link => link._isCooc ? 0 : 2)
-    .linkDirectionalParticleWidth(link => 0.5 + link.confidence * 1.5)
-    .linkDirectionalParticleSpeed(0.005)
-    .linkDirectionalParticleColor(link => EDGE_COLORS[link.type] || '#444');
+  // Handle resize
+  window.addEventListener('resize', () => {
+    const w = outer.clientWidth || window.innerWidth - 300;
+    const h = outer.clientHeight || window.innerHeight;
+    Graph.width(w).height(h);
+  });
 }
 
 // ─── Load Graph ───
@@ -420,19 +430,7 @@ function renderGraph() {
   document.getElementById('statEdges').textContent = graphData.edges?.length || 0;
   document.getElementById('statCoocs').textContent = graphData.cooccurrences?.length || 0;
 
-  // Node labels
-  const showLabels = document.getElementById('showLabels').checked;
-
-  Graph
-    .nodeThreeObject(showLabels ? node => {
-      const sprite = new SpriteText(truncate(node.subject, 24));
-      sprite.color = '#aaa';
-      sprite.textHeight = 3;
-      sprite.position.y = 8;
-      return sprite;
-    } : null)
-    .nodeThreeObjectExtend(showLabels)
-    .graphData({ nodes: JSON.parse(JSON.stringify(nodes)), links: JSON.parse(JSON.stringify(links)) });
+  Graph.graphData({ nodes: JSON.parse(JSON.stringify(nodes)), links: JSON.parse(JSON.stringify(links)) });
 }
 
 // ─── Detail Panel ───
@@ -490,6 +488,42 @@ function selectSearchResult(factId) {
   loadGraph();
 }
 
+// ─── Load Cluster (subject-based grouping) ───
+async function loadCluster(query) {
+  console.log('[cortex] Loading cluster...');
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('loadingState').style.display = 'block';
+  document.getElementById('controlsHelp').style.display = 'none';
+  document.getElementById('statsBar').style.display = 'none';
+
+  try {
+    const q = query || document.getElementById('searchInput').value.trim();
+    const url = q ? `/api/cluster?q=${encodeURIComponent(q)}&limit=60` : '/api/cluster?limit=60';
+    console.log('[cortex] Fetching:', url);
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    graphData = await resp.json();
+    console.log('[cortex] Got data:', graphData.nodes?.length, 'nodes,', graphData.edges?.length, 'edges');
+
+    document.getElementById('loadingState').style.display = 'none';
+
+    if (!graphData.nodes || graphData.nodes.length === 0) {
+      document.getElementById('emptyState').style.display = 'block';
+      document.querySelector('#emptyState .msg-title').textContent = 'No clusters found';
+      document.querySelector('#emptyState .msg-sub').textContent = 'Try a different search term or add more facts.';
+      return;
+    }
+
+    renderGraph();
+  } catch (err) {
+    console.error('[cortex] Cluster load error:', err);
+    document.getElementById('loadingState').style.display = 'none';
+    document.getElementById('emptyState').style.display = 'block';
+    document.querySelector('#emptyState .msg-title').textContent = 'Error';
+    document.querySelector('#emptyState .msg-sub').textContent = err.message;
+  }
+}
+
 // ─── Highlight matching nodes ───
 function highlightSearch(query) {
   if (!Graph || !graphData) return;
@@ -545,29 +579,35 @@ document.getElementById('factIdInput').addEventListener('keydown', e => {
 });
 
 // ─── Init ───
-document.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('load', () => {
   buildTypeLegend();
-  initGraph();
 
-  // URL param support
-  const params = new URLSearchParams(window.location.search);
-  if (params.get('fact_id')) {
-    document.getElementById('factIdInput').value = params.get('fact_id');
-    if (params.get('depth')) {
-      document.getElementById('depthSlider').value = params.get('depth');
-      document.getElementById('depthValue').textContent = params.get('depth');
+  // Small delay for layout computation
+  setTimeout(() => {
+    const container = document.getElementById('graphCanvas');
+    console.log('[cortex] Container size:', container.clientWidth, 'x', container.clientHeight);
+
+    initGraph();
+
+    // URL param support
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('fact_id')) {
+      document.getElementById('factIdInput').value = params.get('fact_id');
+      if (params.get('depth')) {
+        document.getElementById('depthSlider').value = params.get('depth');
+        document.getElementById('depthValue').textContent = params.get('depth');
+      }
+      loadGraph();
+    } else if (window.__CORTEX_GRAPH_DATA__) {
+      graphData = window.__CORTEX_GRAPH_DATA__;
+      document.getElementById('emptyState').style.display = 'none';
+      renderGraph();
+    } else {
+      // Auto-load clusters
+      loadCluster('');
     }
-    loadGraph();
-  }
-
-  // Embedded data support
-  if (window.__CORTEX_GRAPH_DATA__) {
-    graphData = window.__CORTEX_GRAPH_DATA__;
-    renderGraph();
-  }
+  }, 200);
 });
 </script>
-<!-- SpriteText for 3D labels -->
-<script src="https://unpkg.com/three-spritetext"></script>
 </body>
 </html>
