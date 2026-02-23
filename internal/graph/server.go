@@ -78,9 +78,14 @@ func Serve(cfg ServerConfig) error {
 		handleGraphAPI(w, r, cfg.Store)
 	})
 
+	// Search API endpoint — search facts by text
+	mux.HandleFunc("/api/search", func(w http.ResponseWriter, r *http.Request) {
+		handleSearchAPI(w, r, cfg.Store)
+	})
+
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	fmt.Printf("🧠 Cortex graph visualizer: http://localhost%s\n", addr)
-	fmt.Printf("   Open in browser and enter a fact ID to explore.\n")
+	fmt.Printf("   Open in browser to explore your knowledge graph in 3D.\n")
 	return http.ListenAndServe(addr, mux)
 }
 
@@ -201,6 +206,68 @@ func handleGraphAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStor
 	result.Meta["total_cooccurrences"] = len(result.Cooccurrences)
 
 	writeJSON(w, 200, result)
+}
+
+// SearchFact is a lightweight fact for search results.
+type SearchFact struct {
+	ID         int64   `json:"id"`
+	Subject    string  `json:"subject"`
+	Predicate  string  `json:"predicate"`
+	Object     string  `json:"object"`
+	Confidence float64 `json:"confidence"`
+	FactType   string  `json:"type"`
+	AgentID    string  `json:"agent_id,omitempty"`
+}
+
+// SearchResult is the search API response.
+type SearchResult struct {
+	Facts []SearchFact `json:"facts"`
+	Total int          `json:"total"`
+}
+
+func handleSearchAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStore) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		writeJSON(w, 400, map[string]string{"error": "q parameter required"})
+		return
+	}
+
+	limit := 15
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 100 {
+			limit = v
+		}
+	}
+
+	// Direct SQL search on facts table — fast LIKE matching on subject/predicate/object
+	db := st.GetDB()
+	q := "%" + query + "%"
+	rows, err := db.QueryContext(context.Background(),
+		`SELECT id, subject, predicate, object, confidence, fact_type, COALESCE(agent_id, '')
+		 FROM facts
+		 WHERE (subject LIKE ? OR predicate LIKE ? OR object LIKE ?)
+		   AND (superseded_by IS NULL OR superseded_by = 0)
+		 ORDER BY confidence DESC
+		 LIMIT ?`, q, q, q, limit)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	var facts []SearchFact
+	for rows.Next() {
+		var f SearchFact
+		if err := rows.Scan(&f.ID, &f.Subject, &f.Predicate, &f.Object, &f.Confidence, &f.FactType, &f.AgentID); err != nil {
+			continue
+		}
+		facts = append(facts, f)
+	}
+
+	writeJSON(w, 200, SearchResult{Facts: facts, Total: len(facts)})
 }
 
 func writeJSON(w http.ResponseWriter, code int, data interface{}) {
