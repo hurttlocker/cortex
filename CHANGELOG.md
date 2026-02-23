@@ -6,6 +6,46 @@ All notable changes to this project will be documented in this file.
 
 - No unreleased entries yet.
 
+## [0.5.0] - 2026-02-23
+
+### Added
+- **2D-first knowledge graph explorer** with shadcn-style dark UI, 3D toggle, and Cortex branding (#191)
+- Subject graph mode — `/api/graph?subject=X` drills into a single entity's facts and edges
+- Graph quality metadata panel — shows edge source, fallback counts, density per query
+- Subject-cluster fallback edges with sparse fill for disconnected groups
+- Edge deduplication and endpoint filtering in graph traversal
+- Co-occurrence loading from `fact_cooccurrence_v1` table
+- `fact_edges_v1` table support with graceful fallback to subject clustering
+- New tests: subject graph API + cluster limit enforcement
+- Repository contributor guide (`AGENTS.md`)
+- Stats banner + `/api/stats` endpoint (#186)
+- Slack connector + MCP connect tools + OpenClaw plugin wiring (#188, #140, #141)
+- Webhook delivery channel for alerts (#187)
+- Relationship inference engine — emergent knowledge graph (#170)
+- Co-occurrence tracking + graph traversal integration (#169)
+- Fact relationship edges — knowledge graph foundation (#168)
+- Cross-agent conflict detection (#167)
+- Shared reinforcement — implicit decay reset + cross-agent amplification (#166)
+- Agent namespaces — scoped facts + multi-agent views (#165)
+- Persistent watch queries with alert notifications (#164)
+- Decay notifications — fading facts alert system (#163)
+- Proactive fact conflict detection + alert system (#162)
+- `@cortex-ai/mcp` npm package — zero-config MCP server (#159)
+- Homebrew tap auto-publish via goreleaser (#160)
+- Cortex Connect CLI + connectors: GitHub, Gmail, Google Calendar, Google Drive (#138, #139, #142, #143)
+
+### Changed
+- Cluster API defaults widened: 150 nodes (was 50), subject range 3–200 facts (was 3–50)
+- Graph API now accepts `subject` parameter alongside `fact_id`
+- Fact extraction pipeline rewritten: `normalizeSubject()` strips timestamps, section trails, emoji, markdown headers
+- `MaxSubjectLength = 50` with word-boundary truncation
+- Auto-capture governor: 15 facts/memory cap, min object/predicate length 3
+- 92% noise reduction in fact corpus (301K → 23K facts)
+
+### Validation
+- All 15 test packages passing
+- Graph visualizer manually validated across 2D/3D modes, search, and subject drill flows
+
 ## [0.3.6] - 2026-02-21
 
 ### Added
