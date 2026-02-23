@@ -74,6 +74,8 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	registerReinforceTool(s, cfg.Store)
 	registerReasonTool(s, searchEngine, cfg.Store)
 	registerAlertsTool(s, cfg.Store)
+	registerWatchAddTool(s, cfg.Store)
+	registerWatchListTool(s, cfg.Store)
 
 	// Register resources
 	registerStatsResource(s, observeEngine)
@@ -235,6 +237,14 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 			factsExtracted = extractFactsFromMemories(ctx, st, ids)
 		}
 
+		// Check watch queries against new memories
+		var watchMatches []store.WatchMatchResult
+		if len(ids) > 0 {
+			if sqlStore, ok := st.(*store.SQLiteStore); ok {
+				watchMatches, _ = sqlStore.CheckWatchesForMemories(ctx, ids)
+			}
+		}
+
 		result := map[string]interface{}{
 			"ids":     ids,
 			"chunks":  len(chunks),
@@ -244,6 +254,10 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 		}
 		if enableExtract {
 			result["facts_extracted"] = factsExtracted
+		}
+		if len(watchMatches) > 0 {
+			result["watch_matches"] = watchMatches
+			result["watches_triggered"] = len(watchMatches)
 		}
 		data, _ := json.MarshalIndent(result, "", "  ")
 		return mcp.NewToolResultText(string(data)), nil
@@ -637,6 +651,107 @@ func registerAlertsTool(s *server.MCPServer, st store.Store) {
 			data, _ := json.MarshalIndent(alerts, "", "  ")
 			return mcp.NewToolResultText(string(data)), nil
 		}
+	})
+}
+
+func registerWatchAddTool(s *server.MCPServer, st store.Store) {
+	tool := mcp.NewTool("cortex_watch_add",
+		mcp.WithDescription("Create a persistent watch query. When new memories are imported, Cortex checks them against active watches and creates alerts for matches above the threshold."),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithString("query",
+			mcp.Required(),
+			mcp.Description("Search query to watch for (e.g., 'deployment failures', 'ADA price')"),
+		),
+		mcp.WithNumber("threshold",
+			mcp.Description("Minimum match score 0-1 (default: 0.7). Lower = more matches, higher = more precise."),
+		),
+		mcp.WithString("agent_id",
+			mcp.Description("Scope this watch to a specific agent (empty = all agents)"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		sqlStore, ok := st.(*store.SQLiteStore)
+		if !ok {
+			return mcp.NewToolResultError("watches require SQLiteStore"), nil
+		}
+
+		query, err := req.RequireString("query")
+		if err != nil {
+			return mcp.NewToolResultError("query is required"), nil
+		}
+
+		threshold := 0.7
+		if t, err := req.RequireFloat("threshold"); err == nil && t > 0 && t <= 1 {
+			threshold = t
+		}
+
+		agentID := ""
+		if a, err := req.RequireString("agent_id"); err == nil && a != "" {
+			agentID = a
+		}
+
+		w := &store.WatchQuery{
+			Query:     query,
+			Threshold: threshold,
+			AgentID:   agentID,
+		}
+
+		if err := sqlStore.CreateWatch(ctx, w); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("create watch error: %v", err)), nil
+		}
+
+		result := map[string]interface{}{
+			"id":        w.ID,
+			"query":     w.Query,
+			"threshold": w.Threshold,
+			"active":    w.Active,
+			"message":   fmt.Sprintf("👁️ Watch created: %q (threshold: %.0f%%, id: %d)", w.Query, w.Threshold*100, w.ID),
+		}
+		data, _ := json.MarshalIndent(result, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
+	})
+}
+
+func registerWatchListTool(s *server.MCPServer, st store.Store) {
+	tool := mcp.NewTool("cortex_watch_list",
+		mcp.WithDescription("List active watch queries. Watches monitor imports and create alerts when new content matches."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithBoolean("include_paused",
+			mcp.Description("Include paused watches (default: false, active only)"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		sqlStore, ok := st.(*store.SQLiteStore)
+		if !ok {
+			return mcp.NewToolResultError("watches require SQLiteStore"), nil
+		}
+
+		activeOnly := true
+		if inc, err := req.RequireString("include_paused"); err == nil && inc == "true" {
+			activeOnly = false
+		}
+
+		watches, err := sqlStore.ListWatches(ctx, activeOnly)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("list watches error: %v", err)), nil
+		}
+
+		if len(watches) == 0 {
+			return mcp.NewToolResultText("No active watches. Create one with cortex_watch_add."), nil
+		}
+
+		data, _ := json.MarshalIndent(watches, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
 	})
 }
 

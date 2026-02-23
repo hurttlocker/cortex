@@ -488,6 +488,37 @@ func runImport(args []string) error {
 		}
 	}
 
+	// Check watch queries against newly imported content
+	if !opts.DryRun && totalResult.MemoriesNew > 0 {
+		if sqlStore, ok := s.(*store.SQLiteStore); ok {
+			watches, _ := sqlStore.ListWatches(ctx, true)
+			if len(watches) > 0 {
+				// Query for recently imported memories (last 60s)
+				cutoff := time.Now().UTC().Add(-60 * time.Second)
+				recentMems, _ := s.ListMemories(ctx, store.ListOpts{
+					Limit:  totalResult.MemoriesNew,
+					SortBy: "date",
+				})
+				var recentIDs []int64
+				for _, m := range recentMems {
+					if m.ImportedAt.After(cutoff) {
+						recentIDs = append(recentIDs, m.ID)
+					}
+				}
+				if len(recentIDs) > 0 {
+					matches, _ := sqlStore.CheckWatchesForMemories(ctx, recentIDs)
+					if len(matches) > 0 {
+						fmt.Printf("\n👁️  %d watch match(es):\n", len(matches))
+						for _, m := range matches {
+							fmt.Printf("  • %q matched memory #%d (%.0f%%): %s\n",
+								m.Query, m.MemoryID, m.Score*100, m.Snippet)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	fmt.Println()
 	fmt.Print(ingest.FormatImportResult(totalResult))
 
