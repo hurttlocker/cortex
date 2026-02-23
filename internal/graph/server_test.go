@@ -302,3 +302,146 @@ func TestSearchAPINoResults(t *testing.T) {
 		t.Fatalf("expected 0 results, got %d", result.Total)
 	}
 }
+
+func TestGraphAPIBySubject(t *testing.T) {
+	st := newTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	memID, err := st.AddMemory(ctx, &store.Memory{
+		Content:       "subject graph seed",
+		SourceFile:    "subject.md",
+		SourceLine:    1,
+		SourceSection: "subject",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+
+	id1, err := st.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "Cortex",
+		Predicate:  "language",
+		Object:     "Go",
+		Confidence: 0.95,
+		FactType:   "kv",
+	})
+	if err != nil {
+		t.Fatalf("add fact1: %v", err)
+	}
+	id2, err := st.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "Cortex",
+		Predicate:  "database",
+		Object:     "SQLite",
+		Confidence: 0.9,
+		FactType:   "kv",
+	})
+	if err != nil {
+		t.Fatalf("add fact2: %v", err)
+	}
+
+	if err := st.AddEdge(ctx, &store.FactEdge{
+		SourceFactID: id1,
+		TargetFactID: id2,
+		EdgeType:     store.EdgeTypeRelatesTo,
+		Confidence:   0.8,
+		Source:       store.EdgeSourceInferred,
+	}); err != nil {
+		t.Fatalf("add edge: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/graph", func(w http.ResponseWriter, r *http.Request) {
+		handleGraphAPI(w, r, st)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/graph?subject=cortex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var result ExportResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result.Meta["mode"] != "subject" {
+		t.Fatalf("expected mode=subject, got %v", result.Meta["mode"])
+	}
+	if len(result.Nodes) != 2 {
+		t.Fatalf("expected 2 subject facts, got %d", len(result.Nodes))
+	}
+	if len(result.Edges) == 0 {
+		t.Fatal("expected subject graph to include at least one edge")
+	}
+}
+
+func TestClusterAPILimitRespected(t *testing.T) {
+	st := newTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	memID, err := st.AddMemory(ctx, &store.Memory{
+		Content:       "cluster seed",
+		SourceFile:    "cluster.md",
+		SourceLine:    1,
+		SourceSection: "cluster",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+
+	// Seed 3 subjects with 4 facts each so they satisfy cluster bounds.
+	subjects := []string{"alpha", "beta", "gamma"}
+	for _, subject := range subjects {
+		for i := 0; i < 4; i++ {
+			_, err := st.AddFact(ctx, &store.Fact{
+				MemoryID:   memID,
+				Subject:    subject,
+				Predicate:  "p",
+				Object:     fmt.Sprintf("o%d", i),
+				Confidence: 0.7 + float64(i)*0.05,
+				FactType:   "kv",
+			})
+			if err != nil {
+				t.Fatalf("add fact %s/%d: %v", subject, i, err)
+			}
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/cluster", func(w http.ResponseWriter, r *http.Request) {
+		handleClusterAPI(w, r, st)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/cluster?limit=5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var result ExportResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode cluster result: %v", err)
+	}
+	if len(result.Nodes) > 5 {
+		t.Fatalf("expected <= 5 nodes due limit, got %d", len(result.Nodes))
+	}
+	if len(result.Nodes) == 0 {
+		t.Fatal("expected non-empty cluster data")
+	}
+	if result.Meta["mode"] != "cluster" {
+		t.Fatalf("expected mode=cluster, got %v", result.Meta["mode"])
+	}
+}
