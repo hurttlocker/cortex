@@ -145,6 +145,7 @@ type Conflict struct {
 	Fact2        Fact    `json:"fact2"`
 	ConflictType string  `json:"conflict_type"` // "attribute"
 	Similarity   float64 `json:"similarity"`
+	CrossAgent   bool    `json:"cross_agent,omitempty"` // true if facts from different agents
 }
 
 // ProjectInfo holds metadata about a project tag.

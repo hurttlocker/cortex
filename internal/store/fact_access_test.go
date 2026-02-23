@@ -183,3 +183,85 @@ func TestEffectiveConfidence(t *testing.T) {
 		t.Fatalf("Expected near-zero after a year, got %f", eff)
 	}
 }
+
+func TestCrossAgentConflictDetection(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{Content: "agents disagree", SourceFile: "t.md"})
+
+	// Mister says model is opus
+	fact1 := &Fact{
+		MemoryID: memID, Subject: "primary_model", Predicate: "is",
+		Object: "opus", FactType: "kv", Confidence: 0.9, AgentID: "mister",
+	}
+	s.AddFact(ctx, fact1)
+
+	// Niot says model is sonnet
+	fact2 := &Fact{
+		MemoryID: memID, Subject: "primary_model", Predicate: "is",
+		Object: "sonnet", FactType: "kv", Confidence: 0.8, AgentID: "niot",
+	}
+	id2, _ := s.AddFact(ctx, fact2)
+	fact2.ID = id2
+
+	conflicts, err := s.CheckConflictsForFact(ctx, fact2)
+	if err != nil {
+		t.Fatalf("CheckConflictsForFact: %v", err)
+	}
+	if len(conflicts) != 1 {
+		t.Fatalf("Expected 1 conflict, got %d", len(conflicts))
+	}
+	if !conflicts[0].CrossAgent {
+		t.Fatal("Expected cross_agent=true for mister vs niot conflict")
+	}
+}
+
+func TestSameAgentConflictNotCrossAgent(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{Content: "self contradiction", SourceFile: "t.md"})
+
+	fact1 := &Fact{
+		MemoryID: memID, Subject: "strategy", Predicate: "type",
+		Object: "ORB", FactType: "kv", Confidence: 0.9, AgentID: "mister",
+	}
+	s.AddFact(ctx, fact1)
+
+	fact2 := &Fact{
+		MemoryID: memID, Subject: "strategy", Predicate: "type",
+		Object: "EMA", FactType: "kv", Confidence: 0.8, AgentID: "mister",
+	}
+	id2, _ := s.AddFact(ctx, fact2)
+	fact2.ID = id2
+
+	conflicts, _ := s.CheckConflictsForFact(ctx, fact2)
+	if len(conflicts) != 1 {
+		t.Fatalf("Expected 1 conflict, got %d", len(conflicts))
+	}
+	if conflicts[0].CrossAgent {
+		t.Fatal("Same-agent conflict should NOT be cross_agent")
+	}
+}
+
+func TestGetAttributeConflictsCrossAgent(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{Content: "multi-agent", SourceFile: "t.md"})
+
+	s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "db", Predicate: "engine", Object: "sqlite", FactType: "kv", AgentID: "mister"})
+	s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "db", Predicate: "engine", Object: "postgres", FactType: "kv", AgentID: "hawk"})
+
+	conflicts, err := s.GetAttributeConflicts(ctx)
+	if err != nil {
+		t.Fatalf("GetAttributeConflicts: %v", err)
+	}
+	if len(conflicts) != 1 {
+		t.Fatalf("Expected 1 conflict, got %d", len(conflicts))
+	}
+	if !conflicts[0].CrossAgent {
+		t.Fatal("Expected cross_agent=true")
+	}
+}

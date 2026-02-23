@@ -4548,9 +4548,21 @@ func outputConflictsTTY(conflicts []observe.Conflict, verbose bool) error {
 		if conflictType == "" {
 			conflictType = "attribute"
 		}
-		fmt.Printf("\n❌ [%d/%d] %s conflict\n", i+1, len(ranked), conflictType)
-		fmt.Printf("   \"%s\" (confidence: %.2f, id: %d)\n", formatFactText(c.Fact1.Subject, c.Fact1.Predicate, c.Fact1.Object), c.Fact1.Confidence, c.Fact1.ID)
-		fmt.Printf("   \"%s\" (confidence: %.2f, id: %d)\n", formatFactText(c.Fact2.Subject, c.Fact2.Predicate, c.Fact2.Object), c.Fact2.Confidence, c.Fact2.ID)
+		crossTag := ""
+		if c.CrossAgent {
+			crossTag = " ⚠️ CROSS-AGENT"
+		}
+		fmt.Printf("\n❌ [%d/%d] %s conflict%s\n", i+1, len(ranked), conflictType, crossTag)
+		agent1 := ""
+		if c.Fact1.AgentID != "" {
+			agent1 = fmt.Sprintf(" [%s]", c.Fact1.AgentID)
+		}
+		agent2 := ""
+		if c.Fact2.AgentID != "" {
+			agent2 = fmt.Sprintf(" [%s]", c.Fact2.AgentID)
+		}
+		fmt.Printf("   \"%s\" (confidence: %.2f, id: %d)%s\n", formatFactText(c.Fact1.Subject, c.Fact1.Predicate, c.Fact1.Object), c.Fact1.Confidence, c.Fact1.ID, agent1)
+		fmt.Printf("   \"%s\" (confidence: %.2f, id: %d)%s\n", formatFactText(c.Fact2.Subject, c.Fact2.Predicate, c.Fact2.Object), c.Fact2.Confidence, c.Fact2.ID, agent2)
 		fmt.Printf("   Similarity: %.2f\n", c.Similarity)
 	}
 

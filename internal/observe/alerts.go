@@ -13,12 +13,15 @@ import (
 type ConflictAlertDetails struct {
 	Fact1ID     int64   `json:"fact1_id"`
 	Fact1Value  string  `json:"fact1_value"`
+	Fact1Agent  string  `json:"fact1_agent,omitempty"`
 	Fact2ID     int64   `json:"fact2_id"`
 	Fact2Value  string  `json:"fact2_value"`
+	Fact2Agent  string  `json:"fact2_agent,omitempty"`
 	Subject     string  `json:"subject"`
 	Predicate   string  `json:"predicate"`
 	Confidence1 float64 `json:"confidence1"`
 	Confidence2 float64 `json:"confidence2"`
+	CrossAgent  bool    `json:"cross_agent"`
 }
 
 // CheckAndAlertConflicts checks a newly created fact for conflicts with existing facts
@@ -47,21 +50,43 @@ func CheckAndAlertConflicts(ctx context.Context, s *store.SQLiteStore, fact *sto
 			severity = store.AlertSeverityWarning
 		}
 
+		// Cross-agent conflicts get elevated severity
+		if c.CrossAgent && severity == store.AlertSeverityInfo {
+			severity = store.AlertSeverityWarning
+		} else if c.CrossAgent && severity == store.AlertSeverityWarning {
+			severity = store.AlertSeverityCritical
+		}
+
 		// Build human-readable message
 		msg := fmt.Sprintf("Conflicting facts for %q %s: %q vs %q",
 			c.Fact1.Subject, c.Fact1.Predicate,
 			truncateStr(c.Fact1.Object, 80), truncateStr(c.Fact2.Object, 80))
+		if c.CrossAgent {
+			agent1 := c.Fact1.AgentID
+			if agent1 == "" {
+				agent1 = "global"
+			}
+			agent2 := c.Fact2.AgentID
+			if agent2 == "" {
+				agent2 = "global"
+			}
+			msg = fmt.Sprintf("⚠️ CROSS-AGENT: %s vs %s — %s",
+				agent1, agent2, msg)
+		}
 
 		// Build structured details
 		details := ConflictAlertDetails{
 			Fact1ID:     c.Fact1.ID,
 			Fact1Value:  c.Fact1.Object,
+			Fact1Agent:  c.Fact1.AgentID,
 			Fact2ID:     c.Fact2.ID,
 			Fact2Value:  c.Fact2.Object,
+			Fact2Agent:  c.Fact2.AgentID,
 			Subject:     c.Fact1.Subject,
 			Predicate:   c.Fact1.Predicate,
 			Confidence1: c.Fact1.Confidence,
 			Confidence2: c.Fact2.Confidence,
+			CrossAgent:  c.CrossAgent,
 		}
 		detailsJSON, _ := json.Marshal(details)
 
