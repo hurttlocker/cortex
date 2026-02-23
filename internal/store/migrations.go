@@ -84,6 +84,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating watches table: %w", err)
 	}
 
+	// Schema evolution: agent_id on facts (v1.0 — Issue #165)
+	if err := s.migrateFactAgentID(); err != nil {
+		return fmt.Errorf("migrating fact agent_id: %w", err)
+	}
+
 	return nil
 }
 
@@ -874,6 +879,44 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// migrateFactAgentID adds agent_id column to facts for multi-agent namespaces (#165).
+func (s *SQLiteStore) migrateFactAgentID() error {
+	var count int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='agent_id'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checking for agent_id column: %w", err)
+	}
+	if count > 0 {
+		return nil // Already migrated
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning agent_id migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmts := []string{
+		`ALTER TABLE facts ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_agent_id ON facts(agent_id)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			if isDuplicateColumnError(err) {
+				continue
+			}
+			return fmt.Errorf("executing %q: %w", truncate(stmt, 60), err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing agent_id migration: %w", err)
+	}
+	return nil
 }
 
 // migrateWatchesTable creates the watches table for persistent watch queries.

@@ -77,6 +77,7 @@ type Fact struct {
 	SourceQuote    string
 	CreatedAt      time.Time
 	SupersededBy   *int64 // Fact ID that superseded this fact (nil = active)
+	AgentID        string // Which agent created this fact (empty = global, visible to all)
 }
 
 // MemoryEvent represents an entry in the append-only event log.
