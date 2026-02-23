@@ -11,12 +11,12 @@ import (
 
 // ConflictAlertDetails holds structured details for a conflict alert.
 type ConflictAlertDetails struct {
-	Fact1ID     int64  `json:"fact1_id"`
-	Fact1Value  string `json:"fact1_value"`
-	Fact2ID     int64  `json:"fact2_id"`
-	Fact2Value  string `json:"fact2_value"`
-	Subject     string `json:"subject"`
-	Predicate   string `json:"predicate"`
+	Fact1ID     int64   `json:"fact1_id"`
+	Fact1Value  string  `json:"fact1_value"`
+	Fact2ID     int64   `json:"fact2_id"`
+	Fact2Value  string  `json:"fact2_value"`
+	Subject     string  `json:"subject"`
+	Predicate   string  `json:"predicate"`
 	Confidence1 float64 `json:"confidence1"`
 	Confidence2 float64 `json:"confidence2"`
 }
