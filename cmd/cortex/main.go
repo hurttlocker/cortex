@@ -1102,6 +1102,7 @@ func runConflicts(args []string) error {
 	jsonOutput := false
 	verboseOutput := globalVerbose
 	resolveStrategy := ""
+	llmFlag := ""
 	dryRun := false
 	limitFlag := 100
 	keepFlag := int64(0)
@@ -1151,6 +1152,11 @@ func runConflicts(args []string) error {
 			dropFlag = n
 		case args[i] == "--include-superseded":
 			includeSuperseded = true
+		case args[i] == "--llm" && i+1 < len(args):
+			i++
+			llmFlag = args[i]
+		case strings.HasPrefix(args[i], "--llm="):
+			llmFlag = strings.TrimPrefix(args[i], "--llm=")
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return fmt.Errorf("unknown flag: %s", args[i])
@@ -1191,7 +1197,184 @@ func runConflicts(args []string) error {
 		return nil
 	}
 
-	// Auto-resolution with strategy
+	// LLM-powered resolution: --resolve llm [--llm model]
+	if resolveStrategy == "llm" {
+		if llmFlag == "" {
+			llmFlag = extract.DefaultResolveModel
+		}
+		llmCfg, err := llm.ParseLLMFlag(llmFlag)
+		if err != nil {
+			return fmt.Errorf("parsing --llm: %w", err)
+		}
+		provider, err := llm.NewProvider(llmCfg)
+		if err != nil {
+			return fmt.Errorf("creating LLM provider: %w", err)
+		}
+
+		// Get conflicts
+		conflicts, err := engine.GetConflictsLimitWithSuperseded(ctx, limitFlag, includeSuperseded)
+		if err != nil {
+			return fmt.Errorf("detecting conflicts: %w", err)
+		}
+		if len(conflicts) == 0 {
+			fmt.Println("No conflicts found.")
+			return nil
+		}
+
+		// Convert to ConflictPair format
+		pairs := make([]extract.ConflictPair, len(conflicts))
+		for i, c := range conflicts {
+			pairs[i] = extract.ConflictPair{
+				Index: i,
+				Fact1: extract.ConflictFact{
+					ID:             c.Fact1.ID,
+					Subject:        c.Fact1.Subject,
+					Predicate:      c.Fact1.Predicate,
+					Object:         c.Fact1.Object,
+					FactType:       c.Fact1.FactType,
+					Confidence:     c.Fact1.Confidence,
+					DecayRate:      c.Fact1.DecayRate,
+					Source:         c.Fact1.SourceQuote,
+					CreatedAt:      c.Fact1.CreatedAt,
+					LastReinforced: c.Fact1.LastReinforced,
+				},
+				Fact2: extract.ConflictFact{
+					ID:             c.Fact2.ID,
+					Subject:        c.Fact2.Subject,
+					Predicate:      c.Fact2.Predicate,
+					Object:         c.Fact2.Object,
+					FactType:       c.Fact2.FactType,
+					Confidence:     c.Fact2.Confidence,
+					DecayRate:      c.Fact2.DecayRate,
+					Source:         c.Fact2.SourceQuote,
+					CreatedAt:      c.Fact2.CreatedAt,
+					LastReinforced: c.Fact2.LastReinforced,
+				},
+			}
+		}
+
+		fmt.Printf("Resolving %d conflicts with LLM (model: %s)\n", len(pairs), provider.Name())
+		if dryRun {
+			fmt.Println("DRY RUN — no changes will be applied")
+		}
+		fmt.Println()
+
+		result, err := extract.ResolveConflictsLLM(ctx, provider, pairs, extract.ResolveOpts{
+			MinConfidence: 0.7,
+			DryRun:        dryRun,
+			Concurrency:   extract.DefaultResolveConcurrency,
+			BatchSize:     5,
+		})
+		if err != nil {
+			return fmt.Errorf("LLM resolution failed: %w", err)
+		}
+
+		// Apply resolutions (unless dry run)
+		applied := 0
+		if !dryRun {
+			sqlStore, ok := s.(*store.SQLiteStore)
+			if !ok {
+				return fmt.Errorf("resolve requires SQLite store")
+			}
+			for _, r := range result.Resolutions {
+				switch r.Action {
+				case "supersede":
+					if err := sqlStore.SupersedeFact(ctx, r.LoserID, r.WinnerID, r.Reason); err != nil {
+						fmt.Fprintf(os.Stderr, "  Warning: failed to supersede fact %d: %v\n", r.LoserID, err)
+						continue
+					}
+					_ = s.ReinforceFact(ctx, r.WinnerID)
+					applied++
+				case "merge":
+					if r.MergedFact != nil {
+						// Find memory ID from one of the original facts
+						var memID int64
+						if orig, err := s.GetFact(ctx, r.WinnerID); err == nil && orig != nil {
+							memID = orig.MemoryID
+						} else if orig, err := s.GetFact(ctx, r.LoserID); err == nil && orig != nil {
+							memID = orig.MemoryID
+						}
+						// Find memory ID from conflict pair facts
+						if memID == 0 {
+							for _, p := range pairs {
+								if p.Fact1.ID == r.WinnerID || p.Fact1.ID == r.LoserID {
+									if f, err := s.GetFact(ctx, p.Fact1.ID); err == nil && f != nil {
+										memID = f.MemoryID
+									}
+									break
+								}
+							}
+						}
+						newFact := &store.Fact{
+							MemoryID:   memID,
+							Subject:    r.MergedFact.Subject,
+							Predicate:  r.MergedFact.Predicate,
+							Object:     r.MergedFact.Object,
+							FactType:   r.MergedFact.FactType,
+							Confidence: r.Confidence,
+						}
+						newID, err := s.AddFact(ctx, newFact)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "  Warning: failed to create merged fact: %v\n", err)
+							continue
+						}
+						// Supersede both originals
+						for _, p := range pairs {
+							if p.Index == r.PairIndex {
+								_ = sqlStore.SupersedeFact(ctx, p.Fact1.ID, newID, "merged: "+r.Reason)
+								_ = sqlStore.SupersedeFact(ctx, p.Fact2.ID, newID, "merged: "+r.Reason)
+								break
+							}
+						}
+						applied++
+					}
+				}
+			}
+		}
+
+		// Output
+		if jsonOutput {
+			data, _ := json.MarshalIndent(result, "", "  ")
+			fmt.Println(string(data))
+			return nil
+		}
+
+		fmt.Printf("Results (%s, %s):\n", result.Model, result.Latency.Round(time.Millisecond))
+		fmt.Printf("  Total pairs:   %d\n", result.TotalPairs)
+		fmt.Printf("  Superseded:    %d\n", result.Superseded)
+		fmt.Printf("  Merged:        %d\n", result.Merged)
+		fmt.Printf("  Flagged:       %d (human review needed)\n", result.Flagged)
+		fmt.Printf("  Errors:        %d\n", result.Errors)
+		if !dryRun {
+			fmt.Printf("\n  ✅ Applied: %d resolutions\n", applied)
+		}
+
+		if verboseOutput || dryRun {
+			for _, r := range result.Resolutions {
+				icon := "⚔️"
+				switch r.Action {
+				case "supersede":
+					icon = "✂️"
+				case "merge":
+					icon = "🔗"
+				case "flag-human":
+					icon = "🚩"
+				}
+				fmt.Printf("\n  %s Pair %d: %s (conf: %.2f)\n", icon, r.PairIndex, r.Action, r.Confidence)
+				fmt.Printf("     %s\n", r.Reason)
+				if r.Action == "supersede" {
+					fmt.Printf("     Winner: %d, Loser: %d\n", r.WinnerID, r.LoserID)
+				}
+				if r.MergedFact != nil {
+					fmt.Printf("     Merged → %s | %s → %s\n", r.MergedFact.Subject, r.MergedFact.Predicate, r.MergedFact.Object)
+				}
+			}
+		}
+
+		return nil
+	}
+
+	// Auto-resolution with deterministic strategy
 	if resolveStrategy != "" {
 		strategy, err := observe.ParseStrategy(resolveStrategy)
 		if err != nil {
