@@ -66,6 +66,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "summarize":
+		if err := runSummarize(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "embed":
 		if err := runEmbed(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1514,6 +1519,232 @@ func runClassify(args []string) error {
 	}
 
 	return nil
+}
+
+func runSummarize(args []string) error {
+	llmFlag := ""
+	minClusterSize := extract.DefaultMinClusterSize
+	clusterID := int64(0)
+	dryRun := false
+	jsonOutput := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--llm" && i+1 < len(args):
+			i++
+			llmFlag = args[i]
+		case strings.HasPrefix(args[i], "--llm="):
+			llmFlag = strings.TrimPrefix(args[i], "--llm=")
+		case args[i] == "--min-cluster-size" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --min-cluster-size: %s", args[i])
+			}
+			minClusterSize = n
+		case args[i] == "--cluster" && i+1 < len(args):
+			i++
+			n, err := strconv.ParseInt(args[i], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid --cluster: %s", args[i])
+			}
+			clusterID = n
+		case args[i] == "--dry-run" || args[i] == "-n":
+			dryRun = true
+		case args[i] == "--json":
+			jsonOutput = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		}
+	}
+
+	if llmFlag == "" {
+		return fmt.Errorf("usage: cortex summarize --llm <provider/model> [--min-cluster-size N] [--cluster <id>] [--dry-run] [--json]")
+	}
+
+	// Create LLM provider
+	llmCfg, err := llm.ParseLLMFlag(llmFlag)
+	if err != nil {
+		return fmt.Errorf("parsing --llm: %w", err)
+	}
+	provider, err := llm.NewProvider(llmCfg)
+	if err != nil {
+		return fmt.Errorf("creating LLM provider: %w", err)
+	}
+
+	// Open store
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("summarize requires SQLite store")
+	}
+
+	ctx := context.Background()
+
+	// Get clusters
+	clusters, err := sqlStore.ListClusters(ctx)
+	if err != nil {
+		return fmt.Errorf("listing clusters: %w", err)
+	}
+
+	if len(clusters) == 0 {
+		fmt.Println("No clusters found. Run `cortex cluster --rebuild` first.")
+		return nil
+	}
+
+	// Build cluster inputs with facts
+	var clusterInputs []extract.ClusterInput
+	for _, c := range clusters {
+		if c.FactCount < minClusterSize {
+			continue
+		}
+		if clusterID > 0 && c.ID != clusterID {
+			continue
+		}
+
+		detail, err := sqlStore.GetClusterDetail(ctx, c.ID, 200)
+		if err != nil {
+			continue
+		}
+
+		facts := make([]extract.ClusterFactInput, 0, len(detail.Facts))
+		for _, f := range detail.Facts {
+			facts = append(facts, extract.ClusterFactInput{
+				ID:         f.ID,
+				Subject:    f.Subject,
+				Predicate:  f.Predicate,
+				Object:     f.Object,
+				FactType:   f.FactType,
+				Confidence: f.Confidence,
+			})
+		}
+
+		clusterInputs = append(clusterInputs, extract.ClusterInput{
+			ID:    c.ID,
+			Name:  c.Name,
+			Facts: facts,
+		})
+	}
+
+	if len(clusterInputs) == 0 {
+		fmt.Printf("No clusters meet the minimum size (%d facts).\n", minClusterSize)
+		return nil
+	}
+
+	totalFacts := 0
+	for _, ci := range clusterInputs {
+		totalFacts += len(ci.Facts)
+	}
+
+	fmt.Printf("Summarizing %d clusters (%d total facts, model: %s)\n", len(clusterInputs), totalFacts, provider.Name())
+	if dryRun {
+		fmt.Println("DRY RUN — no changes will be applied")
+	}
+	fmt.Println()
+
+	opts := extract.SummarizeOpts{
+		MinClusterSize: minClusterSize,
+		ClusterID:      clusterID,
+		DryRun:         dryRun,
+	}
+
+	result, err := extract.SummarizeClusters(ctx, provider, clusterInputs, opts)
+	if err != nil {
+		return fmt.Errorf("summarization failed: %w", err)
+	}
+
+	// Apply changes (unless dry run)
+	applied := 0
+	if !dryRun && len(result.Summaries) > 0 {
+		for _, summary := range result.Summaries {
+			// Create new summary facts
+			for _, sf := range summary.SummaryFacts {
+				// Find a memory ID from one of the replaced facts
+				var memoryID int64
+				if len(sf.Replaces) > 0 {
+					oldFact, err := s.GetFact(ctx, sf.Replaces[0])
+					if err == nil {
+						memoryID = oldFact.MemoryID
+					}
+				}
+
+				newFact := &store.Fact{
+					MemoryID:   memoryID,
+					Subject:    sf.Subject,
+					Predicate:  sf.Predicate,
+					Object:     sf.Object,
+					FactType:   sf.FactType,
+					Confidence: sf.Confidence,
+				}
+				if rate, ok := extract.DecayRates[sf.FactType]; ok {
+					newFact.DecayRate = rate
+				}
+
+				newFactID, err := s.AddFact(ctx, newFact)
+				if err != nil {
+					continue
+				}
+
+				// Supersede old facts
+				for _, oldID := range sf.Replaces {
+					_ = sqlStore.SupersedeFact(ctx, oldID, newFactID, sf.Reasoning)
+				}
+				applied++
+			}
+		}
+	}
+
+	// Output
+	if jsonOutput {
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+
+	fmt.Printf("Results (%s, %s):\n", result.Model, result.Latency.Round(time.Millisecond))
+	fmt.Printf("  Clusters processed: %d\n", len(result.Summaries))
+	fmt.Printf("  Total original:     %d facts\n", result.TotalOriginal)
+	fmt.Printf("  Total after:        %d facts\n", result.TotalNew)
+	fmt.Printf("  Superseded:         %d facts\n", result.TotalSupersede)
+	if result.TotalOriginal > 0 {
+		fmt.Printf("  Compression:        %.1fx\n", float64(result.TotalOriginal)/float64(max(result.TotalNew, 1)))
+	}
+
+	for _, s := range result.Summaries {
+		fmt.Printf("\n  📦 %s (cluster #%d):\n", s.ClusterName, s.ClusterID)
+		fmt.Printf("     %d → %d facts (%.1fx compression)\n", s.OriginalCount, s.NewCount, s.Compression)
+		if s.Reasoning != "" {
+			fmt.Printf("     Reason: %s\n", s.Reasoning)
+		}
+		if dryRun && len(s.SummaryFacts) > 0 {
+			showCount := len(s.SummaryFacts)
+			if showCount > 5 {
+				showCount = 5
+			}
+			for _, sf := range s.SummaryFacts[:showCount] {
+				fmt.Printf("     → %s | %s → %s (replaces %d facts)\n",
+					sf.Subject, sf.Predicate, truncStr(sf.Object, 50), len(sf.Replaces))
+			}
+		}
+	}
+
+	if !dryRun {
+		fmt.Printf("\n  ✅ Applied: %d summary facts created, %d originals superseded\n", applied, result.TotalSupersede)
+	}
+
+	return nil
+}
+
+func truncStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 func runList(args []string) error {
