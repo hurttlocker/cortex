@@ -1350,6 +1350,7 @@ func runExtract(args []string) error {
 func runClassify(args []string) error {
 	llmFlag := ""
 	batchSize := extract.DefaultClassifyBatchSize
+	concurrency := extract.DefaultClassifyConcurrency
 	limit := 0
 	dryRun := false
 	jsonOutput := false
@@ -1368,6 +1369,13 @@ func runClassify(args []string) error {
 				return fmt.Errorf("invalid --batch-size: %s", args[i])
 			}
 			batchSize = n
+		case args[i] == "--concurrency" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --concurrency: %s", args[i])
+			}
+			concurrency = n
 		case args[i] == "--limit" && i+1 < len(args):
 			i++
 			n, err := strconv.Atoi(args[i])
@@ -1429,8 +1437,8 @@ func runClassify(args []string) error {
 		facts = facts[:limit]
 	}
 
-	fmt.Printf("Found %d kv-type facts to classify (batch size: %d, model: %s)\n",
-		len(facts), batchSize, provider.Name())
+	fmt.Printf("Found %d kv-type facts to classify (batch size: %d, concurrency: %d, model: %s)\n",
+		len(facts), batchSize, concurrency, provider.Name())
 	if dryRun {
 		fmt.Println("DRY RUN — no changes will be applied")
 	}
@@ -1454,6 +1462,7 @@ func runClassify(args []string) error {
 		MinConfidence: 0.8,
 		Limit:         limit,
 		DryRun:        dryRun,
+		Concurrency:   concurrency,
 	}
 
 	result, err := extract.ClassifyFacts(ctx, provider, classifyFacts, opts)

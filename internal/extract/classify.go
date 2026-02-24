@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/llm"
@@ -31,6 +32,10 @@ const (
 	// DefaultClassifyModel is the recommended model for classification (best quality/cost balance).
 	// Benchmarked Feb 2026: DeepSeek V3.2 reclassified 38/50 (76%), 0 errors, 34s, $0.25/$0.40/M.
 	DefaultClassifyModel = "openrouter/deepseek/deepseek-v3.2"
+
+	// DefaultClassifyConcurrency is the number of parallel LLM batch requests.
+	// 5 keeps us well within OpenRouter rate limits while cutting wall-time ~5x.
+	DefaultClassifyConcurrency = 5
 )
 
 const classifySystemPrompt = `You are a fact classification system for a personal knowledge base. Each fact has a subject, predicate, and object. Your job is to assign the most accurate TYPE to each fact.
@@ -83,10 +88,11 @@ type ClassifyResult struct {
 
 // ClassifyOpts configures the classification run.
 type ClassifyOpts struct {
-	BatchSize     int     // Facts per LLM batch (default: 50)
+	BatchSize     int     // Facts per LLM batch (default: 10)
 	MinConfidence float64 // Min confidence to apply reclassification (default: 0.8)
 	Limit         int     // Max facts to process (0 = all)
 	DryRun        bool    // Show changes without applying
+	Concurrency   int     // Parallel LLM batch requests (default: 5)
 }
 
 // DefaultClassifyOpts returns sensible defaults.
@@ -134,6 +140,10 @@ func ClassifyFacts(ctx context.Context, provider llm.Provider, facts []Classifya
 	if opts.MinConfidence <= 0 {
 		opts.MinConfidence = classifyMinConfidence
 	}
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = DefaultClassifyConcurrency
+	}
 
 	start := time.Now()
 	result := &ClassifyResult{
@@ -141,71 +151,93 @@ func ClassifyFacts(ctx context.Context, provider llm.Provider, facts []Classifya
 		Model:      provider.Name(),
 	}
 
-	// Process in batches
+	// Build batch slices
+	var batches [][]ClassifyableFact
 	for i := 0; i < len(facts); i += opts.BatchSize {
 		end := i + opts.BatchSize
 		if end > len(facts) {
 			end = len(facts)
 		}
-		batch := facts[i:end]
-
-		classifications, err := classifyBatch(ctx, provider, batch)
-		if err != nil {
-			result.Errors += len(batch)
-			continue
-		}
-
-		result.BatchCount++
-
-		// Build lookup for this batch
-		factMap := make(map[int64]*ClassifyableFact, len(batch))
-		for idx := range batch {
-			factMap[batch[idx].ID] = &batch[idx]
-		}
-
-		for _, c := range classifications {
-			original, ok := factMap[c.ID]
-			if !ok {
-				continue // LLM returned an ID not in the batch
-			}
-
-			// Skip if type didn't change
-			if c.FactType == original.FactType {
-				result.Unchanged++
-				continue
-			}
-
-			// Skip invalid types
-			if !isValidFactType(c.FactType) {
-				result.Errors++
-				continue
-			}
-
-			// Skip low confidence
-			if c.Confidence < opts.MinConfidence {
-				result.Unchanged++
-				continue
-			}
-
-			result.Classified = append(result.Classified, FactClassification{
-				FactID:     c.ID,
-				OldType:    original.FactType,
-				NewType:    c.FactType,
-				Confidence: c.Confidence,
-			})
-		}
-
-		// Facts in batch not returned by LLM
-		returned := make(map[int64]bool, len(classifications))
-		for _, c := range classifications {
-			returned[c.ID] = true
-		}
-		for _, f := range batch {
-			if !returned[f.ID] {
-				result.Unchanged++
-			}
-		}
+		batches = append(batches, facts[i:end])
 	}
+
+	// Process batches concurrently with semaphore
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, concurrency)
+
+	for _, batch := range batches {
+		wg.Add(1)
+		sem <- struct{}{} // acquire semaphore slot
+
+		go func(batch []ClassifyableFact) {
+			defer wg.Done()
+			defer func() { <-sem }() // release semaphore slot
+
+			classifications, err := classifyBatch(ctx, provider, batch)
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if err != nil {
+				result.Errors += len(batch)
+				return
+			}
+
+			result.BatchCount++
+
+			// Build lookup for this batch
+			factMap := make(map[int64]*ClassifyableFact, len(batch))
+			for idx := range batch {
+				factMap[batch[idx].ID] = &batch[idx]
+			}
+
+			for _, c := range classifications {
+				original, ok := factMap[c.ID]
+				if !ok {
+					continue // LLM returned an ID not in the batch
+				}
+
+				// Skip if type didn't change
+				if c.FactType == original.FactType {
+					result.Unchanged++
+					continue
+				}
+
+				// Skip invalid types
+				if !isValidFactType(c.FactType) {
+					result.Errors++
+					continue
+				}
+
+				// Skip low confidence
+				if c.Confidence < opts.MinConfidence {
+					result.Unchanged++
+					continue
+				}
+
+				result.Classified = append(result.Classified, FactClassification{
+					FactID:     c.ID,
+					OldType:    original.FactType,
+					NewType:    c.FactType,
+					Confidence: c.Confidence,
+				})
+			}
+
+			// Facts in batch not returned by LLM
+			returned := make(map[int64]bool, len(classifications))
+			for _, c := range classifications {
+				returned[c.ID] = true
+			}
+			for _, f := range batch {
+				if !returned[f.ID] {
+					result.Unchanged++
+				}
+			}
+		}(batch)
+	}
+
+	wg.Wait()
 
 	result.Latency = time.Since(start)
 	return result, nil
