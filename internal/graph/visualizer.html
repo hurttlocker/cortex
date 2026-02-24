@@ -405,6 +405,55 @@
     border-top-color: var(--accent); border-radius: 50%;
     animation: spin 0.8s linear infinite; margin: 0 auto 12px;
   }
+  .timeline-canvas {
+    position: absolute;
+    inset: 0;
+    display: none;
+    z-index: 4;
+    pointer-events: auto;
+  }
+  .timeline-tooltip {
+    position: absolute;
+    pointer-events: none;
+    min-width: 220px;
+    max-width: 360px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(82, 82, 91, 0.8);
+    background: rgba(10, 10, 12, 0.95);
+    color: #f4f4f5;
+    font-size: 12px;
+    line-height: 1.45;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+    display: none;
+    z-index: 30;
+    transform: translate(10px, -8px);
+  }
+  .timeline-tooltip .tt-sub {
+    color: #a1a1aa;
+    font-size: 11px;
+    margin-top: 4px;
+  }
+  .timeline-axes text,
+  .timeline-lanes text {
+    fill: #a1a1aa;
+    font-size: 11px;
+  }
+  .timeline-lanes line {
+    stroke: rgba(63, 63, 70, 0.55);
+  }
+  .timeline-grid line {
+    stroke: rgba(63, 63, 70, 0.35);
+  }
+  .timeline-transition {
+    fill: none;
+    opacity: 0.9;
+  }
+  .timeline-node {
+    cursor: pointer;
+    stroke: rgba(9, 9, 11, 0.9);
+    stroke-width: 1.4px;
+  }
   @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
@@ -427,6 +476,7 @@
         <button class="btn btn-ghost" id="modeFactBtn" onclick="switchToFact()">Fact</button>
         <button class="btn btn-ghost" id="modeSubjectBtn" onclick="switchToSubject()">Subject</button>
         <button class="btn btn-ghost" id="modeImpactBtn" onclick="switchToImpact()">Impact</button>
+        <button class="btn btn-ghost" id="modeTimelineBtn" onclick="switchToTimeline()">Timeline</button>
       </div>
       <div class="mode-note" id="modeNote">Cluster mode shows high-value subject groups across your graph.</div>
     </div>
@@ -459,6 +509,36 @@
       <div style="display:flex;gap:6px;margin-top:8px">
         <button class="btn btn-primary" style="flex:1" onclick="loadGraph()">Load Graph</button>
         <button class="btn btn-ghost" style="flex:1" onclick="loadCluster()">Explore Clusters</button>
+      </div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="section-title">Timeline</div>
+    <div class="filter-group">
+      <label for="timelineSubject">Subject</label>
+      <div class="input-row" style="margin-bottom:8px">
+        <input type="text" id="timelineSubject" name="timeline_subject" aria-label="Timeline subject" placeholder="e.g. trading" />
+      </div>
+      <label for="timelineFrom">Date Range</label>
+      <div class="input-row" style="margin-bottom:8px">
+        <input type="date" id="timelineFrom" aria-label="Timeline from date" />
+        <input type="date" id="timelineTo" aria-label="Timeline to date" />
+      </div>
+      <label for="timelineBucket">Bucket</label>
+      <div class="input-row" style="margin-bottom:8px">
+        <select id="timelineBucket" aria-label="Timeline bucket">
+          <option value="day">Day</option>
+          <option value="week">Week</option>
+          <option value="month">Month</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-primary btn-full" onclick="loadTimeline()">Load Timeline</button>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--muted)">
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="timelineShowTransitions" checked /> Transitions</label>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="timelineShowTrend" checked /> Confidence Trend</label>
+        <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="timelineShowRelated" checked /> Related Lanes</label>
       </div>
     </div>
 
@@ -523,6 +603,9 @@
   <!-- Graph -->
   <div class="canvas" id="graphCanvas">
     <div id="graph2DContainer" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:2"></div>
+    <div id="timelineContainer" class="timeline-canvas">
+      <div id="timelineTooltip" class="timeline-tooltip"></div>
+    </div>
     <div class="label-layer" id="labelLayer"></div>
     <!-- DB Health Banner -->
     <div id="dbBanner" style="position:absolute;top:12px;left:12px;z-index:20;display:flex;gap:10px;flex-wrap:wrap;">
@@ -565,6 +648,7 @@
 </div>
 
 <script src="https://unpkg.com/force-graph"></script>
+<script src="https://d3js.org/d3.v7.min.js"></script>
 <script>
 const CLUSTER_LIMIT = 150;
 const CLUSTER_DETAIL_LIMIT = 900;
@@ -606,12 +690,21 @@ const MODE_NOTES = {
   cluster: 'Cluster mode shows precomputed topic communities with cohesion scores and drill-down.',
   fact: 'Fact mode expands from one fact ID using inferred or stored relationship edges.',
   subject: 'Subject mode isolates facts for one subject to review its local context.',
-  impact: 'Impact mode shows blast radius grouped by relationship and confidence heat.'
+  impact: 'Impact mode shows blast radius grouped by relationship and confidence heat.',
+  timeline: 'Timeline mode maps how knowledge about a subject evolves through time.'
+};
+const TIMELINE_TRANSITION_STYLE = {
+  superseded: { color: '#ef4444', dash: '7,5' },
+  refined: { color: '#10b981', dash: '' },
+  decayed: { color: '#9ca3af', dash: '2,6' },
+  expanded: { color: '#3b82f6', dash: '' },
+  contradicted: { color: '#f43f5e', dash: '5,3' }
 };
 
 let Graph = null;
 let Graph2D = null;
 let graphData = null;
+let timelineData = null;
 let selectedNode = null;
 let searchDebounce = null;
 let autoFitPending = false;
@@ -622,9 +715,14 @@ let clusterCatalog = [];
 let clusterSummary = { total_facts: 0, unclustered_count: 0 };
 let activeClusterId = null;
 let impactData = null;
+let timelineRenderedNodes = [];
 const HELP_2D = `
   <kbd>Drag node</kbd> Reposition &nbsp; <kbd>Drag canvas</kbd> Pan &nbsp; <kbd>Scroll</kbd> Zoom<br>
   <kbd>Click</kbd> Select node &nbsp; <kbd>Double-click</kbd> Focus subject &nbsp; <kbd>Hover</kbd> Tooltip
+`;
+const HELP_TIMELINE = `
+  <kbd>Drag</kbd> Pan timeline &nbsp; <kbd>Scroll</kbd> Zoom time axis<br>
+  <kbd>Click node</kbd> Inspect fact &nbsp; <kbd>Hover</kbd> Fact tooltip
 `;
 
 function truncate(s, n) {
@@ -689,15 +787,18 @@ function edgeColorForType(type) {
 
 function setViewMode(mode) {
   currentViewMode = mode;
-  const ids = ['modeClusterBtn', 'modeFactBtn', 'modeSubjectBtn', 'modeImpactBtn'];
+  const ids = ['modeClusterBtn', 'modeFactBtn', 'modeSubjectBtn', 'modeImpactBtn', 'modeTimelineBtn'];
   ids.forEach(id => document.getElementById(id).classList.remove('active'));
   if (mode === 'fact') document.getElementById('modeFactBtn').classList.add('active');
   else if (mode === 'subject') document.getElementById('modeSubjectBtn').classList.add('active');
   else if (mode === 'impact') document.getElementById('modeImpactBtn').classList.add('active');
+  else if (mode === 'timeline') document.getElementById('modeTimelineBtn').classList.add('active');
   else document.getElementById('modeClusterBtn').classList.add('active');
   document.getElementById('modeNote').textContent = MODE_NOTES[mode] || MODE_NOTES.cluster;
   document.getElementById('impactSectionTitle').style.display = mode === 'impact' ? 'block' : 'none';
   document.getElementById('impactPanel').style.display = mode === 'impact' ? 'block' : 'none';
+  if (mode === 'timeline') setTimelineSpace();
+  else setGraphSpace();
 }
 
 function setModeNoteTemporary(message) {
@@ -747,15 +848,17 @@ function renderClusterSidebar() {
 
 function updateControlsHelp() {
   const help = document.getElementById('controlsHelp');
-  help.innerHTML = HELP_2D;
+  help.innerHTML = currentViewMode === 'timeline' ? HELP_TIMELINE : HELP_2D;
 }
 
 function setGraphSpace() {
   const container2D = document.getElementById('graph2DContainer');
+  const timelineContainer = document.getElementById('timelineContainer');
   const outer = document.getElementById('graphCanvas');
   const w = outer.clientWidth || window.innerWidth - 340;
   const h = outer.clientHeight || window.innerHeight;
 
+  timelineContainer.style.display = 'none';
   container2D.style.display = 'block';
   container2D.style.visibility = 'visible';
   container2D.style.opacity = '1';
@@ -772,6 +875,37 @@ function setGraphSpace() {
     renderGraph();
     const q = document.getElementById('searchInput').value.trim();
     if (q) highlightSearch(q);
+  }
+}
+
+function setTimelineSpace() {
+  const container2D = document.getElementById('graph2DContainer');
+  const timelineContainer = document.getElementById('timelineContainer');
+  container2D.style.display = 'none';
+  container2D.style.visibility = 'hidden';
+  container2D.style.opacity = '0';
+  container2D.style.pointerEvents = 'none';
+  timelineContainer.style.display = 'block';
+  document.getElementById('labelLayer').style.display = 'none';
+  updateControlsHelp();
+}
+
+function todayISODate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function shiftISODate(days) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function setTimelineDefaults() {
+  if (!document.getElementById('timelineFrom').value) {
+    document.getElementById('timelineFrom').value = shiftISODate(-30);
+  }
+  if (!document.getElementById('timelineTo').value) {
+    document.getElementById('timelineTo').value = todayISODate();
   }
 }
 
@@ -812,6 +946,17 @@ function switchToImpact() {
     return;
   }
   loadImpact(subject);
+}
+
+function switchToTimeline() {
+  let subject = document.getElementById('timelineSubject').value.trim();
+  if (!subject && selectedNode && selectedNode.subject) subject = selectedNode.subject;
+  if (!subject) subject = document.getElementById('searchInput').value.trim();
+  if (!subject) {
+    setModeNoteTemporary('Type a timeline subject or select a node first.');
+    return;
+  }
+  loadTimeline(subject);
 }
 
 function setQualityStatus(status) {
@@ -1043,6 +1188,7 @@ function showLoading(message) {
   document.getElementById('controlsHelp').style.display = 'none';
   document.getElementById('statsBar').style.display = 'none';
   document.getElementById('labelLayer').innerHTML = '';
+  document.getElementById('timelineTooltip').style.display = 'none';
   setQualityStatus(message || 'Loading graph...');
 }
 
@@ -1054,6 +1200,7 @@ function showEmpty(title, subtitle) {
   document.getElementById('controlsHelp').style.display = 'none';
   document.getElementById('statsBar').style.display = 'none';
   document.getElementById('labelLayer').innerHTML = '';
+  document.getElementById('timelineTooltip').style.display = 'none';
   setQualityStatus(title || 'No graph data');
 }
 
@@ -1126,6 +1273,7 @@ function initGraph() {
     const nw = outer.clientWidth || window.innerWidth - 340;
     const nh = outer.clientHeight || window.innerHeight;
     if (Graph2D) Graph2D.width(nw).height(nh);
+    if (currentViewMode === 'timeline' && timelineData) renderTimeline();
   });
 }
 
@@ -1332,9 +1480,408 @@ async function loadImpact(subject) {
   } catch (err) {
     showEmpty('Error', err.message);
   }
+function parseISODateUTC(raw) {
+  const value = (raw || '').trim();
+  if (!value) return null;
+  const d = new Date(`${value}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  return d;
+}
+
+function updateTimelineQualityPanel(payload, facts, transitions, lanes) {
+  const panel = document.getElementById('qualityPanel');
+  const range = payload?.range || {};
+  panel.innerHTML = `
+    <div class="quality-row"><span class="quality-key">View</span><span class="quality-val">timeline</span></div>
+    <div class="quality-row"><span class="quality-key">Subject</span><span class="quality-val">${esc(payload?.subject || '—')}</span></div>
+    <div class="quality-row"><span class="quality-key">Range</span><span class="quality-val">${esc((range.from || '—') + ' → ' + (range.to || '—'))}</span></div>
+    <div class="quality-row"><span class="quality-key">Bucket</span><span class="quality-val">${esc(payload?.bucket || 'day')}</span></div>
+    <div class="quality-row"><span class="quality-key">Buckets</span><span class="quality-val">${(payload?.buckets || []).length}</span></div>
+    <div class="quality-row"><span class="quality-key">Facts</span><span class="quality-val">${facts.length}</span></div>
+    <div class="quality-row"><span class="quality-key">Transitions</span><span class="quality-val">${transitions.length}</span></div>
+    <div class="quality-row"><span class="quality-key">Lanes</span><span class="quality-val">${lanes.length}</span></div>
+  `;
+}
+
+function showTimelineTooltip(event, fact) {
+  const tooltip = document.getElementById('timelineTooltip');
+  const canvasRect = document.getElementById('graphCanvas').getBoundingClientRect();
+  tooltip.style.display = 'block';
+  tooltip.style.left = `${event.clientX - canvasRect.left}px`;
+  tooltip.style.top = `${event.clientY - canvasRect.top}px`;
+  tooltip.innerHTML = `
+    <div><b>#${fact.id}</b> ${esc(fact.subject)}</div>
+    <div>${esc(fact.predicate)}: ${esc(truncate(fact.object, 140))}</div>
+    <div class="tt-sub">Confidence ${(Number(fact.confidence || 0) * 100).toFixed(1)}% • ${esc(fact.bucketDate)} • ${esc(fact.source || 'unknown source')}</div>
+  `;
+}
+
+function hideTimelineTooltip() {
+  document.getElementById('timelineTooltip').style.display = 'none';
+}
+
+async function loadTimeline(subject) {
+  let value = (subject || '').trim();
+  if (!value) value = document.getElementById('timelineSubject').value.trim();
+  if (!value && selectedNode && selectedNode.subject) value = selectedNode.subject;
+  if (!value) {
+    setModeNoteTemporary('Enter a timeline subject first.');
+    return;
+  }
+
+  setTimelineDefaults();
+  const from = document.getElementById('timelineFrom').value;
+  const to = document.getElementById('timelineTo').value;
+  const bucket = document.getElementById('timelineBucket').value || 'day';
+  const includeRelated = document.getElementById('timelineShowRelated').checked;
+  const minConf = parseInt(document.getElementById('confSlider').value, 10) / 100;
+
+  document.getElementById('timelineSubject').value = value;
+  document.getElementById('searchInput').value = value;
+  setViewMode('timeline');
+  hideBrowseResults();
+  showLoading(`Loading timeline: ${value}`);
+
+  const qs = new URLSearchParams({
+    subject: value,
+    bucket,
+    min_confidence: String(minConf),
+    related: includeRelated ? 'true' : 'false'
+  });
+  if (from) qs.set('from', from);
+  if (to) qs.set('to', to);
+
+  try {
+    const resp = await fetch(`/api/timeline?${qs.toString()}`);
+    if (!resp.ok) {
+      let msg = `HTTP ${resp.status}`;
+      try {
+        const body = await resp.json();
+        if (body?.error) msg = body.error;
+      } catch (_) {}
+      throw new Error(msg);
+    }
+    timelineData = await resp.json();
+    graphData = null;
+    selectedNode = null;
+    renderTimeline();
+  } catch (err) {
+    showEmpty('Timeline Error', err.message || 'Failed to load timeline');
+  }
+}
+
+function renderTimeline() {
+  if (currentViewMode !== 'timeline') return;
+  if (!timelineData || !Array.isArray(timelineData.buckets) || timelineData.buckets.length === 0) {
+    showEmpty('No timeline data', 'No facts found in this date range for the selected subject.');
+    return;
+  }
+
+  const container = document.getElementById('timelineContainer');
+  const outer = document.getElementById('graphCanvas');
+  const width = outer.clientWidth || window.innerWidth - 340;
+  const height = outer.clientHeight || window.innerHeight;
+  const showTransitions = document.getElementById('timelineShowTransitions').checked;
+  const showTrend = document.getElementById('timelineShowTrend').checked;
+  const showRelatedLanes = document.getElementById('timelineShowRelated').checked;
+  hideTimelineTooltip();
+  d3.select(container).selectAll('svg').remove();
+
+  const margin = { top: 20, right: 36, bottom: 58, left: 150 };
+  const trendBand = showTrend ? 78 : 0;
+  const laneTop = margin.top + trendBand + 12;
+  const laneBottom = height - margin.bottom - 6;
+
+  const mainLower = String(timelineData.subject || '').toLowerCase();
+  const facts = [];
+  for (const bucket of timelineData.buckets || []) {
+    const date = parseISODateUTC(bucket.date);
+    if (!date) continue;
+    for (const fact of bucket.facts || []) {
+      facts.push({
+        id: fact.id,
+        subject: fact.subject || '',
+        predicate: fact.predicate || '',
+        object: fact.object || '',
+        confidence: Number(fact.confidence || 0),
+        source: fact.source || '',
+        bucketDate: bucket.date,
+        bucketFactCount: Number(bucket.fact_count || 1),
+        date
+      });
+    }
+  }
+
+  const displayFacts = facts.filter(f => showRelatedLanes || String(f.subject).toLowerCase() === mainLower);
+  if (displayFacts.length === 0) {
+    showEmpty('No timeline data', 'No facts match the current related-lane filter.');
+    return;
+  }
+
+  const relatedSubjects = Array.from(new Set(
+    displayFacts
+      .map(f => f.subject)
+      .filter(s => String(s).toLowerCase() !== mainLower)
+  )).sort((a, b) => a.localeCompare(b));
+  const lanes = [timelineData.subject, ...relatedSubjects];
+  const laneKeyToName = new Map(lanes.map(s => [String(s).toLowerCase(), s]));
+
+  const minDate = parseISODateUTC(timelineData?.range?.from) || d3.min(displayFacts, d => d.date);
+  const maxDate = parseISODateUTC(timelineData?.range?.to) || d3.max(displayFacts, d => d.date);
+  if (!minDate || !maxDate) {
+    showEmpty('No timeline data', 'Unable to parse timeline date range.');
+    return;
+  }
+  const domainStart = minDate;
+  const domainEnd = minDate.getTime() === maxDate.getTime()
+    ? new Date(maxDate.getTime() + 24 * 60 * 60 * 1000)
+    : maxDate;
+
+  const x = d3.scaleTime()
+    .domain([domainStart, domainEnd])
+    .range([margin.left, width - margin.right]);
+  const y = d3.scalePoint()
+    .domain(lanes)
+    .range([laneTop, laneBottom])
+    .padding(0.75);
+
+  const groupByLaneDate = d3.group(displayFacts, d => `${String(d.subject).toLowerCase()}|${d.bucketDate}`);
+  for (const grouped of groupByLaneDate.values()) {
+    grouped.sort((a, b) => b.confidence - a.confidence);
+    const laneName = laneKeyToName.get(String(grouped[0].subject).toLowerCase()) || timelineData.subject;
+    const centerY = y(laneName);
+    const spread = Math.min(16, 54 / Math.max(1, grouped.length));
+    grouped.forEach((d, idx) => {
+      d.plotY = centerY + (idx - (grouped.length - 1) / 2) * spread;
+      d.radius = 4 + Math.min(12, Math.max(1, d.bucketFactCount) * 1.35);
+    });
+  }
+  timelineRenderedNodes = displayFacts.slice();
+
+  const confColor = d3.scaleLinear()
+    .domain([0, 0.5, 1])
+    .range(['#ef4444', '#f59e0b', '#10b981'])
+    .clamp(true);
+
+  const svg = d3.select(container)
+    .append('svg')
+    .attr('width', width)
+    .attr('height', height);
+
+  let tickEvery = d3.timeDay.every(1);
+  let tickFormat = d3.timeFormat('%b %d');
+  if (timelineData.bucket === 'week') {
+    tickEvery = d3.timeWeek.every(1);
+    tickFormat = d3.timeFormat('%b %d');
+  } else if (timelineData.bucket === 'month') {
+    tickEvery = d3.timeMonth.every(1);
+    tickFormat = d3.timeFormat('%b %Y');
+  }
+
+  const gridHeight = Math.max(0, laneBottom - laneTop);
+  const xAxis = d3.axisBottom(x).ticks(tickEvery).tickFormat(tickFormat);
+  const xGrid = d3.axisBottom(x).ticks(tickEvery).tickSize(-gridHeight).tickFormat('');
+  const axisY = height - margin.bottom;
+  const gridY = laneBottom;
+
+  const grid = svg.append('g')
+    .attr('class', 'timeline-grid')
+    .attr('transform', `translate(0,${gridY})`)
+    .call(xGrid);
+  grid.select('.domain').remove();
+
+  svg.append('g')
+    .attr('class', 'timeline-lanes')
+    .selectAll('line')
+    .data(lanes)
+    .join('line')
+    .attr('x1', margin.left)
+    .attr('x2', width - margin.right)
+    .attr('y1', d => y(d))
+    .attr('y2', d => y(d))
+    .attr('stroke-width', d => String(d).toLowerCase() === mainLower ? 1.5 : 1);
+
+  svg.append('g')
+    .attr('class', 'timeline-lanes')
+    .selectAll('text')
+    .data(lanes)
+    .join('text')
+    .attr('x', margin.left - 12)
+    .attr('y', d => y(d))
+    .attr('text-anchor', 'end')
+    .attr('alignment-baseline', 'middle')
+    .attr('fill', d => String(d).toLowerCase() === mainLower ? '#f4f4f5' : '#a1a1aa')
+    .text(d => d);
+
+  const axis = svg.append('g')
+    .attr('class', 'timeline-axes')
+    .attr('transform', `translate(0,${axisY})`)
+    .call(xAxis);
+  axis.select('.domain').attr('stroke', '#52525b');
+  axis.selectAll('line').attr('stroke', '#52525b');
+
+  const defs = svg.append('defs');
+  Object.entries(TIMELINE_TRANSITION_STYLE).forEach(([type, style]) => {
+    const marker = defs.append('marker')
+      .attr('id', `timeline-arrow-${type}`)
+      .attr('viewBox', '0 -4 8 8')
+      .attr('refX', 7)
+      .attr('refY', 0)
+      .attr('markerWidth', 6)
+      .attr('markerHeight', 6)
+      .attr('orient', 'auto');
+    marker.append('path')
+      .attr('d', 'M0,-4L8,0L0,4')
+      .attr('fill', style.color);
+  });
+
+  const factByID = new Map(displayFacts.map(d => [Number(d.id), d]));
+  let transitionRows = (timelineData.transitions || []).slice();
+  if (!showRelatedLanes) {
+    transitionRows = transitionRows.filter(tr => tr.type !== 'expanded');
+  }
+
+  const transitionPoint = (dateStr, factID, zx) => {
+    const id = Number(factID || 0);
+    if (id > 0 && factByID.has(id)) {
+      const fact = factByID.get(id);
+      return { x: zx(fact.date), y: fact.plotY };
+    }
+    const date = parseISODateUTC(dateStr);
+    if (!date) return null;
+    return { x: zx(date), y: y(timelineData.subject) };
+  };
+
+  const transitionPath = (tr, zx) => {
+    const from = transitionPoint(tr.from_date, tr.from_fact, zx);
+    const to = transitionPoint(tr.to_date, tr.to_fact, zx);
+    if (!from || !to) return null;
+    const bend = Math.max(24, Math.abs(to.x - from.x) * 0.28);
+    return `M${from.x},${from.y} C${from.x + bend},${from.y} ${to.x - bend},${to.y} ${to.x},${to.y}`;
+  };
+
+  const transitionLayer = svg.append('g');
+  let transitionSel = transitionLayer.selectAll('path');
+  if (showTransitions) {
+    transitionSel = transitionLayer.selectAll('path')
+      .data(transitionRows)
+      .join('path')
+      .attr('class', 'timeline-transition')
+      .attr('stroke', d => TIMELINE_TRANSITION_STYLE[d.type]?.color || '#71717a')
+      .attr('stroke-dasharray', d => TIMELINE_TRANSITION_STYLE[d.type]?.dash || '')
+      .attr('stroke-width', d => d.type === 'expanded' ? 1.8 : 2.2)
+      .attr('marker-end', d => `url(#timeline-arrow-${d.type in TIMELINE_TRANSITION_STYLE ? d.type : 'expanded'})`)
+      .attr('d', d => transitionPath(d, x))
+      .append('title')
+      .text(d => `${d.type}: ${d.description || ''}`);
+  }
+
+  const nodeLayer = svg.append('g');
+  const nodeSel = nodeLayer.selectAll('circle')
+    .data(displayFacts)
+    .join('circle')
+    .attr('class', 'timeline-node')
+    .attr('cx', d => x(d.date))
+    .attr('cy', d => d.plotY)
+    .attr('r', d => d.radius)
+    .attr('fill', d => confColor(d.confidence))
+    .attr('stroke', d => selectedNode && selectedNode.id === d.id ? '#ffffff' : 'rgba(9,9,11,0.9)')
+    .attr('stroke-width', d => selectedNode && selectedNode.id === d.id ? 2.4 : 1.2)
+    .on('mousemove', (event, d) => showTimelineTooltip(event, d))
+    .on('mouseleave', hideTimelineTooltip)
+    .on('click', (event, d) => {
+      selectedNode = d;
+      showDetail(d);
+      nodeSel.attr('stroke', n => selectedNode && selectedNode.id === n.id ? '#ffffff' : 'rgba(9,9,11,0.9)')
+        .attr('stroke-width', n => selectedNode && selectedNode.id === n.id ? 2.4 : 1.2);
+      showTimelineTooltip(event, d);
+    });
+
+  const trendPoints = (timelineData.confidence_trend || [])
+    .map(p => ({ date: parseISODateUTC(p.date), avg: Number(p.avg || 0), raw: p }))
+    .filter(p => p.date);
+
+  let trendPathSel = null;
+  let trendDotsSel = null;
+  if (showTrend && trendPoints.length > 0) {
+    const yTrend = d3.scaleLinear().domain([0, 1]).range([margin.top + 64, margin.top + 6]);
+    const line = d3.line()
+      .curve(d3.curveMonotoneX)
+      .x(d => x(d.date))
+      .y(d => yTrend(d.avg));
+
+    trendPathSel = svg.append('path')
+      .datum(trendPoints)
+      .attr('fill', 'none')
+      .attr('stroke', '#22c55e')
+      .attr('stroke-width', 2)
+      .attr('opacity', 0.9)
+      .attr('d', line);
+
+    const trendDotsLayer = svg.append('g');
+    trendDotsSel = trendDotsLayer
+      .selectAll('circle')
+      .data(trendPoints)
+      .join('circle')
+      .attr('cx', d => x(d.date))
+      .attr('cy', d => yTrend(d.avg))
+      .attr('r', 3.5)
+      .attr('fill', '#22c55e');
+    trendDotsSel.append('title')
+      .text(d => `${d.raw.date}: ${(d.avg * 100).toFixed(1)}%`);
+
+    svg.append('text')
+      .attr('x', margin.left)
+      .attr('y', margin.top + 2)
+      .attr('fill', '#86efac')
+      .attr('font-size', 11)
+      .text('Confidence Trend');
+  }
+
+  const zoomed = event => {
+    const zx = event.transform.rescaleX(x);
+    axis.call(d3.axisBottom(zx).ticks(tickEvery).tickFormat(tickFormat));
+    axis.select('.domain').attr('stroke', '#52525b');
+    axis.selectAll('line').attr('stroke', '#52525b');
+    grid.call(d3.axisBottom(zx).ticks(tickEvery).tickSize(-gridHeight).tickFormat(''));
+    grid.select('.domain').remove();
+    nodeSel.attr('cx', d => zx(d.date));
+    if (showTransitions) {
+      transitionLayer.selectAll('path.timeline-transition')
+        .attr('d', d => transitionPath(d, zx));
+    }
+    if (showTrend && trendPoints.length > 0) {
+      const yTrend = d3.scaleLinear().domain([0, 1]).range([margin.top + 64, margin.top + 6]);
+      const zoomLine = d3.line()
+        .curve(d3.curveMonotoneX)
+        .x(d => zx(d.date))
+        .y(d => yTrend(d.avg));
+      if (trendPathSel) trendPathSel.attr('d', zoomLine);
+      if (trendDotsSel) trendDotsSel.attr('cx', d => zx(d.date));
+    }
+  };
+
+  svg.call(
+    d3.zoom()
+      .scaleExtent([0.6, 8])
+      .translateExtent([[margin.left - 80, 0], [width + 120, height]])
+      .extent([[margin.left, 0], [width - margin.right, height]])
+      .on('zoom', zoomed)
+  );
+  svg.on('dblclick.zoom', null);
+
+  document.getElementById('loadingState').style.display = 'none';
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('controlsHelp').style.display = 'block';
+  document.getElementById('statsBar').style.display = 'flex';
+  document.getElementById('statNodes').textContent = displayFacts.length;
+  document.getElementById('statEdges').textContent = showTransitions ? transitionRows.length : 0;
+  document.getElementById('statCoocs').textContent = (timelineData.buckets || []).length;
+  updateTimelineQualityPanel(timelineData, displayFacts, showTransitions ? transitionRows : [], lanes);
 }
 
 function renderGraph() {
+  if (currentViewMode === 'timeline') return;
   if (!graphData || !Graph) return;
 
   const confMin = parseInt(document.getElementById('confSlider').value, 10) / 100;
@@ -1404,6 +1951,7 @@ function renderGraph() {
 }
 
 function connectedNodesFor(nodeId) {
+  if (currentViewMode === 'timeline') return [];
   if (!graphData || !graphData.edges || !graphData.nodes) return [];
   const nodeById = new Map((graphData.nodes || []).map(n => [n.id, n]));
   const seen = new Set();
@@ -1646,7 +2194,12 @@ document.getElementById('depthSlider').addEventListener('input', e => {
 
 document.getElementById('confSlider').addEventListener('input', e => {
   document.getElementById('confValue').textContent = `${e.target.value}%`;
-  if (graphData) renderGraph();
+  if (currentViewMode === 'timeline' && timelineData) renderTimeline();
+  else if (graphData) renderGraph();
+});
+
+document.getElementById('confSlider').addEventListener('change', () => {
+  if (currentViewMode === 'timeline' && timelineData) loadTimeline();
 });
 
 document.getElementById('timeWindow').addEventListener('change', () => {
@@ -1665,6 +2218,28 @@ document.querySelectorAll('#edgeToggles input').forEach(cb => {
   });
 });
 
+['timelineShowTransitions', 'timelineShowTrend'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    if (currentViewMode === 'timeline' && timelineData) renderTimeline();
+  });
+});
+
+document.getElementById('timelineShowRelated').addEventListener('change', () => {
+  if (currentViewMode === 'timeline') loadTimeline();
+});
+
+['timelineBucket', 'timelineFrom', 'timelineTo'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    if (currentViewMode === 'timeline' && timelineData) loadTimeline();
+  });
+});
+
+document.getElementById('timelineSubject').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    loadTimeline(e.target.value.trim());
+  }
+});
+
 document.getElementById('searchInput').addEventListener('input', e => {
   const q = e.target.value.trim();
   clearTimeout(searchDebounce);
@@ -1679,7 +2254,10 @@ document.getElementById('searchInput').addEventListener('keydown', e => {
     const q = e.target.value.trim();
     hideBrowseResults();
     if (currentViewMode === 'impact') loadImpact(q);
-    else loadCluster(q);
+    else if (currentViewMode === 'timeline') {
+      if (q) document.getElementById('timelineSubject').value = q;
+      loadTimeline(q);
+    } else loadCluster(q);
   }
   if (e.key === 'Escape') {
     hideBrowseResults();
@@ -1700,6 +2278,7 @@ document.addEventListener('click', e => {
 
 window.addEventListener('load', () => {
   buildTypeLegend();
+  setTimelineDefaults();
   setViewMode('cluster');
   setQualityStatus('Initializing graph explorer...');
 
