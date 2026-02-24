@@ -6,6 +6,25 @@ All notable changes to this project will be documented in this file.
 
 - No unreleased entries yet.
 
+## [0.7.0] - 2026-02-24
+
+### Added
+- **Sync pipeline in connectors** — `cortex connect sync --extract [--no-infer] [--llm <provider/model>]` runs import → extraction → inference with per-provider counts.
+- **Source-aware search** — `cortex search --source <provider>` filters by connector provenance and applies source weighting (manual imports boosted over connector imports).
+- **Auto-sync scheduler** — `cortex connect schedule --every <interval> [--install|--uninstall|--show]` with launchd/systemd generation.
+- **New connectors** — Discord, Telegram, and Notion providers in `internal/connect/` with config validation + mock HTTP tests.
+- **Graph explorer UX upgrades** — `/api/facts` endpoint, search-to-node highlighting, time-window filtering, richer fact inspector sidebar, and edge hover labels.
+- **End-to-end connector integration tests** — new tests for connect → extract → infer → search workflows and multi-provider source filtering.
+
+### Changed
+- CLI version now reports **`0.7.0`** (`cortex --version`).
+- Graph cluster metadata now includes per-subject `fact_count`, `last_updated`, and `source_types` for better frontend filtering and inspection.
+- Graph search API now uses the search engine pipeline and returns matched node IDs alongside fact matches.
+
+### Validation
+- Full suite passing: `go test ./... -count=1` (15 packages).
+- Build clean: `go build ./cmd/cortex/`.
+
 ## [0.6.0] - 2026-02-24
 
 ### Added
