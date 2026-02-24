@@ -195,7 +195,10 @@ func scanConnector(row *sql.Row) (*Connector, error) {
 	c.Config = json.RawMessage(config)
 	c.Enabled = enabled == 1
 	if lastSyncAt.Valid {
-		t, _ := time.Parse("2006-01-02 15:04:05", lastSyncAt.String)
+		t, parseErr := time.ParseInLocation("2006-01-02 15:04:05", lastSyncAt.String, time.UTC)
+		if parseErr != nil {
+			t, _ = time.Parse(time.RFC3339, lastSyncAt.String)
+		}
 		c.LastSyncAt = &t
 	}
 	if lastError.Valid {
@@ -224,7 +227,10 @@ func scanConnectorRow(rows *sql.Rows) (*Connector, error) {
 	c.Config = json.RawMessage(config)
 	c.Enabled = enabled == 1
 	if lastSyncAt.Valid {
-		t, _ := time.Parse("2006-01-02 15:04:05", lastSyncAt.String)
+		t, parseErr := time.ParseInLocation("2006-01-02 15:04:05", lastSyncAt.String, time.UTC)
+		if parseErr != nil {
+			t, _ = time.Parse(time.RFC3339, lastSyncAt.String)
+		}
 		c.LastSyncAt = &t
 	}
 	if lastError.Valid {
