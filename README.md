@@ -63,7 +63,7 @@ cortex search "what did I decide about the API design"
 claude mcp add cortex -- cortex mcp
 ```
 
-That's it. Your agent now has persistent memory with 16 MCP tools.
+That's it. Your agent now has persistent memory with 19 MCP tools.
 
 ### Next steps
 
@@ -107,7 +107,7 @@ Your files ──→ Import ──→ Fact extraction ──→ SQLite + FTS5
                               ┌─────────┬──────────┼──────────┐
                               ▼         ▼          ▼          ▼
                            Search    Observe    Graph      MCP Server
-                          (hybrid)  (stats,    (2D         (16 tools,
+                          (hybrid)  (stats,    (2D         (19 tools,
                                     stale,     explorer)    any agent)
                                     conflicts)
 ```
@@ -191,7 +191,7 @@ Supports Ollama (free/local), OpenAI, DeepSeek, OpenRouter, or any OpenAI-compat
 - **Extraction:** Rule-based pipeline + optional LLM assist, auto-infer on import
 - **Graph:** Interactive 2D knowledge graph explorer with cluster visualization
 - **Connectors:** GitHub, Gmail, Calendar, Drive, Slack — with fact extraction
-- **MCP:** stdio + HTTP/SSE transport — 16 tools, 2 resources
+- **MCP:** stdio + HTTP/SSE transport — 19 tools, 4 resources
 - **Tests:** 270+ across 15 packages
 
 ## Documentation
