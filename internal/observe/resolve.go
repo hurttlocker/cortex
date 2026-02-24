@@ -29,6 +29,10 @@ const (
 
 	// StrategyManual flags the conflict for human review (no auto-resolution).
 	StrategyManual Strategy = "manual"
+
+	// StrategyLLM uses an LLM to evaluate and resolve conflicts.
+	// Defined in resolve_llm.go.
+	// StrategyLLM Strategy = "llm" // declared in resolve_llm.go
 )
 
 // ParseStrategy converts a string to a Strategy, returning an error for unknown values.
@@ -42,8 +46,10 @@ func ParseStrategy(s string) (Strategy, error) {
 		return StrategyNewest, nil
 	case "manual", "review":
 		return StrategyManual, nil
+	case "llm":
+		return StrategyLLM, nil
 	default:
-		return "", fmt.Errorf("unknown strategy %q (use: last-write-wins, highest-confidence, newest, manual)", s)
+		return "", fmt.Errorf("unknown strategy %q (use: last-write-wins, highest-confidence, newest, llm, manual)", s)
 	}
 }
 

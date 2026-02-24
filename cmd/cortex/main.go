@@ -1075,6 +1075,7 @@ func runConflicts(args []string) error {
 	keepFlag := int64(0)
 	dropFlag := int64(0)
 	includeSuperseded := false
+	llmFlag := ""
 
 	// Parse flags
 	for i := 0; i < len(args); i++ {
@@ -1119,6 +1120,11 @@ func runConflicts(args []string) error {
 			dropFlag = n
 		case args[i] == "--include-superseded":
 			includeSuperseded = true
+		case args[i] == "--llm" && i+1 < len(args):
+			i++
+			llmFlag = args[i]
+		case strings.HasPrefix(args[i], "--llm="):
+			llmFlag = strings.TrimPrefix(args[i], "--llm=")
 		default:
 			if strings.HasPrefix(args[i], "-") {
 				return fmt.Errorf("unknown flag: %s", args[i])
@@ -1164,6 +1170,39 @@ func runConflicts(args []string) error {
 		strategy, err := observe.ParseStrategy(resolveStrategy)
 		if err != nil {
 			return err
+		}
+
+		// LLM strategy requires --llm flag
+		if strategy == observe.StrategyLLM {
+			llmCfg, err := llm.ParseLLMFlag(llmFlag)
+			if err != nil {
+				return fmt.Errorf("parsing --llm flag: %w", err)
+			}
+			provider, err := llm.NewProvider(llmCfg)
+			if err != nil {
+				return fmt.Errorf("creating LLM provider: %w", err)
+			}
+
+			conflicts, err := engine.GetConflictsLimitWithSuperseded(ctx, limitFlag, includeSuperseded)
+			if err != nil {
+				return fmt.Errorf("detecting conflicts: %w", err)
+			}
+
+			if globalVerbose {
+				fmt.Fprintf(os.Stderr, "  Resolving %d conflicts with LLM (%s)...\n", len(conflicts), provider.Name())
+			}
+
+			batch, err := resolver.ResolveLLM(ctx, conflicts, provider, dryRun)
+			if err != nil {
+				return fmt.Errorf("resolving conflicts with LLM: %w", err)
+			}
+
+			if jsonOutput || !isTTY() {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(batch)
+			}
+			return outputResolveBatchTTY(batch, strategy, dryRun, verboseOutput)
 		}
 
 		var batch *observe.ResolveBatch
