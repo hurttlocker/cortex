@@ -303,13 +303,14 @@ func boolToInt(v bool) int {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--include .md,.txt] [--exclude .go,.js] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--llm <provider/model>] [--embed <provider/model>]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--enrich] [--include .md,.txt] [--exclude .go,.js] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--llm <provider/model>] [--embed <provider/model>]")
 	}
 
 	// Parse flags
 	var paths []string
 	opts := ingest.ImportOptions{}
 	enableExtraction := false
+	enableEnrichment := false
 	noInfer := false
 	llmFlag := ""
 	embedFlag := ""
@@ -334,6 +335,9 @@ func runImport(args []string) error {
 			opts.DryRun = true
 		case args[i] == "--extract":
 			enableExtraction = true
+		case args[i] == "--enrich":
+			enableEnrichment = true
+			enableExtraction = true // --enrich implies --extract
 		case args[i] == "--no-infer":
 			noInfer = true
 		case args[i] == "--project" && i+1 < len(args):
@@ -539,6 +543,22 @@ func runImport(args []string) error {
 			} else {
 				fmt.Printf("  Facts extracted: %d (rules only)\n", extractionStats.FactsExtracted)
 			}
+		}
+
+		// Run LLM enrichment if --enrich flag provided
+		if enableEnrichment && llmFlag != "" && extractionStats != nil {
+			fmt.Println("\nRunning LLM enrichment...")
+			enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, llmFlag)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  Enrichment error: %v\n", err)
+			} else if enrichStats.NewFacts > 0 {
+				fmt.Printf("  🧠 Enrichment: +%d new facts from LLM (%.1fs avg latency)\n",
+					enrichStats.NewFacts, enrichStats.AvgLatency.Seconds())
+			} else {
+				fmt.Println("  🧠 Enrichment: LLM found no additional facts")
+			}
+		} else if enableEnrichment && llmFlag == "" {
+			fmt.Println("  ⚠️  --enrich requires --llm <provider/model>")
 		}
 	}
 
@@ -1207,18 +1227,21 @@ func runConflicts(args []string) error {
 
 func runExtract(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex extract <file> [--json] [--llm <provider/model>]")
+		return fmt.Errorf("usage: cortex extract <file> [--json] [--enrich] [--llm <provider/model>]")
 	}
 
 	// Parse flags
 	var filepath string
 	jsonOutput := false
+	enrichFlag := false
 	llmFlag := ""
 
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--json":
 			jsonOutput = true
+		case args[i] == "--enrich":
+			enrichFlag = true
 		case args[i] == "--llm" && i+1 < len(args):
 			i++
 			llmFlag = args[i]
@@ -1274,6 +1297,29 @@ func runExtract(args []string) error {
 	facts, err := pipeline.Extract(ctx, string(content), metadata)
 	if err != nil {
 		return fmt.Errorf("extraction failed: %w", err)
+	}
+
+	// Run LLM enrichment if requested
+	if enrichFlag && llmFlag != "" {
+		llmCfg, err := llm.ParseLLMFlag(llmFlag)
+		if err != nil {
+			return fmt.Errorf("parsing --llm for enrichment: %w", err)
+		}
+		provider, err := llm.NewProvider(llmCfg)
+		if err != nil {
+			return fmt.Errorf("creating LLM provider for enrichment: %w", err)
+		}
+
+		result, err := extract.EnrichFacts(ctx, provider, string(content), facts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Enrichment warning: %v (showing rule-only results)\n", err)
+		} else if len(result.NewFacts) > 0 {
+			fmt.Fprintf(os.Stderr, "🧠 Enrichment: +%d facts (%s, %s)\n",
+				len(result.NewFacts), result.Model, result.Latency.Round(time.Millisecond))
+			facts = append(facts, result.NewFacts...)
+		}
+	} else if enrichFlag && llmFlag == "" {
+		fmt.Fprintf(os.Stderr, "⚠️  --enrich requires --llm <provider/model>\n")
 	}
 
 	// Output results
@@ -1534,6 +1580,107 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 	if sqliteStore, ok := s.(*store.SQLiteStore); ok && len(stats.FactIDs) > 0 {
 		if _, err := sqliteStore.UpdateClusters(ctx, stats.FactIDs); err != nil {
 			return nil, fmt.Errorf("updating topic clusters: %w", err)
+		}
+	}
+
+	return stats, nil
+}
+
+// EnrichmentStats holds statistics about LLM enrichment run.
+type EnrichmentStats struct {
+	NewFacts   int
+	AvgLatency time.Duration
+	FactIDs    []int64
+}
+
+// runEnrichmentOnImportedMemories runs LLM enrichment on recently imported memories.
+// For each memory, it re-runs rule extraction to get the baseline, then asks the LLM
+// what the rules missed. New facts are stored with extraction_method="llm-enrich".
+func runEnrichmentOnImportedMemories(ctx context.Context, s store.Store, llmFlag string) (*EnrichmentStats, error) {
+	// Resolve LLM provider (using the new internal/llm package)
+	llmCfg, err := llm.ParseLLMFlag(llmFlag)
+	if err != nil {
+		return nil, fmt.Errorf("parsing --llm flag: %w", err)
+	}
+	provider, err := llm.NewProvider(llmCfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating LLM provider: %w", err)
+	}
+
+	// Get recently imported memories
+	memories, err := s.ListMemories(ctx, store.ListOpts{Limit: 1000, SortBy: "date"})
+	if err != nil {
+		return nil, fmt.Errorf("listing memories: %w", err)
+	}
+
+	pipeline := extract.NewPipeline()
+	stats := &EnrichmentStats{}
+	var totalLatency time.Duration
+	enrichCount := 0
+
+	for _, memory := range memories {
+		// Skip very short content
+		if len(strings.TrimSpace(memory.Content)) < 50 {
+			continue
+		}
+
+		// Get rule-extracted facts as baseline
+		metadata := map[string]string{
+			"source_file": memory.SourceFile,
+		}
+		if strings.HasSuffix(strings.ToLower(memory.SourceFile), ".md") {
+			metadata["format"] = "markdown"
+		}
+		if memory.SourceSection != "" {
+			metadata["source_section"] = memory.SourceSection
+		}
+
+		ruleFacts, err := pipeline.Extract(ctx, memory.Content, metadata)
+		if err != nil {
+			continue
+		}
+
+		// Ask LLM to enrich
+		result, err := extract.EnrichFacts(ctx, provider, memory.Content, ruleFacts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Enrichment warning (memory %d): %v\n", memory.ID, err)
+			continue
+		}
+
+		totalLatency += result.Latency
+		enrichCount++
+
+		// Store new facts
+		for _, ef := range result.NewFacts {
+			fact := &store.Fact{
+				MemoryID:    memory.ID,
+				Subject:     ef.Subject,
+				Predicate:   ef.Predicate,
+				Object:      ef.Object,
+				FactType:    ef.FactType,
+				Confidence:  ef.Confidence,
+				DecayRate:   ef.DecayRate,
+				SourceQuote: ef.SourceQuote,
+			}
+
+			factID, err := s.AddFact(ctx, fact)
+			if err != nil {
+				continue
+			}
+
+			stats.NewFacts++
+			stats.FactIDs = append(stats.FactIDs, factID)
+		}
+	}
+
+	if enrichCount > 0 {
+		stats.AvgLatency = totalLatency / time.Duration(enrichCount)
+	}
+
+	// Update clusters for new facts
+	if sqliteStore, ok := s.(*store.SQLiteStore); ok && len(stats.FactIDs) > 0 {
+		if _, err := sqliteStore.UpdateClusters(ctx, stats.FactIDs); err != nil {
+			fmt.Fprintf(os.Stderr, "  Cluster update warning: %v\n", err)
 		}
 	}
 
@@ -5659,6 +5806,7 @@ func runConnectSync(args []string) error {
 	all := fs.Bool("all", false, "Sync all enabled connectors")
 	providerName := fs.String("provider", "", "Sync a specific provider")
 	enableExtract := fs.Bool("extract", false, "Run fact extraction on imported records")
+	enableEnrich := fs.Bool("enrich", false, "Run LLM enrichment after extraction (requires --llm)")
 	noInfer := fs.Bool("no-infer", false, "Skip edge inference after extraction")
 	llmFlag := fs.String("llm", "", "LLM provider/model for extraction (e.g., ollama/llama3)")
 	if err := fs.Parse(args); err != nil {
@@ -5666,7 +5814,7 @@ func runConnectSync(args []string) error {
 	}
 
 	if !*all && *providerName == "" {
-		return fmt.Errorf("usage: cortex connect sync --all | --provider <name> [--extract] [--no-infer] [--llm <provider/model>]")
+		return fmt.Errorf("usage: cortex connect sync --all | --provider <name> [--extract] [--enrich] [--no-infer] [--llm <provider/model>]")
 	}
 
 	dbPath := getDBPath()
@@ -5683,8 +5831,14 @@ func runConnectSync(args []string) error {
 	cs := connect.NewConnectorStore(sqliteSt.GetDB())
 	engine := connect.NewSyncEngine(connect.DefaultRegistry, cs, st, globalVerbose)
 
+	// --enrich implies --extract
+	if *enableEnrich {
+		*enableExtract = true
+	}
+
 	syncOpts := connect.SyncOptions{
 		Extract: *enableExtract,
+		Enrich:  *enableEnrich,
 		NoInfer: *noInfer,
 		LLM:     *llmFlag,
 	}
