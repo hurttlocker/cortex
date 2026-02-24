@@ -78,6 +78,9 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	registerEdgeAddTool(s, cfg.Store)
 	registerGraphTool(s, cfg.Store)
 	registerGraphExportTool(s, cfg.Store)
+	registerGraphExploreTool(s, cfg.Store)
+	registerGraphImpactTool(s, cfg.Store)
+	registerListClustersTool(s, cfg.Store)
 
 	// Register connector management tools
 	if sqlStore, ok := cfg.Store.(*store.SQLiteStore); ok {
@@ -91,6 +94,8 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	// Register resources
 	registerStatsResource(s, observeEngine)
 	registerRecentResource(s, cfg.Store)
+	registerGraphSubjectsResource(s, cfg.Store)
+	registerGraphClustersResource(s, cfg.Store)
 
 	return s
 }
