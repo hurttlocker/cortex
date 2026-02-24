@@ -61,6 +61,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "classify":
+		if err := runClassify(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	case "summarize":
+		if err := runSummarize(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "embed":
 		if err := runEmbed(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -303,13 +313,14 @@ func boolToInt(v bool) int {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--include .md,.txt] [--exclude .go,.js] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--llm <provider/model>] [--embed <provider/model>]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--enrich] [--include .md,.txt] [--exclude .go,.js] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--llm <provider/model>] [--embed <provider/model>]")
 	}
 
 	// Parse flags
 	var paths []string
 	opts := ingest.ImportOptions{}
 	enableExtraction := false
+	enableEnrichment := false
 	noInfer := false
 	llmFlag := ""
 	embedFlag := ""
@@ -334,6 +345,9 @@ func runImport(args []string) error {
 			opts.DryRun = true
 		case args[i] == "--extract":
 			enableExtraction = true
+		case args[i] == "--enrich":
+			enableEnrichment = true
+			enableExtraction = true // --enrich implies --extract
 		case args[i] == "--no-infer":
 			noInfer = true
 		case args[i] == "--project" && i+1 < len(args):
@@ -538,6 +552,24 @@ func runImport(args []string) error {
 					extractionStats.LLMFactsExtracted)
 			} else {
 				fmt.Printf("  Facts extracted: %d (rules only)\n", extractionStats.FactsExtracted)
+			}
+		}
+
+		// Run LLM enrichment if --enrich flag provided
+		if enableEnrichment && extractionStats != nil {
+			enrichLLM := llmFlag
+			if enrichLLM == "" {
+				enrichLLM = extract.DefaultEnrichModel // grok-4.1-fast
+			}
+			fmt.Println("\nRunning LLM enrichment...")
+			enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  Enrichment error: %v\n", err)
+			} else if enrichStats.NewFacts > 0 {
+				fmt.Printf("  🧠 Enrichment: +%d new facts from LLM (%.1fs avg latency)\n",
+					enrichStats.NewFacts, enrichStats.AvgLatency.Seconds())
+			} else {
+				fmt.Println("  🧠 Enrichment: LLM found no additional facts")
 			}
 		}
 	}
@@ -1207,18 +1239,21 @@ func runConflicts(args []string) error {
 
 func runExtract(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex extract <file> [--json] [--llm <provider/model>]")
+		return fmt.Errorf("usage: cortex extract <file> [--json] [--enrich] [--llm <provider/model>]")
 	}
 
 	// Parse flags
 	var filepath string
 	jsonOutput := false
+	enrichFlag := false
 	llmFlag := ""
 
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--json":
 			jsonOutput = true
+		case args[i] == "--enrich":
+			enrichFlag = true
 		case args[i] == "--llm" && i+1 < len(args):
 			i++
 			llmFlag = args[i]
@@ -1244,9 +1279,11 @@ func runExtract(args []string) error {
 		return fmt.Errorf("reading file: %w", err)
 	}
 
-	// Configure LLM if requested
+	// Configure old LLM for tier-2 extraction (if provider is compatible).
+	// When --enrich is set, skip old tier-2 entirely — the new internal/llm
+	// enrichment replaces it with better quality and no retry storms.
 	var llmConfig *extract.LLMConfig
-	if llmFlag != "" {
+	if llmFlag != "" && !enrichFlag {
 		var err error
 		llmConfig, err = extract.ResolveLLMConfig(llmFlag)
 		if err != nil {
@@ -1258,6 +1295,7 @@ func runExtract(args []string) error {
 			}
 		}
 	}
+	// When --enrich is set, llmConfig stays nil → rule-only extraction + LLM enrichment
 
 	// Run extraction
 	pipeline := extract.NewPipeline(llmConfig)
@@ -1276,12 +1314,441 @@ func runExtract(args []string) error {
 		return fmt.Errorf("extraction failed: %w", err)
 	}
 
+	// Run LLM enrichment if requested
+	if enrichFlag {
+		enrichLLM := llmFlag
+		if enrichLLM == "" {
+			enrichLLM = extract.DefaultEnrichModel // grok-4.1-fast
+		}
+		llmCfg, err := llm.ParseLLMFlag(enrichLLM)
+		if err != nil {
+			return fmt.Errorf("parsing --llm for enrichment: %w", err)
+		}
+		provider, err := llm.NewProvider(llmCfg)
+		if err != nil {
+			return fmt.Errorf("creating LLM provider for enrichment: %w", err)
+		}
+
+		result, err := extract.EnrichFacts(ctx, provider, string(content), facts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Enrichment warning: %v (showing rule-only results)\n", err)
+		} else if len(result.NewFacts) > 0 {
+			fmt.Fprintf(os.Stderr, "🧠 Enrichment: +%d facts (%s, %s)\n",
+				len(result.NewFacts), result.Model, result.Latency.Round(time.Millisecond))
+			facts = append(facts, result.NewFacts...)
+		}
+	}
+
 	// Output results
 	if jsonOutput || !isTTY() {
 		return outputExtractJSON(facts)
 	}
 
 	return outputExtractTTY(filepath, facts)
+}
+
+func runClassify(args []string) error {
+	llmFlag := ""
+	batchSize := extract.DefaultClassifyBatchSize
+	limit := 0
+	dryRun := false
+	jsonOutput := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--llm" && i+1 < len(args):
+			i++
+			llmFlag = args[i]
+		case strings.HasPrefix(args[i], "--llm="):
+			llmFlag = strings.TrimPrefix(args[i], "--llm=")
+		case args[i] == "--batch-size" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --batch-size: %s", args[i])
+			}
+			batchSize = n
+		case args[i] == "--limit" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --limit: %s", args[i])
+			}
+			limit = n
+		case args[i] == "--dry-run" || args[i] == "-n":
+			dryRun = true
+		case args[i] == "--json":
+			jsonOutput = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		}
+	}
+
+	if llmFlag == "" {
+		llmFlag = extract.DefaultClassifyModel // deepseek-v3.2
+	}
+
+	// Create LLM provider
+	llmCfg, err := llm.ParseLLMFlag(llmFlag)
+	if err != nil {
+		return fmt.Errorf("parsing --llm: %w", err)
+	}
+	provider, err := llm.NewProvider(llmCfg)
+	if err != nil {
+		return fmt.Errorf("creating LLM provider: %w", err)
+	}
+
+	// Open store
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Get kv-type facts to classify
+	listLimit := 10000
+	if limit > 0 {
+		listLimit = limit
+	}
+	facts, err := s.ListFacts(ctx, store.ListOpts{
+		FactType: "kv",
+		Limit:    listLimit,
+	})
+	if err != nil {
+		return fmt.Errorf("listing facts: %w", err)
+	}
+
+	if len(facts) == 0 {
+		fmt.Println("No kv-type facts to classify.")
+		return nil
+	}
+
+	if limit > 0 && len(facts) > limit {
+		facts = facts[:limit]
+	}
+
+	fmt.Printf("Found %d kv-type facts to classify (batch size: %d, model: %s)\n",
+		len(facts), batchSize, provider.Name())
+	if dryRun {
+		fmt.Println("DRY RUN — no changes will be applied")
+	}
+	fmt.Println()
+
+	// Convert store facts to classifiable facts
+	classifyFacts := make([]extract.ClassifyableFact, len(facts))
+	for i, f := range facts {
+		classifyFacts[i] = extract.ClassifyableFact{
+			ID:        f.ID,
+			Subject:   f.Subject,
+			Predicate: f.Predicate,
+			Object:    f.Object,
+			FactType:  f.FactType,
+		}
+	}
+
+	// Run classification
+	opts := extract.ClassifyOpts{
+		BatchSize:     batchSize,
+		MinConfidence: 0.8,
+		Limit:         limit,
+		DryRun:        dryRun,
+	}
+
+	result, err := extract.ClassifyFacts(ctx, provider, classifyFacts, opts)
+	if err != nil {
+		return fmt.Errorf("classification failed: %w", err)
+	}
+
+	// Apply changes (unless dry run)
+	applied := 0
+	if !dryRun {
+		sqlStore, ok := s.(*store.SQLiteStore)
+		if !ok {
+			return fmt.Errorf("classify requires SQLite store")
+		}
+		for _, c := range result.Classified {
+			if err := sqlStore.UpdateFactType(ctx, c.FactID, c.NewType); err != nil {
+				fmt.Fprintf(os.Stderr, "  Warning: failed to update fact %d: %v\n", c.FactID, err)
+				continue
+			}
+			applied++
+		}
+	}
+
+	// Output
+	if jsonOutput {
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+
+	// Type distribution
+	typeCounts := make(map[string]int)
+	for _, c := range result.Classified {
+		typeCounts[c.NewType]++
+	}
+
+	fmt.Printf("Results (%s, %s):\n", result.Model, result.Latency.Round(time.Millisecond))
+	fmt.Printf("  Total processed: %d\n", result.TotalFacts)
+	fmt.Printf("  Reclassified:    %d\n", len(result.Classified))
+	fmt.Printf("  Unchanged:       %d\n", result.Unchanged)
+	fmt.Printf("  Errors:          %d\n", result.Errors)
+	fmt.Printf("  Batches:         %d\n", result.BatchCount)
+
+	if len(typeCounts) > 0 {
+		fmt.Println("\n  Type distribution:")
+		for t, count := range typeCounts {
+			fmt.Printf("    kv → %-15s %d facts\n", t, count)
+		}
+	}
+
+	if dryRun && len(result.Classified) > 0 {
+		fmt.Println("\n  Sample reclassifications:")
+		showCount := len(result.Classified)
+		if showCount > 10 {
+			showCount = 10
+		}
+		for _, c := range result.Classified[:showCount] {
+			fmt.Printf("    #%d: %s → %s (%.0f%%)\n", c.FactID, c.OldType, c.NewType, c.Confidence*100)
+		}
+		if len(result.Classified) > 10 {
+			fmt.Printf("    ... and %d more\n", len(result.Classified)-10)
+		}
+	}
+
+	if !dryRun {
+		fmt.Printf("\n  ✅ Applied: %d fact type updates\n", applied)
+	}
+
+	return nil
+}
+
+func runSummarize(args []string) error {
+	llmFlag := ""
+	minClusterSize := extract.DefaultMinClusterSize
+	clusterID := int64(0)
+	dryRun := false
+	jsonOutput := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--llm" && i+1 < len(args):
+			i++
+			llmFlag = args[i]
+		case strings.HasPrefix(args[i], "--llm="):
+			llmFlag = strings.TrimPrefix(args[i], "--llm=")
+		case args[i] == "--min-cluster-size" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --min-cluster-size: %s", args[i])
+			}
+			minClusterSize = n
+		case args[i] == "--cluster" && i+1 < len(args):
+			i++
+			n, err := strconv.ParseInt(args[i], 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid --cluster: %s", args[i])
+			}
+			clusterID = n
+		case args[i] == "--dry-run" || args[i] == "-n":
+			dryRun = true
+		case args[i] == "--json":
+			jsonOutput = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		}
+	}
+
+	if llmFlag == "" {
+		return fmt.Errorf("usage: cortex summarize --llm <provider/model> [--min-cluster-size N] [--cluster <id>] [--dry-run] [--json]")
+	}
+
+	// Create LLM provider
+	llmCfg, err := llm.ParseLLMFlag(llmFlag)
+	if err != nil {
+		return fmt.Errorf("parsing --llm: %w", err)
+	}
+	provider, err := llm.NewProvider(llmCfg)
+	if err != nil {
+		return fmt.Errorf("creating LLM provider: %w", err)
+	}
+
+	// Open store
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("summarize requires SQLite store")
+	}
+
+	ctx := context.Background()
+
+	// Get clusters
+	clusters, err := sqlStore.ListClusters(ctx)
+	if err != nil {
+		return fmt.Errorf("listing clusters: %w", err)
+	}
+
+	if len(clusters) == 0 {
+		fmt.Println("No clusters found. Run `cortex cluster --rebuild` first.")
+		return nil
+	}
+
+	// Build cluster inputs with facts
+	var clusterInputs []extract.ClusterInput
+	for _, c := range clusters {
+		if c.FactCount < minClusterSize {
+			continue
+		}
+		if clusterID > 0 && c.ID != clusterID {
+			continue
+		}
+
+		detail, err := sqlStore.GetClusterDetail(ctx, c.ID, 200)
+		if err != nil {
+			continue
+		}
+
+		facts := make([]extract.ClusterFactInput, 0, len(detail.Facts))
+		for _, f := range detail.Facts {
+			facts = append(facts, extract.ClusterFactInput{
+				ID:         f.ID,
+				Subject:    f.Subject,
+				Predicate:  f.Predicate,
+				Object:     f.Object,
+				FactType:   f.FactType,
+				Confidence: f.Confidence,
+			})
+		}
+
+		clusterInputs = append(clusterInputs, extract.ClusterInput{
+			ID:    c.ID,
+			Name:  c.Name,
+			Facts: facts,
+		})
+	}
+
+	if len(clusterInputs) == 0 {
+		fmt.Printf("No clusters meet the minimum size (%d facts).\n", minClusterSize)
+		return nil
+	}
+
+	totalFacts := 0
+	for _, ci := range clusterInputs {
+		totalFacts += len(ci.Facts)
+	}
+
+	fmt.Printf("Summarizing %d clusters (%d total facts, model: %s)\n", len(clusterInputs), totalFacts, provider.Name())
+	if dryRun {
+		fmt.Println("DRY RUN — no changes will be applied")
+	}
+	fmt.Println()
+
+	opts := extract.SummarizeOpts{
+		MinClusterSize: minClusterSize,
+		ClusterID:      clusterID,
+		DryRun:         dryRun,
+	}
+
+	result, err := extract.SummarizeClusters(ctx, provider, clusterInputs, opts)
+	if err != nil {
+		return fmt.Errorf("summarization failed: %w", err)
+	}
+
+	// Apply changes (unless dry run)
+	applied := 0
+	if !dryRun && len(result.Summaries) > 0 {
+		for _, summary := range result.Summaries {
+			// Create new summary facts
+			for _, sf := range summary.SummaryFacts {
+				// Find a memory ID from one of the replaced facts
+				var memoryID int64
+				if len(sf.Replaces) > 0 {
+					oldFact, err := s.GetFact(ctx, sf.Replaces[0])
+					if err == nil {
+						memoryID = oldFact.MemoryID
+					}
+				}
+
+				newFact := &store.Fact{
+					MemoryID:   memoryID,
+					Subject:    sf.Subject,
+					Predicate:  sf.Predicate,
+					Object:     sf.Object,
+					FactType:   sf.FactType,
+					Confidence: sf.Confidence,
+				}
+				if rate, ok := extract.DecayRates[sf.FactType]; ok {
+					newFact.DecayRate = rate
+				}
+
+				newFactID, err := s.AddFact(ctx, newFact)
+				if err != nil {
+					continue
+				}
+
+				// Supersede old facts
+				for _, oldID := range sf.Replaces {
+					_ = sqlStore.SupersedeFact(ctx, oldID, newFactID, sf.Reasoning)
+				}
+				applied++
+			}
+		}
+	}
+
+	// Output
+	if jsonOutput {
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+
+	fmt.Printf("Results (%s, %s):\n", result.Model, result.Latency.Round(time.Millisecond))
+	fmt.Printf("  Clusters processed: %d\n", len(result.Summaries))
+	fmt.Printf("  Total original:     %d facts\n", result.TotalOriginal)
+	fmt.Printf("  Total after:        %d facts\n", result.TotalNew)
+	fmt.Printf("  Superseded:         %d facts\n", result.TotalSupersede)
+	if result.TotalOriginal > 0 {
+		fmt.Printf("  Compression:        %.1fx\n", float64(result.TotalOriginal)/float64(max(result.TotalNew, 1)))
+	}
+
+	for _, s := range result.Summaries {
+		fmt.Printf("\n  📦 %s (cluster #%d):\n", s.ClusterName, s.ClusterID)
+		fmt.Printf("     %d → %d facts (%.1fx compression)\n", s.OriginalCount, s.NewCount, s.Compression)
+		if s.Reasoning != "" {
+			fmt.Printf("     Reason: %s\n", s.Reasoning)
+		}
+		if dryRun && len(s.SummaryFacts) > 0 {
+			showCount := len(s.SummaryFacts)
+			if showCount > 5 {
+				showCount = 5
+			}
+			for _, sf := range s.SummaryFacts[:showCount] {
+				fmt.Printf("     → %s | %s → %s (replaces %d facts)\n",
+					sf.Subject, sf.Predicate, truncStr(sf.Object, 50), len(sf.Replaces))
+			}
+		}
+	}
+
+	if !dryRun {
+		fmt.Printf("\n  ✅ Applied: %d summary facts created, %d originals superseded\n", applied, result.TotalSupersede)
+	}
+
+	return nil
+}
+
+func truncStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 func runList(args []string) error {
@@ -1534,6 +2001,107 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 	if sqliteStore, ok := s.(*store.SQLiteStore); ok && len(stats.FactIDs) > 0 {
 		if _, err := sqliteStore.UpdateClusters(ctx, stats.FactIDs); err != nil {
 			return nil, fmt.Errorf("updating topic clusters: %w", err)
+		}
+	}
+
+	return stats, nil
+}
+
+// EnrichmentStats holds statistics about LLM enrichment run.
+type EnrichmentStats struct {
+	NewFacts   int
+	AvgLatency time.Duration
+	FactIDs    []int64
+}
+
+// runEnrichmentOnImportedMemories runs LLM enrichment on recently imported memories.
+// For each memory, it re-runs rule extraction to get the baseline, then asks the LLM
+// what the rules missed. New facts are stored with extraction_method="llm-enrich".
+func runEnrichmentOnImportedMemories(ctx context.Context, s store.Store, llmFlag string) (*EnrichmentStats, error) {
+	// Resolve LLM provider (using the new internal/llm package)
+	llmCfg, err := llm.ParseLLMFlag(llmFlag)
+	if err != nil {
+		return nil, fmt.Errorf("parsing --llm flag: %w", err)
+	}
+	provider, err := llm.NewProvider(llmCfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating LLM provider: %w", err)
+	}
+
+	// Get recently imported memories
+	memories, err := s.ListMemories(ctx, store.ListOpts{Limit: 1000, SortBy: "date"})
+	if err != nil {
+		return nil, fmt.Errorf("listing memories: %w", err)
+	}
+
+	pipeline := extract.NewPipeline()
+	stats := &EnrichmentStats{}
+	var totalLatency time.Duration
+	enrichCount := 0
+
+	for _, memory := range memories {
+		// Skip very short content
+		if len(strings.TrimSpace(memory.Content)) < 50 {
+			continue
+		}
+
+		// Get rule-extracted facts as baseline
+		metadata := map[string]string{
+			"source_file": memory.SourceFile,
+		}
+		if strings.HasSuffix(strings.ToLower(memory.SourceFile), ".md") {
+			metadata["format"] = "markdown"
+		}
+		if memory.SourceSection != "" {
+			metadata["source_section"] = memory.SourceSection
+		}
+
+		ruleFacts, err := pipeline.Extract(ctx, memory.Content, metadata)
+		if err != nil {
+			continue
+		}
+
+		// Ask LLM to enrich
+		result, err := extract.EnrichFacts(ctx, provider, memory.Content, ruleFacts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Enrichment warning (memory %d): %v\n", memory.ID, err)
+			continue
+		}
+
+		totalLatency += result.Latency
+		enrichCount++
+
+		// Store new facts
+		for _, ef := range result.NewFacts {
+			fact := &store.Fact{
+				MemoryID:    memory.ID,
+				Subject:     ef.Subject,
+				Predicate:   ef.Predicate,
+				Object:      ef.Object,
+				FactType:    ef.FactType,
+				Confidence:  ef.Confidence,
+				DecayRate:   ef.DecayRate,
+				SourceQuote: ef.SourceQuote,
+			}
+
+			factID, err := s.AddFact(ctx, fact)
+			if err != nil {
+				continue
+			}
+
+			stats.NewFacts++
+			stats.FactIDs = append(stats.FactIDs, factID)
+		}
+	}
+
+	if enrichCount > 0 {
+		stats.AvgLatency = totalLatency / time.Duration(enrichCount)
+	}
+
+	// Update clusters for new facts
+	if sqliteStore, ok := s.(*store.SQLiteStore); ok && len(stats.FactIDs) > 0 {
+		if _, err := sqliteStore.UpdateClusters(ctx, stats.FactIDs); err != nil {
+			fmt.Fprintf(os.Stderr, "  Cluster update warning: %v\n", err)
 		}
 	}
 
@@ -5659,6 +6227,7 @@ func runConnectSync(args []string) error {
 	all := fs.Bool("all", false, "Sync all enabled connectors")
 	providerName := fs.String("provider", "", "Sync a specific provider")
 	enableExtract := fs.Bool("extract", false, "Run fact extraction on imported records")
+	enableEnrich := fs.Bool("enrich", false, "Run LLM enrichment after extraction (requires --llm)")
 	noInfer := fs.Bool("no-infer", false, "Skip edge inference after extraction")
 	llmFlag := fs.String("llm", "", "LLM provider/model for extraction (e.g., ollama/llama3)")
 	if err := fs.Parse(args); err != nil {
@@ -5666,7 +6235,7 @@ func runConnectSync(args []string) error {
 	}
 
 	if !*all && *providerName == "" {
-		return fmt.Errorf("usage: cortex connect sync --all | --provider <name> [--extract] [--no-infer] [--llm <provider/model>]")
+		return fmt.Errorf("usage: cortex connect sync --all | --provider <name> [--extract] [--enrich] [--no-infer] [--llm <provider/model>]")
 	}
 
 	dbPath := getDBPath()
@@ -5683,8 +6252,14 @@ func runConnectSync(args []string) error {
 	cs := connect.NewConnectorStore(sqliteSt.GetDB())
 	engine := connect.NewSyncEngine(connect.DefaultRegistry, cs, st, globalVerbose)
 
+	// --enrich implies --extract
+	if *enableEnrich {
+		*enableExtract = true
+	}
+
 	syncOpts := connect.SyncOptions{
 		Extract: *enableExtract,
+		Enrich:  *enableEnrich,
 		NoInfer: *noInfer,
 		LLM:     *llmFlag,
 	}

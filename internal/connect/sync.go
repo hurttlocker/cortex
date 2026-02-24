@@ -17,6 +17,10 @@ type SyncOptions struct {
 	// Extract enables fact extraction on newly imported memories.
 	Extract bool
 
+	// Enrich enables LLM-powered fact enrichment after rule-based extraction.
+	// Requires LLM to be set. Additive only — never removes rule-extracted facts.
+	Enrich bool
+
 	// NoInfer disables automatic edge inference after extraction.
 	// Only meaningful when Extract is true.
 	NoInfer bool

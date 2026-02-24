@@ -181,6 +181,7 @@ type Store interface {
 	GetFact(ctx context.Context, id int64) (*Fact, error)
 	ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, error)
 	UpdateFactConfidence(ctx context.Context, id int64, confidence float64) error
+	UpdateFactType(ctx context.Context, id int64, factType string) error
 	ReinforceFact(ctx context.Context, id int64) error
 	SupersedeFact(ctx context.Context, oldFactID, newFactID int64, reason string) error
 	ReinforceFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) (int, error)
