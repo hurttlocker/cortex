@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -5269,6 +5271,7 @@ Subcommands:
   add <provider>      Add a new connector
   sync                Sync connectors (--all or --provider <name>) [--extract] [--no-infer] [--llm <model>]
   status              Show connector health and sync state
+  schedule            Generate auto-sync schedule (launchd/systemd)
   remove <provider>   Remove a connector
   enable <provider>   Enable a disabled connector
   disable <provider>  Disable a connector
@@ -5285,6 +5288,8 @@ Subcommands:
 		return runConnectSync(args[1:])
 	case "status":
 		return runConnectStatus()
+	case "schedule":
+		return runConnectSchedule(args[1:])
 	case "remove":
 		return runConnectRemove(args[1:])
 	case "enable":
@@ -5590,6 +5595,264 @@ func runConnectProviders() error {
 		fmt.Printf("  %-15s  %s\n", name, p.DisplayName())
 	}
 	return nil
+}
+
+func runConnectSchedule(args []string) error {
+	fs := flag.NewFlagSet("connect-schedule", flag.ContinueOnError)
+	every := fs.String("every", "3h", "Sync interval (e.g., 1h, 3h, 6h, 30m)")
+	extract := fs.Bool("extract", true, "Run fact extraction on sync")
+	install := fs.Bool("install", false, "Install and load the schedule (macOS: launchd, Linux: systemd)")
+	uninstall := fs.Bool("uninstall", false, "Remove the installed schedule")
+	showOnly := fs.Bool("show", false, "Print the schedule config to stdout without installing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *uninstall {
+		return uninstallSchedule()
+	}
+
+	// Parse interval
+	interval, err := time.ParseDuration(*every)
+	if err != nil {
+		return fmt.Errorf("invalid interval %q: %w", *every, err)
+	}
+	if interval < 5*time.Minute {
+		return fmt.Errorf("minimum interval is 5m (got %s)", *every)
+	}
+	intervalSec := int(interval.Seconds())
+
+	// Find cortex binary
+	cortexBin, err := os.Executable()
+	if err != nil {
+		cortexBin = "cortex" // fallback
+	}
+
+	dbPath := getDBPath()
+	if dbPath == "" {
+		home, _ := os.UserHomeDir()
+		dbPath = filepath.Join(home, ".cortex", "cortex.db")
+	}
+
+	syncArgs := []string{"connect", "sync", "--all"}
+	if *extract {
+		syncArgs = append(syncArgs, "--extract")
+	}
+
+	if runtime.GOOS == "darwin" {
+		return generateLaunchd(cortexBin, dbPath, syncArgs, intervalSec, *install, *showOnly)
+	}
+	return generateSystemd(cortexBin, dbPath, syncArgs, intervalSec, *install, *showOnly)
+}
+
+func generateLaunchd(cortexBin, dbPath string, syncArgs []string, intervalSec int, install, showOnly bool) error {
+	label := "com.cortex.connect-sync"
+	home, _ := os.UserHomeDir()
+	plistDir := filepath.Join(home, "Library", "LaunchAgents")
+	plistPath := filepath.Join(plistDir, label+".plist")
+
+	logDir := filepath.Join(home, ".cortex", "logs")
+
+	// Build program arguments
+	fullArgs := append([]string{cortexBin}, syncArgs...)
+	var argsXML string
+	for _, a := range fullArgs {
+		argsXML += fmt.Sprintf("    <string>%s</string>\n", a)
+	}
+
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>%s</string>
+  <key>ProgramArguments</key>
+  <array>
+%s  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CORTEX_DB</key>
+    <string>%s</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:%s/bin</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>%d</integer>
+  <key>StandardOutPath</key>
+  <string>%s/connect-sync.log</string>
+  <key>StandardErrorPath</key>
+  <string>%s/connect-sync.err</string>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>`, label, argsXML, dbPath, home, intervalSec, logDir, logDir)
+
+	if showOnly {
+		fmt.Println(plist)
+		return nil
+	}
+
+	fmt.Printf("Generated launchd plist: %s\n", plistPath)
+	fmt.Printf("  Binary: %s\n", cortexBin)
+	fmt.Printf("  Interval: every %s\n", time.Duration(intervalSec)*time.Second)
+	fmt.Printf("  Args: %v\n", syncArgs)
+	fmt.Printf("  Logs: %s/connect-sync.{log,err}\n", logDir)
+
+	if !install {
+		fmt.Println()
+		fmt.Println(plist)
+		fmt.Println()
+		fmt.Println("To install: cortex connect schedule --install")
+		fmt.Println("To remove:  cortex connect schedule --uninstall")
+		return nil
+	}
+
+	// Create directories
+	if err := os.MkdirAll(plistDir, 0755); err != nil {
+		return fmt.Errorf("creating plist dir: %w", err)
+	}
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return fmt.Errorf("creating log dir: %w", err)
+	}
+
+	// Write plist
+	if err := os.WriteFile(plistPath, []byte(plist), 0644); err != nil {
+		return fmt.Errorf("writing plist: %w", err)
+	}
+
+	// Load with launchctl
+	// Unload first (ignore error if not loaded)
+	execCommand("launchctl", "unload", plistPath)
+	if err := execCommand("launchctl", "load", plistPath); err != nil {
+		return fmt.Errorf("loading plist: %w", err)
+	}
+
+	fmt.Printf("\n✓ Installed and loaded: %s\n", label)
+	fmt.Printf("  Syncing every %s with fact extraction\n", time.Duration(intervalSec)*time.Second)
+	return nil
+}
+
+func generateSystemd(cortexBin, dbPath string, syncArgs []string, intervalSec int, install, showOnly bool) error {
+	home, _ := os.UserHomeDir()
+	unitDir := filepath.Join(home, ".config", "systemd", "user")
+	serviceName := "cortex-connect-sync"
+	servicePath := filepath.Join(unitDir, serviceName+".service")
+	timerPath := filepath.Join(unitDir, serviceName+".timer")
+
+	fullCmd := cortexBin + " " + strings.Join(syncArgs, " ")
+
+	service := fmt.Sprintf(`[Unit]
+Description=Cortex Connect Sync
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=%s
+Environment=CORTEX_DB=%s
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%s/bin
+
+[Install]
+WantedBy=default.target
+`, fullCmd, dbPath, home)
+
+	// Convert interval to systemd OnUnitActiveSec format
+	intervalMin := intervalSec / 60
+	timer := fmt.Sprintf(`[Unit]
+Description=Cortex Connect Sync Timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=%dmin
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+`, intervalMin)
+
+	if showOnly {
+		fmt.Println("# " + servicePath)
+		fmt.Println(service)
+		fmt.Println("# " + timerPath)
+		fmt.Println(timer)
+		return nil
+	}
+
+	fmt.Printf("Generated systemd units:\n")
+	fmt.Printf("  Service: %s\n", servicePath)
+	fmt.Printf("  Timer:   %s\n", timerPath)
+	fmt.Printf("  Interval: every %dmin\n", intervalMin)
+
+	if !install {
+		fmt.Println()
+		fmt.Println("--- Service ---")
+		fmt.Println(service)
+		fmt.Println("--- Timer ---")
+		fmt.Println(timer)
+		fmt.Println()
+		fmt.Println("To install: cortex connect schedule --install")
+		fmt.Println("To remove:  cortex connect schedule --uninstall")
+		return nil
+	}
+
+	// Create directory
+	if err := os.MkdirAll(unitDir, 0755); err != nil {
+		return fmt.Errorf("creating systemd dir: %w", err)
+	}
+
+	// Write units
+	if err := os.WriteFile(servicePath, []byte(service), 0644); err != nil {
+		return fmt.Errorf("writing service: %w", err)
+	}
+	if err := os.WriteFile(timerPath, []byte(timer), 0644); err != nil {
+		return fmt.Errorf("writing timer: %w", err)
+	}
+
+	// Enable and start
+	if err := execCommand("systemctl", "--user", "daemon-reload"); err != nil {
+		return fmt.Errorf("daemon-reload: %w", err)
+	}
+	if err := execCommand("systemctl", "--user", "enable", "--now", serviceName+".timer"); err != nil {
+		return fmt.Errorf("enabling timer: %w", err)
+	}
+
+	fmt.Printf("\n✓ Installed and started: %s.timer\n", serviceName)
+	fmt.Printf("  Syncing every %dmin with fact extraction\n", intervalMin)
+	return nil
+}
+
+func uninstallSchedule() error {
+	if runtime.GOOS == "darwin" {
+		label := "com.cortex.connect-sync"
+		home, _ := os.UserHomeDir()
+		plistPath := filepath.Join(home, "Library", "LaunchAgents", label+".plist")
+
+		execCommand("launchctl", "unload", plistPath)
+		if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing plist: %w", err)
+		}
+		fmt.Printf("✓ Uninstalled: %s\n", label)
+		return nil
+	}
+
+	// Linux systemd
+	serviceName := "cortex-connect-sync"
+	execCommand("systemctl", "--user", "disable", "--now", serviceName+".timer")
+
+	home, _ := os.UserHomeDir()
+	unitDir := filepath.Join(home, ".config", "systemd", "user")
+	os.Remove(filepath.Join(unitDir, serviceName+".service"))
+	os.Remove(filepath.Join(unitDir, serviceName+".timer"))
+	execCommand("systemctl", "--user", "daemon-reload")
+
+	fmt.Printf("✓ Uninstalled: %s\n", serviceName)
+	return nil
+}
+
+func execCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func printUsage() {
