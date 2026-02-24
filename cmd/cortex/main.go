@@ -5254,7 +5254,7 @@ func runConnect(args []string) error {
 Subcommands:
   init                Initialize the connector system
   add <provider>      Add a new connector
-  sync                Sync connectors (--all or --provider <name>)
+  sync                Sync connectors (--all or --provider <name>) [--extract] [--no-infer] [--llm <model>]
   status              Show connector health and sync state
   remove <provider>   Remove a connector
   enable <provider>   Enable a disabled connector
@@ -5374,12 +5374,15 @@ func runConnectSync(args []string) error {
 	fs := flag.NewFlagSet("connect-sync", flag.ContinueOnError)
 	all := fs.Bool("all", false, "Sync all enabled connectors")
 	providerName := fs.String("provider", "", "Sync a specific provider")
+	enableExtract := fs.Bool("extract", false, "Run fact extraction on imported records")
+	noInfer := fs.Bool("no-infer", false, "Skip edge inference after extraction")
+	llmFlag := fs.String("llm", "", "LLM provider/model for extraction (e.g., ollama/llama3)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	if !*all && *providerName == "" {
-		return fmt.Errorf("usage: cortex connect sync --all | --provider <name>")
+		return fmt.Errorf("usage: cortex connect sync --all | --provider <name> [--extract] [--no-infer] [--llm <provider/model>]")
 	}
 
 	dbPath := getDBPath()
@@ -5396,10 +5399,16 @@ func runConnectSync(args []string) error {
 	cs := connect.NewConnectorStore(sqliteSt.GetDB())
 	engine := connect.NewSyncEngine(connect.DefaultRegistry, cs, st, globalVerbose)
 
+	syncOpts := connect.SyncOptions{
+		Extract: *enableExtract,
+		NoInfer: *noInfer,
+		LLM:     *llmFlag,
+	}
+
 	ctx := context.Background()
 
 	if *all {
-		results, err := engine.SyncAll(ctx)
+		results, err := engine.SyncAll(ctx, syncOpts)
 		if err != nil {
 			return err
 		}
@@ -5411,7 +5420,7 @@ func runConnectSync(args []string) error {
 			printSyncResult(r)
 		}
 	} else {
-		result, err := engine.SyncProvider(ctx, *providerName)
+		result, err := engine.SyncProvider(ctx, *providerName, syncOpts)
 		if err != nil {
 			return err
 		}
@@ -5427,6 +5436,12 @@ func printSyncResult(r connect.SyncResult) {
 		fmt.Printf("✓ %s: %d fetched, %d imported, %d skipped (%s)\n",
 			r.Provider, r.RecordsFetched, r.RecordsImported, r.RecordsSkipped,
 			r.Duration.Round(time.Millisecond))
+		if r.FactsExtracted > 0 {
+			fmt.Printf("  Facts extracted: %d\n", r.FactsExtracted)
+		}
+		if r.EdgesInferred > 0 {
+			fmt.Printf("  🔗 Edges inferred: %d\n", r.EdgesInferred)
+		}
 	}
 }
 

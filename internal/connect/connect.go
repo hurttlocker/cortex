@@ -86,6 +86,8 @@ type SyncResult struct {
 	RecordsFetched  int           `json:"records_fetched"`
 	RecordsImported int           `json:"records_imported"`
 	RecordsSkipped  int           `json:"records_skipped"`
+	FactsExtracted  int           `json:"facts_extracted,omitempty"`
+	EdgesInferred   int           `json:"edges_inferred,omitempty"`
 	Duration        time.Duration `json:"duration"`
 	Error           string        `json:"error,omitempty"`
 	SyncedAt        time.Time     `json:"synced_at"`
