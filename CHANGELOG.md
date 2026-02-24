@@ -6,6 +6,27 @@ All notable changes to this project will be documented in this file.
 
 - No unreleased entries yet.
 
+## [0.8.0] - 2026-02-25
+
+### Added
+- **RRF search mode** — Reciprocal Rank Fusion (`--mode rrf`) combines BM25 and semantic results using rank-based scoring with configurable K parameter (default 60). Graceful fallback when embedder unavailable. (#205)
+- **Topic clustering** — Subject co-occurrence analysis builds topic communities with cohesion scores at import time. Incremental updates with 10% subject delta threshold for rebuild. New `cortex cluster` CLI command with `--rebuild`, `--name`, `--export json`. API: `/api/clusters`, `/api/clusters/:id`. (#207)
+- **Impact/blast-radius analysis** — `/api/impact?subject=X&depth=N` endpoint with predicate grouping, confidence distribution, and connected subjects. Visualizer adds concentric ring layout and confidence heat map. (#206)
+- **Graph-aware MCP tools** — 3 new tools (`graph_explore`, `graph_impact`, `list_clusters`) and 2 new resources (`cortex://graph/subjects`, `cortex://graph/clusters`). Source prefix filtering on explore. Total: 19 MCP tools, 4 resources. (#208)
+- **Temporal flow timeline** — `/api/timeline?subject=X` endpoint with day/week/month bucketing, transition detection (superseded, refined, decayed, expanded, contradicted), confidence trend tracking, and related subject expansion. Full visualizer integration with timeline mode. (#209)
+
+### Changed
+- CLI version now reports **`0.8.0`** (`cortex --version`).
+- Search mode help and MCP tool descriptions updated to include `rrf` mode.
+- Graph `ExportNode` now includes `cluster_id`, `cluster_color`, and `depth` fields.
+- Cluster tables (`clusters`, `fact_clusters`) created automatically via migration.
+- Import pipeline and connector sync now trigger cluster updates after fact extraction.
+- README updated: 19 MCP tools, 4 resources.
+
+### Validation
+- Full suite passing: `go test ./... -count=1` (13 packages, 290+ tests).
+- Build clean: `go build ./cmd/cortex/`.
+
 ## [0.7.0] - 2026-02-24
 
 ### Added
