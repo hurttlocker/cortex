@@ -65,6 +65,8 @@ type ImportOptions struct {
 	AutoTag     bool        // Infer project from file paths using default rules
 	Metadata    interface{} // *store.Metadata — stored as interface{} to avoid circular import
 	ProgressFn  func(current, total int, file string)
+	Include     []string // Only import files with these extensions (e.g. ".md", ".txt")
+	Exclude     []string // Skip files with these extensions (e.g. ".go", ".js")
 
 	// Capture hygiene controls (Issue #36).
 	// Conservative defaults are applied by Normalize().

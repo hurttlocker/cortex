@@ -144,10 +144,6 @@
     border: 1px solid #303036; border-radius: 8px; padding: 8px 10px;
     background: rgba(9,9,11,0.55);
   }
-  .mode-actions {
-    margin-top: 8px;
-  }
-
   .quality-panel {
     margin: 0 14px 10px;
     border: 1px solid var(--border);
@@ -296,12 +292,6 @@
         <button class="btn btn-ghost" id="modeSubjectBtn" onclick="switchToSubject()">Subject</button>
       </div>
       <div class="mode-note" id="modeNote">Cluster mode shows high-value subject groups across your graph.</div>
-      <div class="mode-actions">
-        <div class="mode-switch">
-          <button class="btn btn-ghost" id="space3dBtn" onclick="switchTo3DSpace()">3D Orbit</button>
-          <button class="btn btn-ghost active" id="space2dBtn" onclick="switchTo2DSpace()">2D Map</button>
-        </div>
-      </div>
     </div>
 
     <!-- Search -->
@@ -375,7 +365,6 @@
 
   <!-- Graph -->
   <div class="canvas" id="graphCanvas">
-    <div id="graphContainer" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:1"></div>
     <div id="graph2DContainer" style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:2"></div>
     <div class="label-layer" id="labelLayer"></div>
     <!-- DB Health Banner -->
@@ -396,7 +385,7 @@
     <div class="center-msg" id="emptyState">
       <img src="/assets/cortex-icon-192.png" class="msg-icon msg-icon-img" alt="Cortex logo" />
       <div class="msg-title">Cortex Knowledge Graph</div>
-      <div class="msg-sub">Enter a fact ID or search for facts to explore connections, edges, and co-occurrences in 2D/3D.</div>
+      <div class="msg-sub">Enter a fact ID or search for facts to explore connections, edges, and co-occurrences.</div>
     </div>
     <div class="center-msg" id="loadingState" style="display:none">
       <img src="/assets/cortex-icon-192.png" class="msg-icon msg-icon-img" alt="" />
@@ -415,7 +404,6 @@
   </div>
 </div>
 
-<script src="https://unpkg.com/3d-force-graph@1"></script>
 <script src="https://unpkg.com/force-graph"></script>
 <script>
 const CLUSTER_LIMIT = 150;
@@ -451,22 +439,13 @@ const MODE_NOTES = {
 };
 
 let Graph = null;
-let Graph3D = null;
 let Graph2D = null;
 let graphData = null;
 let selectedNode = null;
 let searchDebounce = null;
 let autoFitPending = false;
 let lastNodeClick = { id: null, at: 0 };
-let labelRaf = null;
 let currentViewMode = 'cluster';
-let activeGraphSpace = '2d';
-
-const HELP_3D = `
-  <kbd>Left drag</kbd> Rotate &nbsp; <kbd>Right drag</kbd> Pan &nbsp; <kbd>Scroll</kbd> Zoom<br>
-  <kbd>Click</kbd> Select node &nbsp; <kbd>Double-click</kbd> Focus subject &nbsp; <kbd>Hover</kbd> Tooltip
-`;
-
 const HELP_2D = `
   <kbd>Drag node</kbd> Reposition &nbsp; <kbd>Drag canvas</kbd> Pan &nbsp; <kbd>Scroll</kbd> Zoom<br>
   <kbd>Click</kbd> Select node &nbsp; <kbd>Double-click</kbd> Focus subject &nbsp; <kbd>Hover</kbd> Tooltip
@@ -525,70 +504,32 @@ function setModeNoteTemporary(message) {
 
 function updateControlsHelp() {
   const help = document.getElementById('controlsHelp');
-  help.innerHTML = activeGraphSpace === '2d' ? HELP_2D : HELP_3D;
+  help.innerHTML = HELP_2D;
 }
 
-function setGraphSpace(space) {
-  activeGraphSpace = space === '2d' ? '2d' : '3d';
-  const use2D = activeGraphSpace === '2d';
-  const container3D = document.getElementById('graphContainer');
+function setGraphSpace() {
   const container2D = document.getElementById('graph2DContainer');
   const outer = document.getElementById('graphCanvas');
   const w = outer.clientWidth || window.innerWidth - 340;
   const h = outer.clientHeight || window.innerHeight;
 
-  if (!use2D && !Graph3D) {
-    init3DGraph(container3D, w, h);
-  }
-
-  container3D.style.display = 'block';
   container2D.style.display = 'block';
-  container3D.style.visibility = use2D ? 'hidden' : 'visible';
-  container2D.style.visibility = use2D ? 'visible' : 'hidden';
-  container3D.style.opacity = use2D ? '0' : '1';
-  container2D.style.opacity = use2D ? '1' : '0';
-  container3D.style.pointerEvents = use2D ? 'none' : 'auto';
-  container2D.style.pointerEvents = use2D ? 'auto' : 'none';
-  container3D.style.zIndex = use2D ? '1' : '3';
-  container2D.style.zIndex = use2D ? '3' : '1';
+  container2D.style.visibility = 'visible';
+  container2D.style.opacity = '1';
+  container2D.style.pointerEvents = 'auto';
 
-  if (Graph3D) {
-    Graph3D.width(w).height(h);
-    if (!use2D) {
-      Graph3D.enableNavigationControls(true);
-      if (typeof Graph3D.resumeAnimation === 'function') Graph3D.resumeAnimation();
-      const controls = typeof Graph3D.controls === 'function' ? Graph3D.controls() : null;
-      if (controls) {
-        controls.enabled = true;
-        controls.enableRotate = true;
-        controls.enablePan = true;
-        controls.enableZoom = true;
-        if (controls.mouseButtons) controls.mouseButtons = { LEFT: 0, MIDDLE: 1, RIGHT: 2 };
-      }
-    }
-  }
   if (Graph2D) {
     Graph2D.width(w).height(h);
   }
 
-  document.getElementById('space3dBtn').classList.toggle('active', !use2D);
-  document.getElementById('space2dBtn').classList.toggle('active', use2D);
-  document.getElementById('labelLayer').style.display = use2D ? 'none' : 'block';
-  Graph = use2D ? Graph2D : Graph3D;
+  document.getElementById('labelLayer').style.display = 'none';
+  Graph = Graph2D;
   updateControlsHelp();
   if (graphData) {
     renderGraph();
     const q = document.getElementById('searchInput').value.trim();
     if (q) highlightSearch(q);
   }
-}
-
-function switchTo3DSpace() {
-  setGraphSpace('3d');
-}
-
-function switchTo2DSpace() {
-  setGraphSpace('2d');
 }
 
 function switchToCluster() {
@@ -689,33 +630,6 @@ function shouldRenderLabel(node) {
   return true;
 }
 
-function labelNodesForOverlay(nodes) {
-  if (!nodes || !nodes.length) return [];
-  const sorted = [...nodes].sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
-  const total = sorted.length;
-  let cap = 48;
-  if (total > 140) cap = 18;
-  else if (total > 90) cap = 24;
-
-  const seenSubjects = new Set();
-  const visible = [];
-  for (const node of sorted) {
-    if (!shouldRenderLabel(node)) continue;
-    const key = (node.subject || '').trim().toLowerCase();
-    const isSelected = selectedNode && selectedNode.id === node.id;
-    if (!isSelected && key && seenSubjects.has(key)) continue;
-    if (key) seenSubjects.add(key);
-    visible.push(node);
-    if (visible.length >= cap) break;
-  }
-
-  if (selectedNode && !visible.some(n => n.id === selectedNode.id)) {
-    const selected = sorted.find(n => n.id === selectedNode.id);
-    if (selected) visible.unshift(selected);
-  }
-  return visible.slice(0, cap);
-}
-
 function buildSubjectStats(nodes) {
   const stats = new Map();
   for (const node of nodes || []) {
@@ -754,52 +668,12 @@ function humanLabelForNode(node, subjectStats) {
 }
 
 function drawLabelOverlay() {
-  const layer = document.getElementById('labelLayer');
-  if (activeGraphSpace !== '3d' || !Graph3D || !graphData || !document.getElementById('showLabels').checked) {
-    layer.innerHTML = '';
-    return;
-  }
-
-  const nodes = Graph3D.graphData()?.nodes || [];
-  const labels = labelNodesForOverlay(nodes);
-  if (!labels.length) {
-    layer.innerHTML = '';
-    return;
-  }
-
-  const html = [];
-  for (const node of labels) {
-    if (!Number.isFinite(node.x) || !Number.isFinite(node.y) || !Number.isFinite(node.z)) continue;
-    const pos = Graph3D.graph2ScreenCoords(node.x, node.y, node.z);
-    if (!Number.isFinite(pos.x) || !Number.isFinite(pos.y)) continue;
-    const selected = selectedNode && selectedNode.id === node.id;
-    html.push(
-      `<div class="node-label${selected ? ' selected' : ''}" style="left:${pos.x}px;top:${pos.y}px">${esc(truncate(node.subject || `#${node.id}`, LABEL_MAX_CHARS))}</div>`
-    );
-  }
-  layer.innerHTML = html.join('');
-}
-
-function startLabelLoop() {
-  if (labelRaf) cancelAnimationFrame(labelRaf);
-  const tick = () => {
-    drawLabelOverlay();
-    labelRaf = requestAnimationFrame(tick);
-  };
-  tick();
+  document.getElementById('labelLayer').innerHTML = '';
 }
 
 function updateGraphStyling() {
   const showArrows = document.getElementById('showArrows').checked;
   const showLabels = document.getElementById('showLabels').checked;
-
-  if (Graph3D) {
-    Graph3D.nodeColor(nodeColorFor);
-    Graph3D.linkDirectionalArrowLength(link => {
-      if (link._isCooc) return 0;
-      return showArrows ? 5 : 0;
-    });
-  }
 
   if (Graph2D) {
     const nodes2D = Graph2D.graphData()?.nodes || [];
@@ -860,7 +734,7 @@ function formatNodeTooltip(n) {
   return `#${n.id}: ${n.subject}\n${n.predicate}: ${truncate(n.object, 120)}\nType: ${n.type || 'unknown'} | Conf: ${(n.confidence * 100).toFixed(0)}%${n.agent_id ? `\nAgent: ${n.agent_id}` : ''}`;
 }
 
-function handleNodeClick(node, source) {
+function handleNodeClick(node) {
   const now = Date.now();
   const isDoubleClick = lastNodeClick.id === node.id && now - lastNodeClick.at < 420;
   lastNodeClick = { id: node.id, at: now };
@@ -869,66 +743,19 @@ function handleNodeClick(node, source) {
   showDetail(node);
   updateGraphStyling();
 
-  if (source === '2d') {
-    if (Graph2D && Number.isFinite(node.x) && Number.isFinite(node.y)) {
-      Graph2D.centerAt(node.x, node.y, 700);
-      Graph2D.zoom(2.8, 700);
-    }
-  } else if (Graph3D) {
-    const dist = 88;
-    Graph3D.cameraPosition(
-      { x: node.x + dist, y: node.y + dist / 2, z: node.z + dist },
-      node,
-      900
-    );
+  if (Graph2D && Number.isFinite(node.x) && Number.isFinite(node.y)) {
+    Graph2D.centerAt(node.x, node.y, 700);
+    Graph2D.zoom(2.8, 700);
   }
 
   if (isDoubleClick) loadSubject(node.subject);
 }
 
-function init3DGraph(container3D, w, h) {
-  if (Graph3D) return;
-  Graph3D = ForceGraph3D()(container3D)
-    .backgroundColor('#07080d')
-    .width(w)
-    .height(h)
-    .showNavInfo(false)
-    .nodeRelSize(5)
-    .nodeVal(n => 0.8 + (n.confidence || 0) * 2.2)
-    .nodeColor(nodeColorFor)
-    .nodeOpacity(0.92)
-    .nodeResolution(14)
-    .nodeLabel(formatNodeTooltip)
-    .linkColor(link => EDGE_COLORS[link.type] || '#52525b')
-    .linkOpacity(link => link._isCooc ? 0.2 : 0.62)
-    .linkWidth(link => {
-      if (link._isCooc) return 0.45 + Math.min((link.count || 1) / 12, 1.8);
-      return 0.7 + Math.min((link.confidence || 0.1) * 2.2, 2.4);
-    })
-    .linkDirectionalArrowLength(link => {
-      if (link._isCooc) return 0;
-      return document.getElementById('showArrows').checked ? 5 : 0;
-    })
-    .linkDirectionalArrowRelPos(1)
-    .linkDirectionalParticles(link => link._isCooc ? 0 : 1)
-    .linkDirectionalParticleWidth(1.2)
-    .linkDirectionalParticleSpeed(0.004)
-    .linkDirectionalParticleColor(link => EDGE_COLORS[link.type] || '#71717a')
-    .onNodeClick(node => handleNodeClick(node, '3d'))
-    .onNodeHover(node => {
-      container3D.style.cursor = node ? 'pointer' : 'default';
-    })
-    .warmupTicks(120)
-    .cooldownTicks(180);
-}
-
 function initGraph() {
   const outer = document.getElementById('graphCanvas');
-  const container3D = document.getElementById('graphContainer');
   const container2D = document.getElementById('graph2DContainer');
   const w = outer.clientWidth || window.innerWidth - 340;
   const h = outer.clientHeight || window.innerHeight;
-  init3DGraph(container3D, w, h);
 
   Graph2D = ForceGraph()(container2D)
     .backgroundColor('#07080d')
@@ -951,7 +778,7 @@ function initGraph() {
     .linkDirectionalArrowColor(link => EDGE_COLORS[link.type] || '#71717a')
     .d3AlphaDecay(0.06)
     .d3VelocityDecay(0.38)
-    .onNodeClick(node => handleNodeClick(node, '2d'))
+    .onNodeClick(node => handleNodeClick(node))
     .onNodeDragEnd(node => {
       node.fx = node.x;
       node.fy = node.y;
@@ -966,15 +793,12 @@ function initGraph() {
     });
 
   Graph = Graph2D;
-  setGraphSpace(activeGraphSpace);
-  startLabelLoop();
+  setGraphSpace();
 
   window.addEventListener('resize', () => {
     const nw = outer.clientWidth || window.innerWidth - 340;
     const nh = outer.clientHeight || window.innerHeight;
-    if (Graph3D) Graph3D.width(nw).height(nh);
     if (Graph2D) Graph2D.width(nw).height(nh);
-    drawLabelOverlay();
   });
 }
 
@@ -1081,9 +905,6 @@ function renderGraph() {
     nodes: JSON.parse(JSON.stringify(nodes)),
     links: JSON.parse(JSON.stringify(links))
   };
-  if (Graph3D) {
-    Graph3D.graphData(JSON.parse(JSON.stringify(dataPayload)));
-  }
   if (Graph2D) {
     Graph2D.graphData(JSON.parse(JSON.stringify(dataPayload)));
   }
@@ -1094,10 +915,8 @@ function renderGraph() {
     autoFitPending = false;
     setTimeout(() => {
       if (selectedNode) return;
-      if (activeGraphSpace === '2d' && Graph2D) {
+      if (Graph2D) {
         Graph2D.zoomToFit(700, 35);
-      } else if (Graph3D) {
-        Graph3D.zoomToFit(700, 45);
       }
     }, 250);
   }
@@ -1200,7 +1019,6 @@ function highlightSearch(query) {
 
   if (!query) {
     updateGraphStyling();
-    Graph.nodeOpacity(0.92);
     return;
   }
 
@@ -1208,11 +1026,9 @@ function highlightSearch(query) {
   Graph.nodeColor(n => {
     const text = `${n.subject || ''} ${n.predicate || ''} ${n.object || ''}`.toLowerCase();
     if (text.includes(q)) return '#ffffff';
-    return nodeColorFor(n);
-  });
-  Graph.nodeOpacity(n => {
-    const text = `${n.subject || ''} ${n.predicate || ''} ${n.object || ''}`.toLowerCase();
-    return text.includes(q) ? 0.98 : 0.22;
+    // Dim non-matching nodes by using a lower-alpha color
+    const base = nodeColorFor(n);
+    return base.replace(')', ', 0.22)').replace('rgb(', 'rgba(');
   });
 }
 

@@ -1079,3 +1079,109 @@ func TestE2E_ReimportIdempotent(t *testing.T) {
 			stats.MemoryCount, result1.MemoriesNew)
 	}
 }
+
+func TestFilterByExtension_IncludeOnly(t *testing.T) {
+	files := []string{
+		"/tmp/a.md",
+		"/tmp/b.txt",
+		"/tmp/c.go",
+		"/tmp/d.js",
+		"/tmp/e.MD", // uppercase extension
+	}
+	result := filterByExtension(files, []string{".md", ".txt"}, nil)
+	if len(result) != 3 {
+		t.Fatalf("expected 3 files, got %d: %v", len(result), result)
+	}
+}
+
+func TestFilterByExtension_ExcludeOnly(t *testing.T) {
+	files := []string{
+		"/tmp/a.md",
+		"/tmp/b.txt",
+		"/tmp/c.go",
+		"/tmp/d.js",
+	}
+	result := filterByExtension(files, nil, []string{".go", ".js"})
+	if len(result) != 2 {
+		t.Fatalf("expected 2 files, got %d: %v", len(result), result)
+	}
+	for _, f := range result {
+		ext := strings.ToLower(filepath.Ext(f))
+		if ext == ".go" || ext == ".js" {
+			t.Errorf("excluded extension should not be present: %s", f)
+		}
+	}
+}
+
+func TestFilterByExtension_IncludeAndExclude(t *testing.T) {
+	files := []string{
+		"/tmp/a.md",
+		"/tmp/b.txt",
+		"/tmp/c.go",
+		"/tmp/d.MD",
+	}
+	// Include .md and .txt, but exclude .txt
+	result := filterByExtension(files, []string{"md", "txt"}, []string{"txt"})
+	if len(result) != 2 {
+		t.Fatalf("expected 2 files (.md only), got %d: %v", len(result), result)
+	}
+}
+
+func TestFilterByExtension_NoDot(t *testing.T) {
+	// Extensions without leading dot should work
+	files := []string{"/tmp/a.md", "/tmp/b.go"}
+	result := filterByExtension(files, []string{"md"}, nil)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 file, got %d: %v", len(result), result)
+	}
+}
+
+func TestFilterByExtension_CaseInsensitive(t *testing.T) {
+	files := []string{"/tmp/a.MD", "/tmp/b.Txt", "/tmp/c.GO"}
+	result := filterByExtension(files, []string{".md", ".TXT"}, nil)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 files, got %d: %v", len(result), result)
+	}
+}
+
+func TestEngine_ImportDir_Include(t *testing.T) {
+	tmp := t.TempDir()
+	os.WriteFile(filepath.Join(tmp, "a.md"), []byte("# Hello World\n\nThis is a sufficiently long markdown document for import testing purposes.\n"), 0o644)
+	os.WriteFile(filepath.Join(tmp, "b.txt"), []byte("This is a plain text file with enough content to pass import checks.\n"), 0o644)
+	os.WriteFile(filepath.Join(tmp, "c.json"), []byte(`{"key": "value", "note": "this is a json file"}`), 0o644)
+
+	s := newTestStore(t)
+	e := NewEngine(s)
+	opts := ImportOptions{
+		Include: []string{".md"},
+	}
+	result, err := e.ImportDir(context.Background(), tmp, opts)
+	if err != nil {
+		t.Fatalf("import dir: %v", err)
+	}
+	// Only .md should be scanned (filtered before import)
+	if result.FilesScanned != 1 {
+		t.Errorf("expected 1 file scanned (only .md), got %d (imported=%d, skipped=%d)", result.FilesScanned, result.FilesImported, result.FilesSkipped)
+	}
+}
+
+func TestEngine_ImportDir_Exclude(t *testing.T) {
+	tmp := t.TempDir()
+	os.WriteFile(filepath.Join(tmp, "a.md"), []byte("# Hello World\n\nThis is a sufficiently long markdown document for import testing purposes.\n"), 0o644)
+	os.WriteFile(filepath.Join(tmp, "b.txt"), []byte("This is a plain text file with enough content to pass import checks.\n"), 0o644)
+	os.WriteFile(filepath.Join(tmp, "c.json"), []byte(`{"key": "value", "note": "this is a json file"}`), 0o644)
+
+	s := newTestStore(t)
+	e := NewEngine(s)
+	opts := ImportOptions{
+		Exclude: []string{".json"},
+	}
+	result, err := e.ImportDir(context.Background(), tmp, opts)
+	if err != nil {
+		t.Fatalf("import dir: %v", err)
+	}
+	// .md and .txt should be scanned (json excluded by filter)
+	if result.FilesScanned != 2 {
+		t.Errorf("expected 2 files scanned (skip .json), got %d (imported=%d, skipped=%d)", result.FilesScanned, result.FilesImported, result.FilesSkipped)
+	}
+}
