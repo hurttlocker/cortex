@@ -146,7 +146,7 @@ func (se *SyncEngine) SyncOne(ctx context.Context, c *Connector, opts ...SyncOpt
 
 	// Run fact extraction on newly imported memories
 	if opt.Extract && len(importedMemoryIDs) > 0 {
-		factsExtracted, err := se.extractFacts(ctx, importedMemoryIDs, opt.LLM)
+		factsExtracted, newFactIDs, err := se.extractFacts(ctx, importedMemoryIDs, opt.LLM)
 		if err != nil {
 			if se.verbose {
 				fmt.Printf("  warning: extraction error: %v\n", err)
@@ -155,6 +155,12 @@ func (se *SyncEngine) SyncOne(ctx context.Context, c *Connector, opts ...SyncOpt
 			result.FactsExtracted = factsExtracted
 			if se.verbose {
 				fmt.Printf("  Facts extracted: %d\n", factsExtracted)
+			}
+		}
+
+		if sqlStore, ok := se.memStore.(*store.SQLiteStore); ok && len(newFactIDs) > 0 {
+			if _, err := sqlStore.UpdateClusters(ctx, newFactIDs); err != nil && se.verbose {
+				fmt.Printf("  warning: cluster update error: %v\n", err)
 			}
 		}
 
@@ -228,24 +234,25 @@ func (se *SyncEngine) importRecord(ctx context.Context, provider string, rec Rec
 
 // extractFacts runs the fact extraction pipeline on a set of memory IDs.
 // Returns the total number of facts extracted.
-func (se *SyncEngine) extractFacts(ctx context.Context, memoryIDs []int64, llmFlag string) (int, error) {
+func (se *SyncEngine) extractFacts(ctx context.Context, memoryIDs []int64, llmFlag string) (int, []int64, error) {
 	// Configure LLM if requested
 	var llmConfig *extract.LLMConfig
 	if llmFlag != "" {
 		var err error
 		llmConfig, err = extract.ResolveLLMConfig(llmFlag)
 		if err != nil {
-			return 0, fmt.Errorf("configuring LLM: %w", err)
+			return 0, nil, fmt.Errorf("configuring LLM: %w", err)
 		}
 		if llmConfig != nil {
 			if err := llmConfig.Validate(); err != nil {
-				return 0, fmt.Errorf("invalid LLM configuration: %w", err)
+				return 0, nil, fmt.Errorf("invalid LLM configuration: %w", err)
 			}
 		}
 	}
 
 	pipeline := extract.NewPipeline(llmConfig)
 	totalFacts := 0
+	newFactIDs := make([]int64, 0, len(memoryIDs)*4)
 
 	for _, memID := range memoryIDs {
 		// Retrieve the memory content
@@ -283,14 +290,16 @@ func (se *SyncEngine) extractFacts(ctx context.Context, memoryIDs []int64, llmFl
 				DecayRate:   ef.DecayRate,
 				SourceQuote: ef.SourceQuote,
 			}
-			if _, err := se.memStore.AddFact(ctx, fact); err != nil {
+			id, err := se.memStore.AddFact(ctx, fact)
+			if err != nil {
 				continue // skip storage errors
 			}
 			totalFacts++
+			newFactIDs = append(newFactIDs, id)
 		}
 	}
 
-	return totalFacts, nil
+	return totalFacts, newFactIDs, nil
 }
 
 // inferEdges runs the relationship inference engine to create knowledge graph edges.

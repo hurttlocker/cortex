@@ -30,16 +30,18 @@ type ServerConfig struct {
 
 // ExportNode is the visualization-friendly format for a fact.
 type ExportNode struct {
-	ID          int64    `json:"id"`
-	Subject     string   `json:"subject"`
-	Predicate   string   `json:"predicate"`
-	Object      string   `json:"object"`
-	Confidence  float64  `json:"confidence"`
-	AgentID     string   `json:"agent_id,omitempty"`
-	FactType    string   `json:"type"`
-	FactCount   int      `json:"fact_count,omitempty"`
-	LastUpdated string   `json:"last_updated,omitempty"`
-	SourceTypes []string `json:"source_types,omitempty"`
+	ID           int64    `json:"id"`
+	Subject      string   `json:"subject"`
+	Predicate    string   `json:"predicate"`
+	Object       string   `json:"object"`
+	Confidence   float64  `json:"confidence"`
+	AgentID      string   `json:"agent_id,omitempty"`
+	FactType     string   `json:"type"`
+	ClusterID    int64    `json:"cluster_id,omitempty"`
+	ClusterColor string   `json:"cluster_color,omitempty"`
+	FactCount    int      `json:"fact_count,omitempty"`
+	LastUpdated  string   `json:"last_updated,omitempty"`
+	SourceTypes  []string `json:"source_types,omitempty"`
 }
 
 // ExportEdge is the visualization-friendly format for an edge.
@@ -129,6 +131,14 @@ func Serve(cfg ServerConfig) error {
 	// Sample cluster endpoint — returns a cluster of related facts for demo/exploration
 	mux.HandleFunc("/api/cluster", func(w http.ResponseWriter, r *http.Request) {
 		handleClusterAPI(w, r, cfg.Store)
+	})
+
+	// Topic clusters endpoints.
+	mux.HandleFunc("/api/clusters", func(w http.ResponseWriter, r *http.Request) {
+		handleClustersListAPI(w, r, cfg.Store)
+	})
+	mux.HandleFunc("/api/clusters/", func(w http.ResponseWriter, r *http.Request) {
+		handleClusterDetailAPI(w, r, cfg.Store)
 	})
 
 	// Stats endpoint — DB health numbers for the banner

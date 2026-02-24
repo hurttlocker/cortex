@@ -29,7 +29,7 @@ func TestNewStore(t *testing.T) {
 
 	// Verify tables exist by querying each
 	ss := s.(*SQLiteStore)
-	tables := []string{"memories", "facts", "embeddings", "recall_log",
+	tables := []string{"memories", "facts", "clusters", "fact_clusters", "embeddings", "recall_log",
 		"memory_events", "snapshots", "lenses", "meta"}
 	for _, table := range tables {
 		var name string
