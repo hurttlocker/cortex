@@ -65,13 +65,13 @@ type FactClassification struct {
 
 // ClassifyResult holds the output from a batch classification run.
 type ClassifyResult struct {
-	Classified  []FactClassification // Facts that were reclassified
-	Unchanged   int                  // Facts where type didn't change or confidence too low
-	Errors      int                  // Facts where classification failed
-	TotalFacts  int                  // Total facts processed
-	Latency     time.Duration        // Total time
-	Model       string               // Model used
-	BatchCount  int                  // Number of LLM batches
+	Classified []FactClassification // Facts that were reclassified
+	Unchanged  int                  // Facts where type didn't change or confidence too low
+	Errors     int                  // Facts where classification failed
+	TotalFacts int                  // Total facts processed
+	Latency    time.Duration        // Total time
+	Model      string               // Model used
+	BatchCount int                  // Number of LLM batches
 }
 
 // ClassifyOpts configures the classification run.
