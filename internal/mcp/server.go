@@ -1257,11 +1257,17 @@ func registerConnectAddTool(s *server.MCPServer, connStore *connect.ConnectorSto
 
 func registerConnectSyncTool(s *server.MCPServer, connStore *connect.ConnectorStore, memStore store.Store) {
 	tool := mcp.NewTool("cortex_connect_sync",
-		mcp.WithDescription("Sync a connector (or all connectors if no provider specified). Fetches new data from the source and imports into Cortex."),
+		mcp.WithDescription("Sync a connector (or all connectors if no provider specified). Fetches new data from the source and imports into Cortex. Use extract=true to run fact extraction and edge inference on imported records."),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("provider",
 			mcp.Description("Provider name to sync (e.g., github). Leave empty to sync all enabled connectors."),
+		),
+		mcp.WithBoolean("extract",
+			mcp.Description("Run fact extraction on imported records (default: false)"),
+		),
+		mcp.WithBoolean("no_infer",
+			mcp.Description("Skip edge inference after extraction (default: false)"),
 		),
 	)
 
@@ -1272,9 +1278,22 @@ func registerConnectSyncTool(s *server.MCPServer, connStore *connect.ConnectorSt
 		engine := connect.NewSyncEngine(connect.DefaultRegistry, connStore, memStore, false)
 
 		providerName, _ := req.RequireString("provider")
+		extractEnabled := false
+		if ext, err := req.RequireString("extract"); err == nil {
+			extractEnabled = ext == "true"
+		}
+		noInfer := false
+		if ni, err := req.RequireString("no_infer"); err == nil {
+			noInfer = ni == "true"
+		}
+
+		opts := connect.SyncOptions{
+			Extract: extractEnabled,
+			NoInfer: noInfer,
+		}
 
 		if providerName != "" {
-			result, err := engine.SyncProvider(ctx, providerName)
+			result, err := engine.SyncProvider(ctx, providerName, opts)
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("sync error: %v", err)), nil
 			}
@@ -1283,7 +1302,7 @@ func registerConnectSyncTool(s *server.MCPServer, connStore *connect.ConnectorSt
 		}
 
 		// Sync all
-		results, err := engine.SyncAll(ctx)
+		results, err := engine.SyncAll(ctx, opts)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("sync all error: %v", err)), nil
 		}
