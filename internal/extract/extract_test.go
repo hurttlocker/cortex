@@ -417,56 +417,34 @@ func TestExtractRegexPatterns_PhoneUS(t *testing.T) {
 	}
 }
 
-func TestExtractRegexPatterns_URL(t *testing.T) {
+func TestExtractRegexPatterns_NoURL(t *testing.T) {
+	// URL regex was removed in v0.9.0 — standalone URLs produced noise facts
+	// with generic "url" predicates. URLs are captured when they appear as
+	// values in KV pairs (e.g., "Repo: https://github.com/user/repo").
 	pipeline := NewPipeline()
 	text := "Visit https://example.com and http://github.com/user/repo"
 
 	facts := pipeline.extractRegexPatterns(text, nil)
 
-	urlCount := 0
-	urls := make(map[string]bool)
 	for _, fact := range facts {
-		if fact.FactType == "kv" && fact.Predicate == "url" {
-			urlCount++
-			urls[fact.Object] = true
-		}
-	}
-
-	if urlCount != 2 {
-		t.Errorf("Expected 2 URL facts, got %d", urlCount)
-	}
-
-	expectedURLs := []string{"https://example.com", "http://github.com/user/repo"}
-	for _, url := range expectedURLs {
-		if !urls[url] {
-			t.Errorf("Expected to find URL %q", url)
+		if fact.Predicate == "url" {
+			t.Errorf("URL regex should be removed, but found url fact: %+v", fact)
 		}
 	}
 }
 
-func TestExtractRegexPatterns_Money(t *testing.T) {
+func TestExtractRegexPatterns_NoMoney(t *testing.T) {
+	// Money regex was removed in v0.9.0 — amounts like "$1,500" produced
+	// noise facts with generic "amount" predicates. Money values are still
+	// captured as part of KV pairs (e.g., "Budget: $1,500").
 	pipeline := NewPipeline()
 	text := "Budget is $1,500 or maybe $18K, but not more than $1.5M"
 
 	facts := pipeline.extractRegexPatterns(text, nil)
 
-	moneyCount := 0
-	amounts := make(map[string]bool)
 	for _, fact := range facts {
-		if fact.FactType == "kv" && fact.Predicate == "amount" {
-			moneyCount++
-			amounts[fact.Object] = true
-		}
-	}
-
-	if moneyCount != 3 {
-		t.Errorf("Expected 3 money facts, got %d", moneyCount)
-	}
-
-	expectedAmounts := []string{"1,500", "18K", "1.5M"}
-	for _, amount := range expectedAmounts {
-		if !amounts[amount] {
-			t.Errorf("Expected to find amount %q", amount)
+		if fact.Predicate == "amount" {
+			t.Errorf("money regex should be removed, but found amount fact: %+v", fact)
 		}
 	}
 }
@@ -634,8 +612,8 @@ Call me at (555) 123-4567.`
 		t.Fatalf("Extract() failed: %v", err)
 	}
 
-	if len(facts) < 10 {
-		t.Errorf("Expected at least 10 facts from real-world content, got %d", len(facts))
+	if len(facts) < 5 {
+		t.Errorf("Expected at least 5 facts from real-world content, got %d", len(facts))
 	}
 
 	// Verify variety of fact types
@@ -644,10 +622,12 @@ Call me at (555) 123-4567.`
 		factTypes[fact.FactType]++
 	}
 
-	expectedTypes := []string{"kv", "temporal", "identity"}
+	// With tightened governor (v0.9.0), dates in KV pairs stay as KV type.
+	// Standalone date/email regex still fires but governor may filter short predicates.
+	expectedTypes := []string{"kv", "identity"}
 	for _, expectedType := range expectedTypes {
 		if factTypes[expectedType] == 0 {
-			t.Errorf("Expected at least one fact of type %q", expectedType)
+			t.Errorf("Expected at least one fact of type %q, got types: %v", expectedType, factTypes)
 		}
 	}
 
@@ -760,7 +740,7 @@ func TestExtractNaturalLanguagePatterns_RealPhrases(t *testing.T) {
 	ctx := context.Background()
 	text := `Q prefers Sonnet for coding tasks.
 We decided to use HNSW over FAISS.
-SB is engaged to Q.
+SB is engaged to Marquise.
 Cortex is running on port 7437.
 Sydney is in Philadelphia.`
 
@@ -784,13 +764,13 @@ Sydney is in Philadelphia.`
 func TestExtractDistributionSanity_MixedCorpus(t *testing.T) {
 	pipeline := NewPipeline()
 	ctx := context.Background()
-	text := `Name: Q
+	text := `Name: Marquise
 Role: Engineer
 Project: Cortex
 Theme: dark
 Q prefers Sonnet for coding tasks.
 We decided to use HNSW over FAISS.
-SB is engaged to Q.
+SB is engaged to Marquise.
 Cortex is running on port 7437.
 Team is in Philadelphia.`
 

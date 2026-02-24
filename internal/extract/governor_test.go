@@ -8,11 +8,11 @@ func TestGovernor_DropMarkdownJunk(t *testing.T) {
 	gov := NewGovernor(DefaultGovernorConfig())
 
 	junkFacts := []ExtractedFact{
-		{Subject: "test", Predicate: "key", Object: "**", FactType: "kv", Confidence: 0.9},
-		{Subject: "test", Predicate: "key", Object: "---", FactType: "kv", Confidence: 0.9},
-		{Subject: "test", Predicate: "key", Object: "|---|---|", FactType: "kv", Confidence: 0.9},
-		{Subject: "test", Predicate: "key", Object: "***", FactType: "kv", Confidence: 0.9},
-		{Subject: "test", Predicate: "key", Object: "```", FactType: "kv", Confidence: 0.9},
+		{Subject: "test", Predicate: "note", Object: "**", FactType: "kv", Confidence: 0.9},
+		{Subject: "test", Predicate: "note", Object: "---", FactType: "kv", Confidence: 0.9},
+		{Subject: "test", Predicate: "note", Object: "|---|---|", FactType: "kv", Confidence: 0.9},
+		{Subject: "test", Predicate: "note", Object: "***", FactType: "kv", Confidence: 0.9},
+		{Subject: "test", Predicate: "note", Object: "```", FactType: "kv", Confidence: 0.9},
 		{Subject: "test", Predicate: "---", Object: "value", FactType: "kv", Confidence: 0.9},
 	}
 
@@ -26,9 +26,9 @@ func TestGovernor_DropGenericSubjects(t *testing.T) {
 	gov := NewGovernor(DefaultGovernorConfig())
 
 	facts := []ExtractedFact{
-		{Subject: "Conversation Summary", Predicate: "key", Object: "some value here", FactType: "kv", Confidence: 0.9},
-		{Subject: "conversation capture", Predicate: "key2", Object: "some other value", FactType: "kv", Confidence: 0.9},
-		{Subject: "", Predicate: "key3", Object: "empty subject is fine", FactType: "kv", Confidence: 0.9},
+		{Subject: "Conversation Summary", Predicate: "setting", Object: "some value here", FactType: "kv", Confidence: 0.9},
+		{Subject: "conversation capture", Predicate: "topic", Object: "some other value", FactType: "kv", Confidence: 0.9},
+		{Subject: "", Predicate: "note", Object: "empty subject is fine", FactType: "kv", Confidence: 0.9},
 		{Subject: "Q", Predicate: "email", Object: "test@example.com", FactType: "identity", Confidence: 0.9},
 	}
 
@@ -89,7 +89,7 @@ func TestGovernor_CircularFacts(t *testing.T) {
 
 	facts := []ExtractedFact{
 		{Subject: "test", Predicate: "status", Object: "status", FactType: "kv", Confidence: 0.9},
-		{Subject: "test", Predicate: "name", Object: "actual value here", FactType: "kv", Confidence: 0.9},
+		{Subject: "test", Predicate: "label", Object: "actual value here", FactType: "kv", Confidence: 0.9},
 	}
 
 	result := gov.Apply(facts)
@@ -102,14 +102,15 @@ func TestGovernor_MinLengthFilters(t *testing.T) {
 	gov := NewGovernor(DefaultGovernorConfig())
 
 	facts := []ExtractedFact{
-		{Subject: "test", Predicate: "k", Object: "a value", FactType: "kv", Confidence: 0.9},            // pred too short
-		{Subject: "test", Predicate: "key", Object: "v", FactType: "kv", Confidence: 0.9},                // obj too short
-		{Subject: "test", Predicate: "key", Object: "valid value here", FactType: "kv", Confidence: 0.9}, // good
+		{Subject: "test", Predicate: "k", Object: "a value", FactType: "kv", Confidence: 0.9},                  // pred too short (1 char)
+		{Subject: "test", Predicate: "key", Object: "v", FactType: "kv", Confidence: 0.9},                      // pred too short (3 chars, min is 4)
+		{Subject: "test", Predicate: "name", Object: "x", FactType: "kv", Confidence: 0.9},                     // obj too short (1 char, min is 2)
+		{Subject: "test", Predicate: "role", Object: "valid value here", FactType: "kv", Confidence: 0.9},      // good (pred=4, obj=16)
 	}
 
 	result := gov.Apply(facts)
 	if len(result) != 1 {
-		t.Errorf("expected 1 fact (min length filters), got %d", len(result))
+		t.Errorf("expected 1 fact (min length filters), got %d: %+v", len(result), result)
 	}
 }
 
@@ -119,7 +120,7 @@ func TestGovernor_NumericPredicate(t *testing.T) {
 	facts := []ExtractedFact{
 		{Subject: "test", Predicate: "123", Object: "some value here", FactType: "kv", Confidence: 0.9},
 		{Subject: "test", Predicate: "$50.00", Object: "some value here", FactType: "kv", Confidence: 0.9},
-		{Subject: "test", Predicate: "price", Object: "$50.00 per unit", FactType: "kv", Confidence: 0.9},
+		{Subject: "test", Predicate: "price", Object: "$50.00 per unit", FactType: "kv", Confidence: 0.9},  // "price" is 5 chars, passes
 	}
 
 	result := gov.Apply(facts)
@@ -176,8 +177,8 @@ func TestGovernor_OnlyFormattingObject(t *testing.T) {
 	gov := NewGovernor(DefaultGovernorConfig())
 
 	facts := []ExtractedFact{
-		{Subject: "test", Predicate: "note", Object: "*** __ ``", FactType: "kv", Confidence: 0.9},
-		{Subject: "test", Predicate: "note", Object: "real content here", FactType: "kv", Confidence: 0.9},
+		{Subject: "test", Predicate: "label", Object: "*** __ ``", FactType: "kv", Confidence: 0.9},
+		{Subject: "test", Predicate: "label", Object: "real content here", FactType: "kv", Confidence: 0.9},
 	}
 
 	result := gov.Apply(facts)

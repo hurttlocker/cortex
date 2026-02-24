@@ -31,11 +31,12 @@ type GovernorConfig struct {
 }
 
 // DefaultGovernorConfig returns the recommended default governor settings.
+// Tightened Feb 2026 after 537K kv garbage analysis: old config produced 250 facts/memory.
 func DefaultGovernorConfig() GovernorConfig {
 	return GovernorConfig{
-		MaxFactsPerMemory:   50,
+		MaxFactsPerMemory:   20,
 		MinObjectLength:     2,
-		MinPredicateLength:  2,
+		MinPredicateLength:  4,
 		DropMarkdownJunk:    true,
 		DropGenericSubjects: true,
 	}
@@ -165,6 +166,61 @@ func (g *Governor) isNoise(f ExtractedFact) bool {
 		return true
 	}
 
+	// --- v0.9.0 noise filters (Feb 2026) ---
+
+	predLower := strings.ToLower(pred)
+	objLower := strings.ToLower(obj)
+	subjLower := strings.ToLower(subj)
+
+	// Generic regex-extracted predicates that aren't real facts.
+	// Note: "email" and "phone" are kept — they're valid in KV pairs like "Email: test@example.com"
+	noisePredicates := map[string]bool{
+		"amount": true, "url": true, "date": true, "value": true,
+	}
+	if noisePredicates[predLower] {
+		return true
+	}
+
+	// URLs as objects (http links aren't facts — they're references)
+	if strings.HasPrefix(objLower, "http://") || strings.HasPrefix(objLower, "https://") {
+		return true
+	}
+
+	// URLs in predicates
+	if strings.HasPrefix(predLower, "http://") || strings.HasPrefix(predLower, "https://") || strings.HasPrefix(predLower, "//") {
+		return true
+	}
+
+	// Git hash predicates (e.g., "41f5d98 merge pr #5")
+	if gitHashRE.MatchString(pred) {
+		return true
+	}
+
+	// Numbered list items as subjects (e.g., "1307", "3)", "2BR")
+	if len(subj) > 0 && subj[0] >= '0' && subj[0] <= '9' {
+		return true
+	}
+
+	// Pipe-separated predicates (markdown table fragments)
+	if strings.Contains(pred, "|") {
+		return true
+	}
+
+	// Subjects with markdown blockquote markers
+	if strings.HasPrefix(subjLower, "> ") || strings.HasPrefix(subjLower, "- ") {
+		return true
+	}
+
+	// Predicate is just a markdown list marker with content (e.g., "- #68")
+	if strings.HasPrefix(predLower, "- ") || strings.HasPrefix(predLower, "* ") {
+		return true
+	}
+
+	// Subject is a bare markdown link reference
+	if strings.HasPrefix(subjLower, "[") && strings.Contains(subjLower, "](") {
+		return true
+	}
+
 	return false
 }
 
@@ -201,6 +257,9 @@ func isMarkdownJunk(s string) bool {
 
 	return false
 }
+
+// gitHashRE matches predicates that are git commit hashes (6+ hex chars).
+var gitHashRE = regexp.MustCompile(`^[0-9a-f]{6,}\b`)
 
 // timestampSubjectRE matches subjects that are primarily timestamps or
 // timestamp-prefixed section headers — strong signal of auto-capture noise.

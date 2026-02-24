@@ -123,7 +123,7 @@ func TestSyncOneWithExtraction(t *testing.T) {
 		records: []Record{
 			{
 				ExternalID: "r1",
-				Content:    "## Team\n- Alice is the CEO of Acme Corp since 2020\n- Bob is the CTO and joined in January 2024\n- Budget is $500K for Q1",
+				Content:    "## Team\n- **Role:** CEO of Acme Corp\n- **Name:** Alice Johnson\n- **Joined:** January 2024\n- **Project:** Cortex Memory Engine",
 				Source:     "team.md",
 			},
 		},

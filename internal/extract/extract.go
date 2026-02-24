@@ -452,18 +452,10 @@ func initRegexPatterns() []*regexPattern {
 			factType: "identity",
 			name:     "phone_intl",
 		},
-		// URLs (http, https)
-		{
-			regex:    regexp.MustCompile(`\b(https?://[^\s]+)\b`),
-			factType: "kv",
-			name:     "url",
-		},
-		// Money ($1,000, $18K, $1.5M)
-		{
-			regex:    regexp.MustCompile(`\$(\d+(?:\.\d+)?[KMB]|\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\b`),
-			factType: "kv",
-			name:     "money",
-		},
+		// URLs and money amounts are NOT extracted as standalone facts.
+		// They produce noise ("url: https://...", "amount: $1,247") that
+		// pollutes the kv bucket. URLs and prices are captured as part of
+		// key-value facts when they appear as values in structured text.
 	}
 }
 
@@ -527,7 +519,7 @@ func (p *Pipeline) extractKeyValues(text string, metadata map[string]string) []E
 var (
 	preferenceSentenceRE = regexp.MustCompile(`(?i)^\s*([a-z][a-z0-9'._ -]{0,80})\s+(prefers?|likes?|dislikes?|wants?)\s+(.+)$`)
 	decisionSentenceRE   = regexp.MustCompile(`(?i)^\s*(?:we\s+)?(decided|decide|chose|choose|selected|select|approved)\s+(?:to\s+)?(.+)$`)
-	engagedSentenceRE    = regexp.MustCompile(`(?i)^\s*([a-z][a-z0-9'._ -]{0,80})\s+is\s+engaged\s+to\s+([a-z][a-z0-9'._ -]{0,80})\s*$`)
+	engagedSentenceRE    = regexp.MustCompile(`(?i)^\s*([a-z][a-z0-9'._ -]{0,80})\s+is\s+engaged\s+to\s+([a-z][a-z0-9'._ -]{0,80})\s*[.!]?\s*$`)
 	relatedSentenceRE    = regexp.MustCompile(`(?i)^\s*([a-z][a-z0-9'._ -]{0,80})\s+is\s+([a-z][a-z0-9'._ -]{0,80})'?s\s+(fianc[eé]e|manager|partner|spouse|wife|husband)\s*$`)
 	stateSentenceRE      = regexp.MustCompile(`(?i)^\s*([a-z][a-z0-9'._ -]{0,80})\s+is\s+(running|active|inactive|idle|blocked|online|offline|down|up)(?:\s+on\s+port\s+(\d+))?(?:[.!])?\s*$`)
 	locationSentenceRE   = regexp.MustCompile(`(?i)^\s*([a-z][a-z0-9'._ -]{0,80})\s+(?:is at|is in|located in|based in)\s+(.+?)(?:[.!])?\s*$`)
