@@ -6,6 +6,47 @@ All notable changes to this project will be documented in this file.
 
 - No unreleased entries yet.
 
+## [0.9.0] - 2026-02-25
+
+### Added
+- **Query expansion** — `--expand` flag pre-processes vague queries through an LLM (Gemini 2.0 Flash, free) to generate better search terms. LRU cache prevents duplicate calls. Graceful fallback to original query on LLM failure. (#216)
+- **LLM enrichment** — `--enrich` (now default with `--extract`) sends rule-extracted facts + source text to Grok 4.1 Fast to find what rules missed: decisions, relationships, implicit connections. Additive-only — never removes rule facts. Tagged as `llm-enrich`. (#218)
+- **Auto-classification** — `cortex classify` reclassifies generic `kv` facts into proper types (decision, config, state, temporal, etc.) using DeepSeek V3.2. Batch processing (20/batch), concurrent (5 goroutines), live progress logging. (#219, #227)
+- **Classify-on-import** — New kv facts are auto-classified at import time when enrichment is enabled. `--no-classify` to skip. (#227)
+- **Conflict auto-resolution** — `cortex conflicts --resolve llm` uses LLM to analyze contradictory facts and recommend supersede/merge/keep actions. Confidence gating (0.7), batch processing, dry-run support. (#217)
+- **Fact clustering & summarization** — `cortex summarize` consolidates clusters of related facts into concise summaries using LLM. Reduces fact count while preserving knowledge. (#220)
+- **Progress logging** — `cortex classify` now prints batch-by-batch progress to stderr for observability during long sweeps.
+- **New CLI flags** — `--no-enrich` (skip LLM enrichment), `--no-classify` (skip auto-classification), `--concurrency N` (parallel LLM batches).
+
+### Changed
+- **Enrichment is now default** — `--extract` implies LLM enrichment (Grok 4.1 Fast) and auto-classification (DeepSeek V3.2). Use `--no-enrich` for offline/rule-only mode. (#227)
+- **Governor tightened** — DefaultGovernorConfig: MaxFacts 20→10, MinObject 2→3, MinPredicate 4→5. AutoCapture: MaxFacts 15→5, MinObject 3→4, MinPredicate 3→5. Cuts rule-based kv output ≥50%.
+- **6 new noise filters** — Section header subjects, bold-formatted subjects, file path predicates, long objects (>200 chars), checkbox subjects.
+- **`connect sync --extract`** now implies enrichment by default (`--no-enrich` to skip).
+- **`config` fact type** — Added to DB CHECK constraint. 9 valid types: kv, relationship, preference, temporal, identity, location, decision, state, config.
+- **Enrichment MaxTokens** — Bumped 1024→8192 to handle large files (MEMORY.md 22K chars).
+- **Classification batch-size** — Default 20 (was 10). Optimal for DeepSeek V3.2 on OpenRouter.
+- CLI version now reports **`0.9.0`**.
+
+### New Packages
+- `internal/llm/` — LLM provider abstraction (Google AI + OpenRouter). `Provider.Complete()` interface.
+- `internal/search/expand.go` — Query expansion with LRU cache.
+- `internal/extract/enrich.go` — LLM-powered fact enrichment.
+- `internal/extract/classify.go` — Batch fact classification with concurrency.
+- `internal/extract/resolve.go` — LLM-powered conflict resolution.
+- `internal/extract/summarize.go` — Cluster consolidation.
+
+### Cost
+- All LLM features optional (flags). <$1/month ongoing at typical usage.
+- Enrichment: Grok 4.1 Fast ($0.20/$0.50 per M tokens)
+- Classification: DeepSeek V3.2 ($0.25/$0.40 per M tokens)
+- Query expansion: Gemini 2.0 Flash (free tier)
+
+### Validation
+- Full suite passing: `go test ./... -count=1` (15 packages, 300+ tests).
+- Build clean: `go build ./cmd/cortex/`.
+- Classification sweep: 20K facts in 53 min, 77.6% reclassification, 0.12% error rate.
+
 ## [0.8.0] - 2026-02-25
 
 ### Added
