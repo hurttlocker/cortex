@@ -82,12 +82,13 @@ type enrichResponse struct {
 }
 
 type enrichFact struct {
-	Subject     string  `json:"subject"`
-	Predicate   string  `json:"predicate"`
-	Object      string  `json:"object"`
-	FactType    string  `json:"type"`
-	Confidence  float64 `json:"confidence"`
-	SourceQuote string  `json:"source_quote"`
+	Subject     string          `json:"subject"`
+	Predicate   string          `json:"predicate"`
+	ObjectRaw   json.RawMessage `json:"object"`
+	Object      string          `json:"-"` // populated by coerceEnrichFacts
+	FactType    string          `json:"type"`
+	Confidence  float64         `json:"confidence"`
+	SourceQuote string          `json:"source_quote"`
 }
 
 // EnrichFacts uses an LLM to find facts that rule-based extraction missed.
@@ -242,7 +243,45 @@ func parseEnrichResponse(raw string) (*enrichResponse, error) {
 		return nil, fmt.Errorf("invalid JSON from LLM: %w\nraw response: %s", err, truncateForError(raw, 300))
 	}
 
+	// Coerce non-string object fields (LLMs sometimes return bool/number for "object")
+	for i := range resp.Facts {
+		resp.Facts[i].Object = coerceRawToString(resp.Facts[i].ObjectRaw)
+	}
+
 	return &resp, nil
+}
+
+// coerceRawToString converts a json.RawMessage to a string, handling
+// string, bool, number, and null types that LLMs sometimes return.
+func coerceRawToString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	// Try string first (most common)
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+
+	// Try bool
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		return fmt.Sprintf("%v", b)
+	}
+
+	// Try number
+	var f float64
+	if err := json.Unmarshal(raw, &f); err == nil {
+		// Check if it's an integer
+		if f == float64(int64(f)) {
+			return fmt.Sprintf("%d", int64(f))
+		}
+		return fmt.Sprintf("%g", f)
+	}
+
+	// Fallback: use raw string representation
+	return strings.Trim(string(raw), "\"")
 }
 
 // isDuplicateOfRuleFact checks if an LLM-extracted fact is a near-duplicate
