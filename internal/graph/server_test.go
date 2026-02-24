@@ -34,6 +34,23 @@ func TestVisualizerHTML(t *testing.T) {
 	}
 }
 
+func TestVisualizerImpactModeWiring(t *testing.T) {
+	data, err := visualizerFS.ReadFile("visualizer.html")
+	if err != nil {
+		t.Fatalf("visualizer.html not embedded: %v", err)
+	}
+	html := string(data)
+	if !strings.Contains(html, "modeImpactBtn") {
+		t.Fatal("expected impact mode button in visualizer")
+	}
+	if !strings.Contains(html, "/api/impact") {
+		t.Fatal("expected visualizer to call /api/impact")
+	}
+	if !strings.Contains(html, "impactConcentric") {
+		t.Fatal("expected impact concentric layout toggle in visualizer")
+	}
+}
+
 func TestGraphAPIEndpoint(t *testing.T) {
 	st := newTestStore(t)
 	defer st.Close()
