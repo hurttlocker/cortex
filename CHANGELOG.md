@@ -6,6 +6,22 @@ All notable changes to this project will be documented in this file.
 
 - No unreleased entries yet.
 
+## [0.6.0] - 2026-02-24
+
+### Added
+- **Import filters** — `--include` and `--exclude` flags on `cortex import` for file extension filtering (e.g., `--include .md,.txt` or `--exclude .go,.py`). Case-insensitive, dot-optional. 7 new tests.
+- **Auto-infer edges on import** — After `import --extract`, automatically runs relationship inference to create knowledge graph edges. Skip with `--no-infer` flag. Prints "Inferred X new edges".
+
+### Removed
+- **codexrollout** — Removed `internal/codexrollout/` package and `cmd/codex-rollout-report/` binary (574 lines of internal telemetry tooling with no user value)
+- **observe alerts** — Removed `watch`, `alerts`, and webhook delivery CLI commands + 3 MCP tool registrations (`cortex_alerts`, `cortex_watch_add`, `cortex_watch_list`). Core `stale` and `conflicts` commands preserved.
+- **3D graph mode** — Stripped `ForceGraph3D`, `init3DGraph`, `switchTo3DSpace`, 3D button, and Three.js script from graph explorer. 2D is the production UI.
+- **dist-v0.1.3** — Removed old release binaries that leaked into the repo.
+
+### Changed
+- Net change: -2,144 lines / +218 lines across 13 files
+- Graph explorer is now 2D-only with cleaner, lighter codebase
+
 ## [0.5.0] - 2026-02-23
 
 ### Added
