@@ -1480,6 +1480,8 @@ async function loadImpact(subject) {
   } catch (err) {
     showEmpty('Error', err.message);
   }
+}
+
 function parseISODateUTC(raw) {
   const value = (raw || '').trim();
   if (!value) return null;
@@ -2022,7 +2024,7 @@ async function showDetail(d) {
 
   const connected = connectedNodesFor(d.id).slice(0, 12);
   const connectedHtml = connected.map(n => `
-    <button class="btn btn-sm btn-ghost" style="margin:3px 3px 0 0" onclick="focusNodeById(${n.id})">${esc(truncate(n.subject || `#${n.id}`, 26))}</button>
+    <button class="btn btn-sm btn-ghost" style="margin:3px 3px 0 0" onclick="focusNodeById(${n.id})">${esc(truncate(n.subject || ('#' + n.id), 26))}</button>
   `).join('');
 
   panel.innerHTML = `
