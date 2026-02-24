@@ -42,6 +42,7 @@ type ExportNode struct {
 	FactCount    int      `json:"fact_count,omitempty"`
 	LastUpdated  string   `json:"last_updated,omitempty"`
 	SourceTypes  []string `json:"source_types,omitempty"`
+	Depth        int      `json:"depth,omitempty"`
 }
 
 // ExportEdge is the visualization-friendly format for an edge.
@@ -144,6 +145,11 @@ func Serve(cfg ServerConfig) error {
 	// Stats endpoint — DB health numbers for the banner
 	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		handleStatsAPI(w, r, cfg.Store)
+	})
+
+	// Impact endpoint — grouped blast-radius view for a subject.
+	mux.HandleFunc("/api/impact", func(w http.ResponseWriter, r *http.Request) {
+		handleImpactAPI(w, r, cfg.Store)
 	})
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
@@ -863,6 +869,9 @@ func normalizeStoreTimestamp(raw string) string {
 	}
 	layouts := []string{
 		"2006-01-02 15:04:05",
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05.999999 -0700 MST",
+		"2006-01-02 15:04:05 -0700 MST",
 		time.RFC3339,
 		time.RFC3339Nano,
 	}

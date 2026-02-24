@@ -338,6 +338,41 @@
     box-shadow: 0 12px 24px rgba(0,0,0,0.35);
   }
   .stats-bar .stat-val { color: var(--text); font-weight: 600; }
+  .impact-seg {
+    display: inline-flex; align-items: center; gap: 5px;
+    border-radius: 999px; padding: 5px 9px; border: 1px solid transparent;
+    font-weight: 600; letter-spacing: 0.02em;
+  }
+  .impact-seg.high { background: rgba(16,185,129,0.18); color: #34d399; border-color: rgba(16,185,129,0.45); }
+  .impact-seg.medium { background: rgba(234,179,8,0.18); color: #facc15; border-color: rgba(234,179,8,0.45); }
+  .impact-seg.low { background: rgba(239,68,68,0.18); color: #f87171; border-color: rgba(239,68,68,0.45); }
+  .impact-panel-note { color: var(--muted); font-size: 12px; margin-bottom: 8px; line-height: 1.35; }
+  .impact-chip {
+    display: inline-flex; align-items: center; margin: 3px 4px 0 0;
+    border: 1px solid #313138; border-radius: 999px; padding: 4px 9px;
+    font-size: 11px; color: #e4e4e7; background: rgba(18,18,22,0.95); cursor: pointer;
+  }
+  .impact-chip:hover { border-color: var(--accent); color: #fff; }
+  .impact-group { border: 1px solid rgba(63,63,70,0.6); border-radius: 8px; margin-top: 8px; background: rgba(7,7,10,0.7); }
+  .impact-group summary {
+    list-style: none; cursor: pointer; padding: 7px 10px;
+    display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    font-size: 12px; color: #e4e4e7;
+  }
+  .impact-group summary::-webkit-details-marker { display: none; }
+  .impact-group-meta { color: var(--muted); font-size: 11px; font-weight: 500; }
+  .impact-fact-list { padding: 0 8px 8px; }
+  .impact-fact {
+    width: 100%; margin-top: 6px; text-align: left;
+    border: 1px solid #2d2d33; border-radius: 7px; padding: 7px 8px;
+    background: rgba(17,17,21,0.95); color: #f4f4f5; cursor: pointer;
+    font-size: 11px;
+  }
+  .impact-fact.high { border-color: rgba(16,185,129,0.55); }
+  .impact-fact.medium { border-color: rgba(234,179,8,0.55); }
+  .impact-fact.low { border-color: rgba(239,68,68,0.55); }
+  .impact-fact:hover { border-color: var(--accent); }
+  .impact-fact-sub { color: var(--muted); margin-top: 4px; font-size: 10px; }
 
   /* ─── Controls Help ─── */
   .controls-help {
@@ -391,6 +426,7 @@
         <button class="btn btn-ghost active" id="modeClusterBtn" onclick="switchToCluster()">Cluster</button>
         <button class="btn btn-ghost" id="modeFactBtn" onclick="switchToFact()">Fact</button>
         <button class="btn btn-ghost" id="modeSubjectBtn" onclick="switchToSubject()">Subject</button>
+        <button class="btn btn-ghost" id="modeImpactBtn" onclick="switchToImpact()">Impact</button>
       </div>
       <div class="mode-note" id="modeNote">Cluster mode shows high-value subject groups across your graph.</div>
     </div>
@@ -459,12 +495,18 @@
       <label><input type="checkbox" id="showCoocs" name="show_cooccurrences" /> Co-occurrences</label>
       <label><input type="checkbox" id="showLabels" name="show_labels" checked /> Node Labels</label>
       <label><input type="checkbox" id="showArrows" name="show_arrows" checked /> Directional Arrows</label>
+      <label><input type="checkbox" id="impactConcentric" name="impact_concentric" checked /> Concentric impact rings</label>
     </div>
 
     <!-- Graph Quality -->
     <div class="section-title">Graph Quality</div>
     <div class="quality-panel" id="qualityPanel">
       <div class="quality-row"><span class="quality-key">Status</span><span class="quality-val">Waiting for graph data</span></div>
+    </div>
+
+    <div class="section-title" id="impactSectionTitle" style="display:none">Impact Analysis</div>
+    <div class="detail-panel" id="impactPanel" style="display:none;margin:0 14px 10px;max-height:260px">
+      <span style="color:var(--muted);font-size:12px">Impact groups will appear here.</span>
     </div>
 
     <!-- Node Legend -->
@@ -508,9 +550,12 @@
       <div class="msg-title">Loading graph...</div>
     </div>
     <div class="stats-bar" id="statsBar">
-      Nodes: <span class="stat-val" id="statNodes">0</span>
-      Edges: <span class="stat-val" id="statEdges">0</span>
-      Co-ocs: <span class="stat-val" id="statCoocs">0</span>
+      <div id="defaultStats" style="display:flex;gap:20px;align-items:center;">
+        Nodes: <span class="stat-val" id="statNodes">0</span>
+        Edges: <span class="stat-val" id="statEdges">0</span>
+        Co-ocs: <span class="stat-val" id="statCoocs">0</span>
+      </div>
+      <div id="impactStats" style="display:none;align-items:center;gap:8px;"></div>
     </div>
     <div class="controls-help" id="controlsHelp" style="display:none">
       <kbd>Left drag</kbd> Rotate &nbsp; <kbd>Right drag</kbd> Pan &nbsp; <kbd>Scroll</kbd> Zoom<br>
@@ -534,6 +579,15 @@ const EDGE_COLORS = {
   derived_from: '#6b7280',
   cooccurrence: '#3f3f46'
 };
+const IMPACT_EDGE_COLORS = {
+  has_tool: '#22c55e',
+  has_config: '#06b6d4',
+  has_strategy: '#f97316',
+  has_location: '#eab308',
+  depends_on: '#ef4444',
+  related_to: '#8b5cf6',
+  other: '#71717a'
+};
 
 const FACT_TYPE_COLORS = {
   kv: '#a855f7',
@@ -551,7 +605,8 @@ const TOGGLE_EDGE_TYPES = new Set(['supports', 'contradicts', 'relates_to', 'sup
 const MODE_NOTES = {
   cluster: 'Cluster mode shows precomputed topic communities with cohesion scores and drill-down.',
   fact: 'Fact mode expands from one fact ID using inferred or stored relationship edges.',
-  subject: 'Subject mode isolates facts for one subject to review its local context.'
+  subject: 'Subject mode isolates facts for one subject to review its local context.',
+  impact: 'Impact mode shows blast radius grouped by relationship and confidence heat.'
 };
 
 let Graph = null;
@@ -566,6 +621,7 @@ let activeSearchNodeIDs = new Set();
 let clusterCatalog = [];
 let clusterSummary = { total_facts: 0, unclustered_count: 0 };
 let activeClusterId = null;
+let impactData = null;
 const HELP_2D = `
   <kbd>Drag node</kbd> Reposition &nbsp; <kbd>Drag canvas</kbd> Pan &nbsp; <kbd>Scroll</kbd> Zoom<br>
   <kbd>Click</kbd> Select node &nbsp; <kbd>Double-click</kbd> Focus subject &nbsp; <kbd>Hover</kbd> Tooltip
@@ -624,14 +680,24 @@ function edgeTypeName(type) {
   return String(type).replace(/_/g, ' ');
 }
 
+function edgeColorForType(type) {
+  if (currentViewMode === 'impact' && IMPACT_EDGE_COLORS[type]) {
+    return IMPACT_EDGE_COLORS[type];
+  }
+  return EDGE_COLORS[type] || '#71717a';
+}
+
 function setViewMode(mode) {
   currentViewMode = mode;
-  const ids = ['modeClusterBtn', 'modeFactBtn', 'modeSubjectBtn'];
+  const ids = ['modeClusterBtn', 'modeFactBtn', 'modeSubjectBtn', 'modeImpactBtn'];
   ids.forEach(id => document.getElementById(id).classList.remove('active'));
   if (mode === 'fact') document.getElementById('modeFactBtn').classList.add('active');
   else if (mode === 'subject') document.getElementById('modeSubjectBtn').classList.add('active');
+  else if (mode === 'impact') document.getElementById('modeImpactBtn').classList.add('active');
   else document.getElementById('modeClusterBtn').classList.add('active');
   document.getElementById('modeNote').textContent = MODE_NOTES[mode] || MODE_NOTES.cluster;
+  document.getElementById('impactSectionTitle').style.display = mode === 'impact' ? 'block' : 'none';
+  document.getElementById('impactPanel').style.display = mode === 'impact' ? 'block' : 'none';
 }
 
 function setModeNoteTemporary(message) {
@@ -737,6 +803,17 @@ function switchToSubject() {
   loadSubject(subject);
 }
 
+function switchToImpact() {
+  let subject = '';
+  if (selectedNode && selectedNode.subject) subject = selectedNode.subject;
+  if (!subject) subject = document.getElementById('searchInput').value.trim();
+  if (!subject) {
+    setModeNoteTemporary('Type or select a subject to run impact analysis.');
+    return;
+  }
+  loadImpact(subject);
+}
+
 function setQualityStatus(status) {
   const panel = document.getElementById('qualityPanel');
   panel.innerHTML = `<div class="quality-row"><span class="quality-key">Status</span><span class="quality-val">${esc(status)}</span></div>`;
@@ -774,7 +851,7 @@ function updateQualityPanel(nodes, links) {
   }
   const edgePills = Object.entries(counts)
     .sort((a, b) => b[1] - a[1])
-    .map(([type, count]) => `<span class="edge-pill"><span class="edge-dot" style="background:${EDGE_COLORS[type] || '#71717a'}"></span>${esc(edgeTypeName(type))} <b>${count}</b></span>`)
+    .map(([type, count]) => `<span class="edge-pill"><span class="edge-dot" style="background:${edgeColorForType(type)}"></span>${esc(edgeTypeName(type))} <b>${count}</b></span>`)
     .join('');
 
   const density = nodes.length > 0 ? (realEdges.length / nodes.length).toFixed(2) : '0.00';
@@ -896,8 +973,16 @@ function updateGraphStyling() {
   if (Graph2D) {
     const nodes2D = Graph2D.graphData()?.nodes || [];
     const subjectStats = buildSubjectStats(nodes2D);
+    const impactRoot = impactData && impactData.subject ? String(impactData.subject).toLowerCase() : '';
     Graph2D.nodeColor(n => {
-      const base = nodeColorFor(n);
+      let base = nodeColorFor(n);
+      if (currentViewMode === 'impact') {
+        const alpha = Math.max(0.25, Math.min(1, n.confidence || 0));
+        base = dimColor(base, alpha);
+        if (impactRoot && (n.subject || '').toLowerCase() === impactRoot) {
+          base = '#ffffff';
+        }
+      }
       if (!hasSearch) return base;
       if (activeSearchNodeIDs.size > 0) {
         return activeSearchNodeIDs.has(n.id) ? '#ffffff' : dimColor(base, 0.2);
@@ -907,6 +992,12 @@ function updateGraphStyling() {
     });
     Graph2D.nodeVal(n => {
       let v = 0.95 + (n.confidence || 0) * 2.4;
+      if (currentViewMode === 'impact') {
+        v *= 0.85 + (n.confidence || 0);
+        if (impactRoot && (n.subject || '').toLowerCase() === impactRoot) {
+          v *= 1.9;
+        }
+      }
       if (hasSearch && activeSearchNodeIDs.has(n.id)) v *= 1.75;
       return v;
     });
@@ -1001,7 +1092,7 @@ function initGraph() {
     .nodeVal(n => 0.95 + (n.confidence || 0) * 2.4)
     .nodeColor(nodeColorFor)
     .nodeLabel(formatNodeTooltip)
-    .linkColor(link => EDGE_COLORS[link.type] || '#52525b')
+    .linkColor(link => edgeColorForType(link.type))
     .linkWidth(link => {
       if (link._isCooc) return 0.6 + Math.min((link.count || 1) / 10, 2.6);
       return 0.95 + Math.min((link.confidence || 0.1) * 2.2, 2.8);
@@ -1011,7 +1102,7 @@ function initGraph() {
       return document.getElementById('showArrows').checked ? 3 : 0;
     })
     .linkDirectionalArrowRelPos(1)
-    .linkDirectionalArrowColor(link => EDGE_COLORS[link.type] || '#71717a')
+    .linkDirectionalArrowColor(link => edgeColorForType(link.type))
     .d3AlphaDecay(0.06)
     .d3VelocityDecay(0.38)
     .onNodeClick(node => handleNodeClick(node))
@@ -1043,6 +1134,7 @@ async function loadGraph() {
   if (!factId) return;
 
   setViewMode('fact');
+  impactData = null;
   const depth = document.getElementById('depthSlider').value;
   showLoading('Loading graph...');
 
@@ -1072,6 +1164,7 @@ async function loadSubject(subject) {
   if (!value) return;
 
   setViewMode('subject');
+  impactData = null;
   showLoading(`Loading subject: ${value}`);
   document.getElementById('searchInput').value = value;
   hideBrowseResults();
@@ -1086,6 +1179,152 @@ async function loadSubject(subject) {
 
     if (!graphData.nodes || graphData.nodes.length === 0) {
       showEmpty('No facts for subject', `No active facts found for "${value}".`);
+      return;
+    }
+
+    renderGraph();
+  } catch (err) {
+    showEmpty('Error', err.message);
+  }
+}
+
+function impactConfidenceClass(conf) {
+  if (conf >= 0.8) return 'high';
+  if (conf >= 0.5) return 'medium';
+  return 'low';
+}
+
+function renderImpactPanel(data) {
+  const panel = document.getElementById('impactPanel');
+  if (!data || !data.groups) {
+    panel.innerHTML = '<span style="color:var(--muted);font-size:12px">Impact groups unavailable.</span>';
+    return;
+  }
+
+  const chips = (data.connected_subjects || []).slice(0, 24).map(subj =>
+    `<button class="impact-chip" onclick='loadImpact(${JSON.stringify(subj)})'>${esc(subj)}</button>`
+  ).join('');
+
+  const groupsHTML = (data.groups || []).map(g => {
+    const rel = esc(edgeTypeName(g.relationship || 'other'));
+    const avgPct = ((g.avg_confidence || 0) * 100).toFixed(0);
+    const facts = (g.facts || []).slice(0, 30).map(f => {
+      const confClass = impactConfidenceClass(f.confidence || 0);
+      const label = `${f.subject || ''} ${f.predicate || ''} ${truncate(f.object || '', 70)}`;
+      return `<button class="impact-fact ${confClass}" onclick="focusNodeById(${f.id})">
+        <div>${esc(label)}</div>
+        <div class="impact-fact-sub">${((f.confidence || 0) * 100).toFixed(0)}% confidence · ${f.connected_count || 0} links · depth ${f.depth || 0}</div>
+      </button>`;
+    }).join('');
+
+    return `<details class="impact-group" open>
+      <summary>
+        <span>${rel}</span>
+        <span class="impact-group-meta">${g.fact_count || 0} facts · avg ${avgPct}%</span>
+      </summary>
+      <div class="impact-fact-list">${facts || '<div class="impact-panel-note">No facts in this group.</div>'}</div>
+    </details>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div class="impact-panel-note">
+      Subject <b>${esc(data.subject || '')}</b> · ${data.total_facts || 0} facts · depth ${data.depth || 0}
+    </div>
+    <div class="impact-panel-note" style="margin-top:2px;margin-bottom:6px;">
+      Connected subjects:
+    </div>
+    <div>${chips || '<span class="impact-panel-note">No connected subjects.</span>'}</div>
+    ${groupsHTML || '<div class="impact-panel-note" style="margin-top:8px;">No relationship groups found.</div>'}
+  `;
+}
+
+function updateStatsBar(nodes, links) {
+  const defaultStats = document.getElementById('defaultStats');
+  const impactStats = document.getElementById('impactStats');
+  if (currentViewMode === 'impact' && impactData && impactData.confidence_distribution) {
+    defaultStats.style.display = 'none';
+    impactStats.style.display = 'flex';
+    const d = impactData.confidence_distribution || {};
+    impactStats.innerHTML = `
+      <span class="impact-seg high">HIGH ${d.high || 0}</span>
+      <span class="impact-seg medium">MED ${d.medium || 0}</span>
+      <span class="impact-seg low">LOW ${d.low || 0}</span>
+    `;
+    return;
+  }
+
+  defaultStats.style.display = 'flex';
+  impactStats.style.display = 'none';
+  impactStats.innerHTML = '';
+  document.getElementById('statNodes').textContent = nodes.length;
+  document.getElementById('statEdges').textContent = links.filter(l => !l._isCooc).length;
+  document.getElementById('statCoocs').textContent = links.filter(l => l._isCooc).length;
+}
+
+function applyImpactConcentricLayout() {
+  if (!Graph2D || currentViewMode !== 'impact') return;
+  if (!document.getElementById('impactConcentric').checked) return;
+
+  const runtime = Graph2D.graphData();
+  if (!runtime || !runtime.nodes || runtime.nodes.length === 0) return;
+
+  const rootSubj = impactData && impactData.subject ? String(impactData.subject).toLowerCase() : '';
+  const depthGroups = new Map();
+  for (const node of runtime.nodes) {
+    const d = Math.max(0, Number.isFinite(node.depth) ? node.depth : 0);
+    if (!depthGroups.has(d)) depthGroups.set(d, []);
+    depthGroups.get(d).push(node);
+  }
+
+  const ringStep = 140;
+  for (const [depth, list] of depthGroups.entries()) {
+    list.sort((a, b) => {
+      if ((a.subject || '').toLowerCase() === rootSubj && (b.subject || '').toLowerCase() !== rootSubj) return -1;
+      if ((b.subject || '').toLowerCase() === rootSubj && (a.subject || '').toLowerCase() !== rootSubj) return 1;
+      return a.id - b.id;
+    });
+
+    const radius = depth === 0 ? (list.length > 1 ? 34 : 0) : depth * ringStep;
+    const total = list.length;
+    for (let i = 0; i < total; i += 1) {
+      const angle = total === 1 ? 0 : (2 * Math.PI * i) / total;
+      list[i].fx = Math.cos(angle) * radius;
+      list[i].fy = Math.sin(angle) * radius;
+    }
+  }
+
+  Graph2D.d3ReheatSimulation();
+}
+
+async function loadImpact(subject) {
+  const value = (subject || '').trim();
+  if (!value) return;
+
+  setViewMode('impact');
+  showLoading(`Running impact analysis: ${value}`);
+  document.getElementById('searchInput').value = value;
+  hideBrowseResults();
+
+  try {
+    const depth = document.getElementById('depthSlider').value || '3';
+    const minConf = parseInt(document.getElementById('confSlider').value, 10) / 100;
+    const resp = await fetch(`/api/impact?subject=${encodeURIComponent(value)}&depth=${encodeURIComponent(depth)}&min_confidence=${minConf}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+    impactData = await resp.json();
+    selectedNode = null;
+    autoFitPending = true;
+    renderImpactPanel(impactData);
+
+    graphData = {
+      nodes: impactData.nodes || [],
+      edges: impactData.edges || [],
+      cooccurrences: [],
+      meta: impactData.meta || { mode: 'impact', subject: value }
+    };
+
+    if (!graphData.nodes || graphData.nodes.length === 0) {
+      showEmpty('No impact facts', `No connected facts found for "${value}".`);
       return;
     }
 
@@ -1139,9 +1378,7 @@ function renderGraph() {
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('controlsHelp').style.display = 'block';
   document.getElementById('statsBar').style.display = 'flex';
-  document.getElementById('statNodes').textContent = nodes.length;
-  document.getElementById('statEdges').textContent = links.filter(l => !l._isCooc).length;
-  document.getElementById('statCoocs').textContent = links.filter(l => l._isCooc).length;
+  updateStatsBar(nodes, links);
   updateQualityPanel(nodes, links);
 
   const dataPayload = {
@@ -1151,6 +1388,7 @@ function renderGraph() {
   if (Graph2D) {
     Graph2D.graphData(JSON.parse(JSON.stringify(dataPayload)));
   }
+  applyImpactConcentricLayout();
   updateGraphStyling();
   drawLabelOverlay();
 
@@ -1321,6 +1559,7 @@ function selectSearchResult(factId) {
 
 async function loadCluster(query) {
   setViewMode('cluster');
+  impactData = null;
   showLoading('Loading clusters...');
   try {
     const q = (query || document.getElementById('searchInput').value || '').trim();
@@ -1420,7 +1659,7 @@ document.querySelectorAll('#edgeToggles input').forEach(cb => {
   });
 });
 
-['showCoocs', 'showLabels', 'showArrows'].forEach(id => {
+['showCoocs', 'showLabels', 'showArrows', 'impactConcentric'].forEach(id => {
   document.getElementById(id).addEventListener('change', () => {
     if (graphData) renderGraph();
   });
@@ -1439,7 +1678,8 @@ document.getElementById('searchInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     const q = e.target.value.trim();
     hideBrowseResults();
-    loadCluster(q);
+    if (currentViewMode === 'impact') loadImpact(q);
+    else loadCluster(q);
   }
   if (e.key === 'Escape') {
     hideBrowseResults();
