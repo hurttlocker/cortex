@@ -104,6 +104,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating fact co-occurrence table: %w", err)
 	}
 
+	// Schema evolution: topic clusters tables (v0.8.0 — Issue #207)
+	if err := s.migrateClustersTables(); err != nil {
+		return fmt.Errorf("migrating cluster tables: %w", err)
+	}
+
 	return nil
 }
 
@@ -173,6 +178,29 @@ func (s *SQLiteStore) runBootstrapDDL() error {
 		`CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate ON facts(subject, predicate)`,
 		// idx_facts_superseded_by is created by migrateFactSupersededColumn() for existing DBs,
 		// and here for new DBs only (column exists in CREATE TABLE above).
+
+		// Topic clusters
+		`CREATE TABLE IF NOT EXISTS clusters (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			name           TEXT NOT NULL,
+			aliases        TEXT DEFAULT '[]',
+			cohesion       REAL DEFAULT 0.0,
+			fact_count     INTEGER DEFAULT 0,
+			avg_confidence REAL DEFAULT 0.0,
+			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+
+		`CREATE TABLE IF NOT EXISTS fact_clusters (
+			fact_id    INTEGER NOT NULL,
+			cluster_id INTEGER NOT NULL,
+			relevance  REAL DEFAULT 1.0,
+			PRIMARY KEY (fact_id, cluster_id),
+			FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE,
+			FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE
+		)`,
+
+		`CREATE INDEX IF NOT EXISTS idx_fact_clusters_cluster ON fact_clusters(cluster_id)`,
 
 		// Embedding vectors for semantic search
 		`CREATE TABLE IF NOT EXISTS embeddings (
@@ -956,6 +984,38 @@ func (s *SQLiteStore) migrateFactCooccurrenceTable() error {
 	// Index for lookups by fact_id_b (fact_id_a is covered by PK)
 	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_cooccurrence_b ON fact_cooccurrence_v1(fact_id_b)`)
 
+	return nil
+}
+
+// migrateClustersTables creates topic cluster tables (#207).
+func (s *SQLiteStore) migrateClustersTables() error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS clusters (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			name           TEXT NOT NULL,
+			aliases        TEXT DEFAULT '[]',
+			cohesion       REAL DEFAULT 0.0,
+			fact_count     INTEGER DEFAULT 0,
+			avg_confidence REAL DEFAULT 0.0,
+			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS fact_clusters (
+			fact_id    INTEGER NOT NULL,
+			cluster_id INTEGER NOT NULL,
+			relevance  REAL DEFAULT 1.0,
+			PRIMARY KEY (fact_id, cluster_id),
+			FOREIGN KEY (fact_id) REFERENCES facts(id) ON DELETE CASCADE,
+			FOREIGN KEY (cluster_id) REFERENCES clusters(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_clusters_cluster ON fact_clusters(cluster_id)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("executing cluster migration %q: %w", truncate(stmt, 60), err)
+		}
+	}
 	return nil
 }
 

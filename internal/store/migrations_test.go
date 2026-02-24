@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -150,5 +151,50 @@ func TestMigrateMemoryClassNullBackfill_RewritesLegacyNulls(t *testing.T) {
 
 	if err := rawDB.Close(); err != nil {
 		t.Fatalf("close raw sqlite: %v", err)
+	}
+}
+
+func TestMigrateClustersTables_IdempotentNoDataLoss(t *testing.T) {
+	s := newTestStore(t).(*SQLiteStore)
+	ctx := context.Background()
+
+	memID, err := s.AddMemory(ctx, &Memory{Content: "cluster migration seed", SourceFile: "seed.md"})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &Fact{
+		MemoryID:   memID,
+		Subject:    "migration",
+		Predicate:  "status",
+		Object:     "ok",
+		FactType:   "kv",
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("add fact: %v", err)
+	}
+
+	if err := s.migrateClustersTables(); err != nil {
+		t.Fatalf("first migrateClustersTables: %v", err)
+	}
+	if err := s.migrateClustersTables(); err != nil {
+		t.Fatalf("second migrateClustersTables: %v", err)
+	}
+
+	for _, table := range []string{"clusters", "fact_clusters"} {
+		var count int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+			t.Fatalf("checking table %s: %v", table, err)
+		}
+		if count != 1 {
+			t.Fatalf("expected table %s to exist, count=%d", table, count)
+		}
+	}
+
+	var factCount int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM facts WHERE subject='migration'`).Scan(&factCount); err != nil {
+		t.Fatalf("counting seed facts: %v", err)
+	}
+	if factCount != 1 {
+		t.Fatalf("expected seed fact to survive migration, got %d", factCount)
 	}
 }

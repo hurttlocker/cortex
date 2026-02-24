@@ -173,6 +173,106 @@
     background: rgba(24,24,27,0.75);
   }
   .edge-pill b { color: #f4f4f5; font-weight: 700; }
+  .cluster-panel {
+    padding: 10px 12px;
+  }
+  .cluster-summary {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    line-height: 1.4;
+  }
+  .cluster-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 210px;
+    overflow-y: auto;
+    padding-right: 2px;
+  }
+  .cluster-item {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border: 1px solid #2a2a2e;
+    border-radius: 10px;
+    background: rgba(12,12,14,0.82);
+    color: var(--text);
+    padding: 8px 9px;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.12s, background 0.12s;
+  }
+  .cluster-item:hover {
+    border-color: #4c1d95;
+    background: rgba(22,18,30,0.9);
+  }
+  .cluster-item.active {
+    border-color: var(--accent);
+    background: rgba(74,29,150,0.28);
+  }
+  .cluster-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .cluster-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .cluster-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 135px;
+  }
+  .cluster-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    font-size: 11px;
+  }
+  .cluster-count {
+    color: #a1a1aa;
+  }
+  .cohesion-badge {
+    border-radius: 999px;
+    border: 1px solid rgba(63,63,70,0.8);
+    padding: 2px 6px;
+    font-weight: 700;
+  }
+  .cohesion-high {
+    color: #34d399;
+    border-color: rgba(52,211,153,0.45);
+    background: rgba(16,185,129,0.15);
+  }
+  .cohesion-mid {
+    color: #fbbf24;
+    border-color: rgba(251,191,36,0.45);
+    background: rgba(245,158,11,0.14);
+  }
+  .cohesion-low {
+    color: #f87171;
+    border-color: rgba(248,113,113,0.45);
+    background: rgba(239,68,68,0.14);
+  }
+  .cluster-empty {
+    font-size: 12px;
+    color: var(--muted);
+    border: 1px dashed #303036;
+    border-radius: 10px;
+    padding: 9px 10px;
+    background: rgba(10,10,12,0.65);
+  }
 
   /* ─── Detail Panel ─── */
   .detail-panel {
@@ -295,6 +395,13 @@
       <div class="mode-note" id="modeNote">Cluster mode shows high-value subject groups across your graph.</div>
     </div>
 
+    <!-- Cluster Explorer -->
+    <div class="section-title">Topic Clusters</div>
+    <div class="filter-group cluster-panel">
+      <div class="cluster-summary" id="clusterSummary">Loading cluster communities…</div>
+      <div class="cluster-list" id="clusterList"></div>
+    </div>
+
     <!-- Search -->
     <div class="section-title">Search Facts</div>
     <div class="filter-group">
@@ -415,6 +522,7 @@
 <script src="https://unpkg.com/force-graph"></script>
 <script>
 const CLUSTER_LIMIT = 150;
+const CLUSTER_DETAIL_LIMIT = 900;
 const SUBJECT_DRILL_LIMIT = 120;
 const LABEL_MAX_CHARS = 30;
 
@@ -441,7 +549,7 @@ const FACT_TYPE_COLORS = {
 const SUBJECT_PALETTE = ['#8b5cf6', '#06b6d4', '#22c55e', '#f59e0b', '#ef4444', '#14b8a6', '#eab308', '#3b82f6', '#d946ef'];
 const TOGGLE_EDGE_TYPES = new Set(['supports', 'contradicts', 'relates_to', 'supersedes', 'derived_from']);
 const MODE_NOTES = {
-  cluster: 'Cluster mode shows high-value subject groups across your graph.',
+  cluster: 'Cluster mode shows precomputed topic communities with cohesion scores and drill-down.',
   fact: 'Fact mode expands from one fact ID using inferred or stored relationship edges.',
   subject: 'Subject mode isolates facts for one subject to review its local context.'
 };
@@ -455,6 +563,9 @@ let autoFitPending = false;
 let lastNodeClick = { id: null, at: 0 };
 let currentViewMode = 'cluster';
 let activeSearchNodeIDs = new Set();
+let clusterCatalog = [];
+let clusterSummary = { total_facts: 0, unclustered_count: 0 };
+let activeClusterId = null;
 const HELP_2D = `
   <kbd>Drag node</kbd> Reposition &nbsp; <kbd>Drag canvas</kbd> Pan &nbsp; <kbd>Scroll</kbd> Zoom<br>
   <kbd>Click</kbd> Select node &nbsp; <kbd>Double-click</kbd> Focus subject &nbsp; <kbd>Hover</kbd> Tooltip
@@ -529,6 +640,43 @@ function setModeNoteTemporary(message) {
   setTimeout(() => {
     el.textContent = MODE_NOTES[currentViewMode] || MODE_NOTES.cluster;
   }, 2600);
+}
+
+function cohesionClass(v) {
+  const score = Number(v || 0);
+  if (score >= 0.7) return 'cohesion-high';
+  if (score >= 0.45) return 'cohesion-mid';
+  return 'cohesion-low';
+}
+
+function renderClusterSidebar() {
+  const summaryEl = document.getElementById('clusterSummary');
+  const listEl = document.getElementById('clusterList');
+  const clusterCount = clusterCatalog.length;
+
+  if (!clusterCount) {
+    summaryEl.textContent = `No clusters detected. Unclustered: ${clusterSummary.unclustered_count || 0} / ${clusterSummary.total_facts || 0} facts.`;
+    listEl.innerHTML = '<div class=\"cluster-empty\">Run extraction/import and rebuild clusters to populate this view.</div>';
+    return;
+  }
+
+  summaryEl.textContent = `${clusterCount} clusters • ${(clusterSummary.unclustered_count || 0).toLocaleString()} unclustered / ${(clusterSummary.total_facts || 0).toLocaleString()} facts`;
+  listEl.innerHTML = clusterCatalog.map(c => {
+    const active = Number(activeClusterId) === Number(c.id) ? 'active' : '';
+    const cohesion = Number(c.cohesion || 0);
+    return `
+      <button class=\"cluster-item ${active}\" onclick=\"loadClusterDetail(${c.id})\">
+        <span class=\"cluster-left\">
+          <span class=\"cluster-dot\" style=\"background:${c.color || '#71717a'}\"></span>
+          <span class=\"cluster-name\">${esc(c.name || `Cluster ${c.id}`)}</span>
+        </span>
+        <span class=\"cluster-meta\">
+          <span class=\"cluster-count\">${Number(c.fact_count || 0).toLocaleString()}</span>
+          <span class=\"cohesion-badge ${cohesionClass(cohesion)}\">${cohesion.toFixed(2)}</span>
+        </span>
+      </button>
+    `;
+  }).join('');
 }
 
 function updateControlsHelp() {
@@ -630,13 +778,25 @@ function updateQualityPanel(nodes, links) {
     .join('');
 
   const density = nodes.length > 0 ? (realEdges.length / nodes.length).toFixed(2) : '0.00';
+  const clusterName = meta.cluster_name || (graphData && graphData.cluster ? graphData.cluster.name : '');
+  const clusterCohesion = Number(meta.cohesion || (graphData && graphData.cluster ? graphData.cluster.cohesion : 0));
+  const clusterFacts = Number((graphData && graphData.cluster ? graphData.cluster.fact_count : meta.total_nodes) || 0);
+  const clusterSubjects = (graphData && graphData.cluster && graphData.cluster.top_subjects) ? graphData.cluster.top_subjects.length : subjectGroups;
+  const clusterRows = mode === 'cluster_detail' ? `
+    <div class="quality-row"><span class="quality-key">Cluster</span><span class="quality-val">${esc(clusterName || '(unknown)')}</span></div>
+    <div class="quality-row"><span class="quality-key">Cohesion</span><span class="quality-val">${clusterCohesion.toFixed(2)}</span></div>
+    <div class="quality-row"><span class="quality-key">Cluster Facts</span><span class="quality-val">${clusterFacts}</span></div>
+    <div class="quality-row"><span class="quality-key">Top Subjects</span><span class="quality-val">${clusterSubjects}</span></div>
+  ` : `
+    <div class="quality-row"><span class="quality-key">Fallback Edges</span><span class="quality-val">${fallbackEdges}</span></div>
+    <div class="quality-row"><span class="quality-key">Subject Band</span><span class="quality-val">${esc(subjectBand)}</span></div>
+    <div class="quality-row"><span class="quality-key">Subject Groups</span><span class="quality-val">${subjectGroups}</span></div>
+  `;
   panel.innerHTML = `
     <div class="quality-row"><span class="quality-key">View</span><span class="quality-val">${esc(mode)}</span></div>
     <div class="quality-row"><span class="quality-key">Query</span><span class="quality-val">${esc(query || '(none)')}</span></div>
     <div class="quality-row"><span class="quality-key">Edge Source</span><span class="quality-val">${esc(edgeMode)}</span></div>
-    <div class="quality-row"><span class="quality-key">Fallback Edges</span><span class="quality-val">${fallbackEdges}</span></div>
-    <div class="quality-row"><span class="quality-key">Subject Band</span><span class="quality-val">${esc(subjectBand)}</span></div>
-    <div class="quality-row"><span class="quality-key">Subject Groups</span><span class="quality-val">${subjectGroups}</span></div>
+    ${clusterRows}
     <div class="quality-row"><span class="quality-key">Edge Density</span><span class="quality-val">${density}</span></div>
     <div class="quality-divider"></div>
     <div class="edge-type-list">${edgePills || '<span class="quality-key">No visible edges</span>'}</div>
@@ -645,6 +805,11 @@ function updateQualityPanel(nodes, links) {
 
 function nodeColorFor(node) {
   if (selectedNode && node.id === selectedNode.id) return '#ffffff';
+  if (currentViewMode === 'cluster') {
+    if (node.cluster_color) return node.cluster_color;
+    if (node.cluster_id) return subjectColor(String(node.cluster_id));
+    return '#71717a';
+  }
   if (node.type && node.type !== 'kv' && FACT_TYPE_COLORS[node.type]) return FACT_TYPE_COLORS[node.type];
   return subjectColor(node.subject);
 }
@@ -1037,6 +1202,7 @@ async function showDetail(d) {
     <div class="detail-row"><span class="detail-label">Predicate</span><span class="detail-value">${esc(d.predicate)}</span></div>
     <div class="detail-row"><span class="detail-label">Object</span><span class="detail-value">${esc(d.object)}</span></div>
     <div class="detail-row"><span class="detail-label">Type</span><span class="detail-value"><span class="detail-badge" style="background:${FACT_TYPE_COLORS[d.type] || '#555'}22;color:${FACT_TYPE_COLORS[d.type] || '#999'}">${esc(d.type || 'unknown')}</span></span></div>
+    <div class="detail-row"><span class="detail-label">Cluster</span><span class="detail-value">${esc((graphData && graphData.cluster && graphData.cluster.name) || '—')}</span></div>
     <div class="detail-row"><span class="detail-label">Confidence</span><span class="detail-value">${(d.confidence * 100).toFixed(1)}%</span></div>
     <div class="detail-row"><span class="detail-label">Facts</span><span class="detail-value">${d.fact_count || '—'}</span></div>
     <div class="detail-row"><span class="detail-label">Updated</span><span class="detail-value">${esc(d.last_updated || '—')}</span></div>
@@ -1079,6 +1245,7 @@ async function showDetail(d) {
     <div class="detail-row"><span class="detail-label">Predicate</span><span class="detail-value">${esc(d.predicate)}</span></div>
     <div class="detail-row"><span class="detail-label">Object</span><span class="detail-value">${esc(d.object)}</span></div>
     <div class="detail-row"><span class="detail-label">Type</span><span class="detail-value"><span class="detail-badge" style="background:${FACT_TYPE_COLORS[d.type] || '#555'}22;color:${FACT_TYPE_COLORS[d.type] || '#999'}">${esc(d.type || 'unknown')}</span></span></div>
+    <div class="detail-row"><span class="detail-label">Cluster</span><span class="detail-value">${esc((graphData && graphData.cluster && graphData.cluster.name) || '—')}</span></div>
     <div class="detail-row"><span class="detail-label">Confidence</span><span class="detail-value">${(d.confidence * 100).toFixed(1)}%</span></div>
     <div class="detail-row"><span class="detail-label">Facts</span><span class="detail-value">${facts.length || d.fact_count || 0}</span></div>
     <div class="detail-row"><span class="detail-label">Updated</span><span class="detail-value">${esc(d.last_updated || '—')}</span></div>
@@ -1158,18 +1325,66 @@ async function loadCluster(query) {
   try {
     const q = (query || document.getElementById('searchInput').value || '').trim();
     const url = q
-      ? `/api/cluster?q=${encodeURIComponent(q)}&limit=${CLUSTER_LIMIT}`
-      : `/api/cluster?limit=${CLUSTER_LIMIT}`;
+      ? `/api/clusters?q=${encodeURIComponent(q)}&limit=${CLUSTER_LIMIT}`
+      : `/api/clusters?limit=${CLUSTER_LIMIT}`;
 
     const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const payload = await resp.json();
+    clusterCatalog = payload.clusters || [];
+    clusterSummary = {
+      total_facts: payload.total_facts || 0,
+      unclustered_count: payload.unclustered_count || 0
+    };
+    renderClusterSidebar();
+
+    if (clusterCatalog.length === 0) {
+      graphData = { nodes: [], edges: [], cooccurrences: [], meta: { mode: 'cluster_detail' } };
+      selectedNode = null;
+      activeClusterId = null;
+      showEmpty('No clusters found', 'Try importing more memories or rebuild clusters.');
+      return;
+    }
+
+    let target = clusterCatalog[0];
+    if (activeClusterId) {
+      const found = clusterCatalog.find(c => Number(c.id) === Number(activeClusterId));
+      if (found) target = found;
+    }
+
+    await loadClusterDetail(target.id, true);
+  } catch (err) {
+    clusterCatalog = [];
+    renderClusterSidebar();
+    showEmpty('Error', err.message);
+  }
+}
+
+async function loadClusterDetail(clusterId, fromListLoad) {
+  const id = Number(clusterId);
+  if (!id || Number.isNaN(id)) return;
+
+  activeClusterId = id;
+  renderClusterSidebar();
+  if (!fromListLoad) {
+    setViewMode('cluster');
+    showLoading('Loading cluster details...');
+  }
+
+  try {
+    const resp = await fetch(`/api/clusters/${id}?limit=${CLUSTER_DETAIL_LIMIT}`);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     graphData = await resp.json();
     selectedNode = null;
     autoFitPending = true;
 
     if (!graphData.nodes || graphData.nodes.length === 0) {
-      showEmpty('No clusters found', 'Try a broader query or add more facts.');
+      showEmpty('Cluster is empty', 'This cluster currently has no visible facts.');
       return;
+    }
+
+    if (graphData.cluster && graphData.cluster.name) {
+      document.getElementById('searchInput').value = graphData.cluster.name;
     }
 
     renderGraph();

@@ -626,3 +626,171 @@ func TestClusterAPILimitRespected(t *testing.T) {
 		t.Fatalf("expected mode=cluster, got %v", result.Meta["mode"])
 	}
 }
+
+func TestClustersListAPI(t *testing.T) {
+	st := newTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	seedClustersForGraphAPI(t, ctx, st)
+	if _, err := st.RebuildClusters(ctx); err != nil {
+		t.Fatalf("rebuild clusters: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/clusters", func(w http.ResponseWriter, r *http.Request) {
+		handleClustersListAPI(w, r, st)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/clusters?limit=10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var out ClustersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode clusters response: %v", err)
+	}
+	if len(out.Clusters) == 0 {
+		t.Fatal("expected non-empty clusters list")
+	}
+	if out.TotalFacts <= 0 {
+		t.Fatalf("expected total facts > 0, got %d", out.TotalFacts)
+	}
+	if out.Clusters[0].Name == "" {
+		t.Fatal("expected cluster name")
+	}
+	if out.Clusters[0].Color == "" {
+		t.Fatal("expected cluster color")
+	}
+}
+
+func TestClusterDetailAPI(t *testing.T) {
+	st := newTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	seedClustersForGraphAPI(t, ctx, st)
+	if _, err := st.RebuildClusters(ctx); err != nil {
+		t.Fatalf("rebuild clusters: %v", err)
+	}
+
+	clusters, err := st.ListClusters(ctx)
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	if len(clusters) == 0 {
+		t.Fatal("expected clusters")
+	}
+	clusterID := clusters[0].ID
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/clusters/", func(w http.ResponseWriter, r *http.Request) {
+		handleClusterDetailAPI(w, r, st)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + fmt.Sprintf("/api/clusters/%d", clusterID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var out ClusterDetailResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode cluster detail: %v", err)
+	}
+	if out.Cluster.ID != clusterID {
+		t.Fatalf("expected cluster id %d, got %d", clusterID, out.Cluster.ID)
+	}
+	if len(out.Facts) == 0 {
+		t.Fatal("expected detail facts")
+	}
+	if len(out.Nodes) == 0 {
+		t.Fatal("expected detail nodes")
+	}
+	if out.Meta["mode"] != "cluster_detail" {
+		t.Fatalf("expected mode=cluster_detail, got %v", out.Meta["mode"])
+	}
+
+	missing, err := http.Get(ts.URL + "/api/clusters/999999")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer missing.Body.Close()
+	if missing.StatusCode != 404 {
+		t.Fatalf("expected 404 for missing cluster, got %d", missing.StatusCode)
+	}
+}
+
+func seedClustersForGraphAPI(t *testing.T, ctx context.Context, st *store.SQLiteStore) {
+	t.Helper()
+
+	memTradingA, err := st.AddMemory(ctx, &store.Memory{
+		Content:       "cluster api seed trading A",
+		SourceFile:    "cluster-api.md",
+		SourceLine:    1,
+		SourceSection: "cluster",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+	memTradingB, err := st.AddMemory(ctx, &store.Memory{
+		Content:       "cluster api seed trading B",
+		SourceFile:    "cluster-api.md",
+		SourceLine:    2,
+		SourceSection: "cluster",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+	memSpear, err := st.AddMemory(ctx, &store.Memory{
+		Content:       "cluster api seed spear",
+		SourceFile:    "cluster-api.md",
+		SourceLine:    3,
+		SourceSection: "cluster",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+
+	facts := []struct {
+		memID      int64
+		subject    string
+		predicate  string
+		object     string
+		confidence float64
+	}{
+		{memTradingA, "trading", "strategy", "orb", 0.92},
+		{memTradingA, "orb strategy", "runs_on", "alpaca", 0.86},
+		{memTradingA, "alpaca", "mode", "paper", 0.8},
+		{memTradingB, "trading", "uses", "options", 0.91},
+		{memTradingB, "orb strategy", "entry", "breakout", 0.84},
+		{memTradingB, "options", "symbol", "qqq", 0.77},
+		{memSpear, "spear", "uses", "hha", 0.82},
+		{memSpear, "paypal", "linked_to", "spear", 0.74},
+		{memSpear, "rustdesk", "fleet", "managed", 0.76},
+	}
+	for i, f := range facts {
+		if _, err := st.AddFact(ctx, &store.Fact{
+			MemoryID:   f.memID,
+			Subject:    f.subject,
+			Predicate:  f.predicate,
+			Object:     f.object,
+			Confidence: f.confidence,
+			FactType:   "kv",
+		}); err != nil {
+			t.Fatalf("add fact #%d: %v", i+1, err)
+		}
+	}
+}

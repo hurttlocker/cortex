@@ -125,6 +125,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "cluster":
+		if err := runCluster(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "infer":
 		if err := runInfer(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1352,6 +1357,7 @@ type ExtractionStats struct {
 	FactsExtracted      int
 	RulesFactsExtracted int
 	LLMFactsExtracted   int
+	FactIDs             []int64
 }
 
 // runExtractionOnImportedMemories runs extraction on recently imported memories.
@@ -1410,17 +1416,24 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 				SourceQuote: extractedFact.SourceQuote,
 			}
 
-			_, err := s.AddFact(ctx, fact)
+			factID, err := s.AddFact(ctx, fact)
 			if err != nil {
 				continue // Skip storage errors
 			}
 
 			stats.FactsExtracted++
+			stats.FactIDs = append(stats.FactIDs, factID)
 			if extractedFact.ExtractionMethod == "llm" {
 				stats.LLMFactsExtracted++
 			} else {
 				stats.RulesFactsExtracted++
 			}
+		}
+	}
+
+	if sqliteStore, ok := s.(*store.SQLiteStore); ok && len(stats.FactIDs) > 0 {
+		if _, err := sqliteStore.UpdateClusters(ctx, stats.FactIDs); err != nil {
+			return nil, fmt.Errorf("updating topic clusters: %w", err)
 		}
 	}
 
@@ -1987,6 +2000,155 @@ func runGraphServe(args []string) error {
 		Store: sqlStore,
 		Port:  port,
 	})
+}
+
+func runCluster(args []string) error {
+	rebuild := false
+	nameFilter := ""
+	exportFormat := ""
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--rebuild":
+			rebuild = true
+		case args[i] == "--name" && i+1 < len(args):
+			i++
+			nameFilter = strings.TrimSpace(args[i])
+		case strings.HasPrefix(args[i], "--name="):
+			nameFilter = strings.TrimSpace(strings.TrimPrefix(args[i], "--name="))
+		case args[i] == "--export" && i+1 < len(args):
+			i++
+			exportFormat = strings.TrimSpace(strings.ToLower(args[i]))
+		case strings.HasPrefix(args[i], "--export="):
+			exportFormat = strings.TrimSpace(strings.ToLower(strings.TrimPrefix(args[i], "--export=")))
+		case args[i] == "--json":
+			exportFormat = "json"
+		default:
+			return fmt.Errorf("unknown flag: %s", args[i])
+		}
+	}
+
+	if exportFormat != "" && exportFormat != "json" {
+		return fmt.Errorf("unsupported --export format %q (supported: json)", exportFormat)
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("cluster command requires SQLiteStore")
+	}
+
+	ctx := context.Background()
+
+	if rebuild {
+		result, err := sqlStore.RebuildClusters(ctx)
+		if err != nil {
+			return fmt.Errorf("rebuilding clusters: %w", err)
+		}
+		if exportFormat == "" && isTTY() {
+			fmt.Printf(
+				"Rebuilt %d cluster(s): %d facts assigned, %d subjects, %d unclustered facts\n",
+				result.Clusters,
+				result.FactAssignments,
+				result.TotalSubjects,
+				result.UnclusteredFacts,
+			)
+		}
+	}
+
+	if nameFilter != "" {
+		cluster, err := sqlStore.FindClusterByName(ctx, nameFilter)
+		if err != nil {
+			return err
+		}
+		if cluster == nil {
+			return fmt.Errorf("cluster %q not found", nameFilter)
+		}
+
+		detail, err := sqlStore.GetClusterDetail(ctx, cluster.ID, 5000)
+		if err != nil {
+			return err
+		}
+		if detail == nil {
+			return fmt.Errorf("cluster %q not found", nameFilter)
+		}
+
+		if exportFormat == "json" || !isTTY() {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(detail)
+		}
+
+		fmt.Printf("Cluster #%d: %s\n", detail.Cluster.ID, detail.Cluster.Name)
+		fmt.Printf("  Cohesion: %.2f\n", detail.Cluster.Cohesion)
+		fmt.Printf("  Facts: %d\n", detail.Cluster.FactCount)
+		fmt.Printf("  Avg confidence: %.2f\n", detail.Cluster.AvgConfidence)
+		if len(detail.Cluster.Aliases) > 0 {
+			fmt.Printf("  Aliases: %s\n", strings.Join(detail.Cluster.Aliases, ", "))
+		}
+		if len(detail.Cluster.TopSubjects) > 0 {
+			fmt.Printf("  Top subjects: %s\n", strings.Join(detail.Cluster.TopSubjects, ", "))
+		}
+		fmt.Println()
+		for _, f := range detail.Facts {
+			fmt.Printf("  #%d  %s %s %s (%.2f)\n", f.ID, f.Subject, f.Predicate, f.Object, f.Confidence)
+		}
+		return nil
+	}
+
+	clusters, err := sqlStore.ListClusters(ctx)
+	if err != nil {
+		return err
+	}
+	unclusteredCount, err := sqlStore.CountUnclusteredFacts(ctx)
+	if err != nil {
+		return err
+	}
+	totalFacts, err := sqlStore.CountActiveFacts(ctx)
+	if err != nil {
+		return err
+	}
+
+	payload := map[string]interface{}{
+		"clusters":          clusters,
+		"unclustered_count": unclusteredCount,
+		"total_facts":       totalFacts,
+	}
+	if exportFormat == "json" || !isTTY() {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(payload)
+	}
+
+	if len(clusters) == 0 {
+		fmt.Println("No topic clusters found. Run `cortex cluster --rebuild` after importing/extracting facts.")
+		return nil
+	}
+
+	fmt.Printf("Topic clusters (%d)\n", len(clusters))
+	fmt.Printf("%-4s %-26s %-8s %-6s %-8s\n", "ID", "Name", "Cohesion", "Facts", "AvgConf")
+	for _, cluster := range clusters {
+		name := cluster.Name
+		if len(name) > 26 {
+			name = name[:23] + "..."
+		}
+		fmt.Printf(
+			"%-4d %-26s %-8.2f %-6d %-8.2f\n",
+			cluster.ID,
+			name,
+			cluster.Cohesion,
+			cluster.FactCount,
+			cluster.AvgConfidence,
+		)
+	}
+	fmt.Printf("Unclustered: %d / %d active facts\n", unclusteredCount, totalFacts)
+
+	return nil
 }
 
 // graphExportNode mirrors the MCP export format for CLI output.
@@ -5882,6 +6044,7 @@ Commands:
   cleanup             Remove garbage memories and headless facts
                       --purge-noise  Run fact quality governor to remove noise + enforce caps
   optimize            Manual DB maintenance (integrity check, VACUUM, ANALYZE)
+  cluster             List/rebuild topic clusters with cohesion stats
   reason <query>      LLM reasoning over memories (search → prompt → analyze)
   bench               Benchmark LLM models for reason (speed, cost, quality)
   projects            List all project tags with memory/fact counts
@@ -6010,6 +6173,12 @@ MCP Flags:
   --port <N>          Start HTTP+SSE transport on port (default: stdio)
   --embed <provider/model> Enable semantic/hybrid/rrf search via embeddings
 
+Cluster Flags:
+  cortex cluster                       List topic clusters
+  cortex cluster --rebuild             Recompute clusters from all active facts
+  cortex cluster --name "<cluster>"    Show detail for one cluster by name/alias
+  cortex cluster --export json         Output list/detail as JSON
+
 Examples:
   cortex list --limit 50
   cortex list --facts --type kv
@@ -6028,6 +6197,9 @@ Examples:
   cortex search "deployment rule" --explain --json
   cortex bench --compare google/gemini-2.5-flash,deepseek/deepseek-v3.2 --recursive
   cortex bench --models openai/gpt-5.1-codex-mini,google/gemini-3-flash-preview --output bench.md
+  cortex cluster --rebuild
+  cortex cluster --name trading
+  cortex cluster --export json
   cortex mcp                          # Start MCP server (stdio, for Claude Desktop/Cursor)
   cortex mcp --port 8080              # Start MCP server (HTTP+SSE)
 
