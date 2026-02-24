@@ -152,6 +152,11 @@ func Serve(cfg ServerConfig) error {
 		handleImpactAPI(w, r, cfg.Store)
 	})
 
+	// Timeline endpoint — temporal evolution for a subject.
+	mux.HandleFunc("/api/timeline", func(w http.ResponseWriter, r *http.Request) {
+		handleTimelineAPI(w, r, cfg.Store)
+	})
+
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	fmt.Printf("🧠 Cortex graph visualizer: http://localhost%s\n", addr)
 	fmt.Printf("   Open in browser to explore your knowledge graph in 2D/3D.\n")
