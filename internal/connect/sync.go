@@ -191,7 +191,10 @@ func (se *SyncEngine) importRecord(ctx context.Context, provider string, rec Rec
 
 	// Check for existing memory with same hash
 	existing, err := se.memStore.FindByHash(ctx, hash)
-	if err != nil && existing != nil {
+	if err != nil {
+		return 0, false, fmt.Errorf("checking hash: %w", err)
+	}
+	if existing != nil {
 		// Already imported — skip
 		return 0, false, nil
 	}
