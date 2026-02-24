@@ -313,14 +313,15 @@ func boolToInt(v bool) int {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--enrich] [--include .md,.txt] [--exclude .go,.js] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--llm <provider/model>] [--embed <provider/model>]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--no-enrich] [--no-classify] [--include .md,.txt] [--exclude .go,.js] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--llm <provider/model>] [--embed <provider/model>]")
 	}
 
 	// Parse flags
 	var paths []string
 	opts := ingest.ImportOptions{}
 	enableExtraction := false
-	enableEnrichment := false
+	enableEnrichment := true // #227: enrichment on by default when extracting
+	noClassify := false
 	noInfer := false
 	llmFlag := ""
 	embedFlag := ""
@@ -348,6 +349,10 @@ func runImport(args []string) error {
 		case args[i] == "--enrich":
 			enableEnrichment = true
 			enableExtraction = true // --enrich implies --extract
+		case args[i] == "--no-enrich":
+			enableEnrichment = false
+		case args[i] == "--no-classify":
+			noClassify = true
 		case args[i] == "--no-infer":
 			noInfer = true
 		case args[i] == "--project" && i+1 < len(args):
@@ -555,7 +560,7 @@ func runImport(args []string) error {
 			}
 		}
 
-		// Run LLM enrichment if --enrich flag provided
+		// Run LLM enrichment (default when extracting, skip with --no-enrich)
 		if enableEnrichment && extractionStats != nil {
 			enrichLLM := llmFlag
 			if enrichLLM == "" {
@@ -570,6 +575,24 @@ func runImport(args []string) error {
 					enrichStats.NewFacts, enrichStats.AvgLatency.Seconds())
 			} else {
 				fmt.Println("  🧠 Enrichment: LLM found no additional facts")
+			}
+		}
+
+		// Auto-classify kv facts from this import (default when enriching, skip with --no-classify)
+		if enableEnrichment && !noClassify && !opts.DryRun {
+			classifyLLM := llmFlag
+			if classifyLLM == "" {
+				classifyLLM = extract.DefaultClassifyModel // deepseek-v3.2
+			}
+			fmt.Println("\nClassifying facts...")
+			classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  Classification error: %v\n", err)
+			} else if classifyStats.Reclassified > 0 {
+				fmt.Printf("  🏷️  Classified: %d/%d kv facts reclassified (%.1fs)\n",
+					classifyStats.Reclassified, classifyStats.Total, classifyStats.Duration.Seconds())
+			} else {
+				fmt.Println("  🏷️  Classification: no kv facts needed reclassification")
 			}
 		}
 	}
@@ -1422,13 +1445,13 @@ func runConflicts(args []string) error {
 
 func runExtract(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex extract <file> [--json] [--enrich] [--llm <provider/model>]")
+		return fmt.Errorf("usage: cortex extract <file> [--json] [--no-enrich] [--llm <provider/model>]")
 	}
 
 	// Parse flags
 	var filepath string
 	jsonOutput := false
-	enrichFlag := false
+	enrichFlag := true // #227: enrichment on by default
 	llmFlag := ""
 
 	for i := 0; i < len(args); i++ {
@@ -1437,6 +1460,8 @@ func runExtract(args []string) error {
 			jsonOutput = true
 		case args[i] == "--enrich":
 			enrichFlag = true
+		case args[i] == "--no-enrich":
+			enrichFlag = false
 		case args[i] == "--llm" && i+1 < len(args):
 			i++
 			llmFlag = args[i]
@@ -2298,6 +2323,87 @@ func runEnrichmentOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 	}
 
 	return stats, nil
+}
+
+// ClassifyImportStats holds statistics about classify-on-import.
+type ClassifyImportStats struct {
+	Total        int
+	Reclassified int
+	Errors       int
+	Duration     time.Duration
+}
+
+// classifyImportedKVFacts reclassifies kv-type facts from the most recent import batch.
+// Uses the classification pipeline to assign proper types (decision, config, state, etc.)
+func classifyImportedKVFacts(ctx context.Context, s store.Store, llmFlag string) (*ClassifyImportStats, error) {
+	start := time.Now()
+
+	// Get recent kv facts (from today's import — limit 500 to keep costs bounded)
+	kvFacts, err := s.ListFacts(ctx, store.ListOpts{
+		FactType: "kv",
+		Limit:    500,
+		SortBy:   "date",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("searching kv facts: %w", err)
+	}
+
+	if len(kvFacts) == 0 {
+		return &ClassifyImportStats{}, nil
+	}
+
+	// Resolve LLM provider
+	llmCfg, err := llm.ParseLLMFlag(llmFlag)
+	if err != nil {
+		return nil, fmt.Errorf("parsing LLM flag: %w", err)
+	}
+	provider, err := llm.NewProvider(llmCfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating LLM provider: %w", err)
+	}
+
+	// Convert to ClassifyableFact format
+	classifyFacts := make([]extract.ClassifyableFact, len(kvFacts))
+	for i, f := range kvFacts {
+		classifyFacts[i] = extract.ClassifyableFact{
+			ID:        f.ID,
+			Subject:   f.Subject,
+			Predicate: f.Predicate,
+			Object:    f.Object,
+			FactType:  f.FactType,
+		}
+	}
+
+	// Run classification
+	classifyOpts := extract.ClassifyOpts{
+		BatchSize:     extract.DefaultClassifyBatchSize,
+		Concurrency:   extract.DefaultClassifyConcurrency,
+		MinConfidence: 0.8,
+	}
+	result, err := extract.ClassifyFacts(ctx, provider, classifyFacts, classifyOpts)
+	if err != nil {
+		return nil, fmt.Errorf("classifying facts: %w", err)
+	}
+
+	// Apply reclassifications
+	reclassified := 0
+	errors := 0
+	for _, r := range result.Classified {
+		if r.NewType != "" && r.NewType != "kv" {
+			if err := s.UpdateFactType(ctx, r.FactID, r.NewType); err != nil {
+				errors++
+				continue
+			}
+			reclassified++
+		}
+	}
+
+	return &ClassifyImportStats{
+		Total:        len(kvFacts),
+		Reclassified: reclassified,
+		Errors:       errors,
+		Duration:     time.Since(start),
+	}, nil
 }
 
 // EmbeddingStats holds statistics about embedding run.
@@ -6419,7 +6525,8 @@ func runConnectSync(args []string) error {
 	all := fs.Bool("all", false, "Sync all enabled connectors")
 	providerName := fs.String("provider", "", "Sync a specific provider")
 	enableExtract := fs.Bool("extract", false, "Run fact extraction on imported records")
-	enableEnrich := fs.Bool("enrich", false, "Run LLM enrichment after extraction (requires --llm)")
+	enableEnrich := fs.Bool("enrich", false, "Run LLM enrichment after extraction (default when --extract)")
+	noEnrich := fs.Bool("no-enrich", false, "Skip LLM enrichment (rule-only extraction)")
 	noInfer := fs.Bool("no-infer", false, "Skip edge inference after extraction")
 	llmFlag := fs.String("llm", "", "LLM provider/model for extraction (e.g., ollama/llama3)")
 	if err := fs.Parse(args); err != nil {
@@ -6427,7 +6534,7 @@ func runConnectSync(args []string) error {
 	}
 
 	if !*all && *providerName == "" {
-		return fmt.Errorf("usage: cortex connect sync --all | --provider <name> [--extract] [--enrich] [--no-infer] [--llm <provider/model>]")
+		return fmt.Errorf("usage: cortex connect sync --all | --provider <name> [--extract] [--no-enrich] [--no-infer] [--llm <provider/model>]")
 	}
 
 	dbPath := getDBPath()
@@ -6449,9 +6556,15 @@ func runConnectSync(args []string) error {
 		*enableExtract = true
 	}
 
+	// #227: enrichment is default when extracting (unless --no-enrich)
+	enrichEffective := *enableExtract && !*noEnrich
+	if *enableEnrich {
+		enrichEffective = true // explicit --enrich always wins
+	}
+
 	syncOpts := connect.SyncOptions{
 		Extract: *enableExtract,
-		Enrich:  *enableEnrich,
+		Enrich:  enrichEffective,
 		NoInfer: *noInfer,
 		LLM:     *llmFlag,
 	}

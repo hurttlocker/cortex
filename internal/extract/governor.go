@@ -32,11 +32,13 @@ type GovernorConfig struct {
 
 // DefaultGovernorConfig returns the recommended default governor settings.
 // Tightened Feb 2026 after 537K kv garbage analysis: old config produced 250 facts/memory.
+// Further tightened in #227 (Feb 2026): LLM enrichment is now default, so rules focus on
+// high-confidence structural patterns only. Target: 5-10 quality facts per memory.
 func DefaultGovernorConfig() GovernorConfig {
 	return GovernorConfig{
-		MaxFactsPerMemory:   20,
-		MinObjectLength:     2,
-		MinPredicateLength:  4,
+		MaxFactsPerMemory:   10,
+		MinObjectLength:     3,
+		MinPredicateLength:  5,
 		DropMarkdownJunk:    true,
 		DropGenericSubjects: true,
 	}
@@ -46,9 +48,9 @@ func DefaultGovernorConfig() GovernorConfig {
 // Auto-capture text is noisy by nature — only high-signal facts survive.
 func AutoCaptureGovernorConfig() GovernorConfig {
 	return GovernorConfig{
-		MaxFactsPerMemory:   15,
-		MinObjectLength:     3,
-		MinPredicateLength:  3,
+		MaxFactsPerMemory:   5,
+		MinObjectLength:     4,
+		MinPredicateLength:  5,
 		DropMarkdownJunk:    true,
 		DropGenericSubjects: true,
 	}
@@ -218,6 +220,33 @@ func (g *Governor) isNoise(f ExtractedFact) bool {
 
 	// Subject is a bare markdown link reference
 	if strings.HasPrefix(subjLower, "[") && strings.Contains(subjLower, "](") {
+		return true
+	}
+
+	// --- #227 header/structural noise filters ---
+
+	// Subject is a markdown section header (e.g., "## Trading", "### Details")
+	if strings.HasPrefix(strings.TrimSpace(subj), "#") {
+		return true
+	}
+
+	// Subject contains markdown bold formatting (e.g., "**Key Dates**")
+	if strings.Contains(subj, "**") {
+		return true
+	}
+
+	// Predicate looks like a file path or code reference (e.g., "scripts/cortex.sh")
+	if strings.Contains(pred, "/") && (strings.Contains(pred, ".") || strings.HasPrefix(pred, "/") || strings.HasPrefix(pred, "~")) {
+		return true
+	}
+
+	// Object is very long (>200 chars) — sentence fragments, not facts
+	if len(obj) > 200 {
+		return true
+	}
+
+	// Subject is a checkbox item (e.g., "[x] Something")
+	if strings.HasPrefix(subjLower, "[x]") || strings.HasPrefix(subjLower, "[ ]") {
 		return true
 	}
 
