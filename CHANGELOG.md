@@ -8,6 +8,11 @@ All notable changes to this project will be documented in this file.
 
 ## [0.9.0] - 2026-02-25
 
+### Fixed
+- **CRITICAL: Extraction/enrichment re-processed all recent memories on every import** — `runExtractionOnImportedMemories` and `runEnrichmentOnImportedMemories` were calling `ListMemories(limit:1000)` instead of targeting only newly imported memories. This caused duplicate facts to accumulate on every sync (observed: 74K facts from 1.6K memories, expected: ~2.5K). Fixed by tracking `NewMemoryIDs` during import and passing them to extraction/enrichment/classification. (#228)
+- **Graceful degradation without API keys** — `cortex import --extract` and `cortex extract` no longer crash when `OPENROUTER_API_KEY` is missing. Instead, they skip LLM enrichment/classification with a one-line notice and continue with rule-only extraction.
+- **`reimport` now supports `--no-enrich` and `--no-classify` flags** for offline/low-cost bulk imports.
+
 ### Added
 - **Query expansion** — `--expand` flag pre-processes vague queries through an LLM (Gemini 2.0 Flash, free) to generate better search terms. LRU cache prevents duplicate calls. Graceful fallback to original query on LLM failure. (#216)
 - **LLM enrichment** — `--enrich` (now default with `--extract`) sends rule-extracted facts + source text to Grok 4.1 Fast to find what rules missed: decisions, relationships, implicit connections. Additive-only — never removes rule facts. Tagged as `llm-enrich`. (#218)

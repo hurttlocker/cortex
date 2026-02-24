@@ -196,17 +196,28 @@ cortex conflicts --resolve llm
 
 ### Upgrading from older versions
 
-If you have an existing database with thousands of generic `kv` facts from before v0.9.0, the cleanest path is a fresh reimport:
+> ⚠️ **Critical fix in v0.9.0:** Versions prior to v0.9.0 had a bug where `cortex import --extract` would re-extract facts on **all** recent memories — not just newly imported ones. If you've been running periodic syncs, your database likely has duplicate facts (we saw 74K facts from 1.6K memories drop to 2.5K after fixing). **A clean reimport is strongly recommended.**
 
 ```bash
-# Wipe and reimport (backs up nothing — export first if needed)
-cortex reimport ~/your-notes/ --recursive --extract --force
+# Step 1: Clean reimport (wipes DB, re-imports from your files)
+cortex reimport ~/your-notes/ --recursive --extract --no-enrich --force
 
-# Or if you want to keep the DB and just reclassify existing facts:
+# Step 2 (optional): Add LLM enrichment for the core files you care about most
+export OPENROUTER_API_KEY="sk-or-..."
+cortex import ~/your-notes/MEMORY.md --extract    # Full enrichment on key files
+
+# Step 3 (optional): Reclassify generic kv facts with LLM
 cortex classify --limit 50000 --batch-size 20 --concurrency 5
 ```
 
-The reimport path uses the tightened governor (≤10 facts/memory) and auto-enriches with LLM if you have an API key. The classify-only path leaves your memories intact and just fixes the fact types.
+**What changed:** Import now tracks exactly which memories were newly created and only runs extraction/enrichment/classification on those — not the 1000 most recent. Repeated syncs no longer accumulate duplicate facts.
+
+**Expected fact counts after reimport:**
+- ~1-3 facts per memory (rule-only, no LLM) 
+- ~3-8 facts per memory (with LLM enrichment)
+- Governor cap: 10 facts per memory maximum
+
+If your database has >10 facts per memory on average, you have the duplication bug. Reimport to fix it.
 
 ### Choosing models
 
