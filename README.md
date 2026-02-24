@@ -16,7 +16,7 @@
 
 ---
 
-Import your existing files. Search with hybrid retrieval. Watch facts fade and reinforce what matters.
+Import your existing files. Search with hybrid or RRF retrieval. Watch facts fade and reinforce what matters.
 
 No API keys. No Docker. No config. A single 12MB binary and a SQLite file.
 
@@ -112,7 +112,7 @@ Your files ──→ Import ──→ Fact extraction ──→ SQLite + FTS5
                                     conflicts)
 ```
 
-**Search:** BM25 keyword + optional semantic embeddings, fused with Weighted Score Fusion.
+**Search:** BM25 keyword + optional semantic embeddings, fused with Weighted Score Fusion (default hybrid) or Reciprocal Rank Fusion (`--mode rrf`).
 **Facts:** Extracted as subject-predicate-object triples with type-aware decay rates.
 **Graph:** Interactive 2D knowledge graph explorer with cluster visualization.
 **Connect:** Sync from GitHub, Gmail, Calendar, Drive, Slack — extract facts on import.
@@ -121,7 +121,7 @@ Your files ──→ Import ──→ Fact extraction ──→ SQLite + FTS5
 
 | Feature | What it does |
 |---------|-------------|
-| **Hybrid search** | BM25 + semantic with score fusion. Works without embeddings, better with them. |
+| **Hybrid + RRF search** | BM25 + semantic with weighted score fusion (hybrid) or rank fusion (`--mode rrf`). |
 | **Ebbinghaus decay** | 7 decay rates by fact type. Identity lasts 693 days, temporal fades in 7. |
 | **Fact extraction** | Rule-based + optional LLM. Finds entities, decisions, preferences, relationships. |
 | **Conflict detection** | Same subject + predicate, different object → alert. Real-time on ingest. |
@@ -154,7 +154,7 @@ Your files ──→ Import ──→ Fact extraction ──→ SQLite + FTS5
 ```bash
 cortex import <path> [--recursive] [--extract]  # Import files or directories
   [--ext md,txt] [--exclude-ext log,tmp]        #   Filter by file extension
-cortex search <query> [--mode hybrid|bm25|semantic]  # Search memories
+cortex search <query> [--mode hybrid|bm25|semantic|rrf]  # Search memories
 cortex reason <query> [--recursive]             # LLM reasoning over memory
 cortex graph [--serve --port 8090]              # Knowledge graph explorer
 cortex stats                                    # What your agent knows
@@ -178,6 +178,7 @@ BM25 keyword search works out of the box. For semantic search, add an embedding 
 ollama pull nomic-embed-text
 cortex embed ollama/nomic-embed-text --batch-size 10
 cortex search "conceptually related query" --mode hybrid --embed ollama/nomic-embed-text
+cortex search "conceptually related query" --mode rrf --embed ollama/nomic-embed-text
 ```
 
 Supports Ollama (free/local), OpenAI, DeepSeek, OpenRouter, or any OpenAI-compatible endpoint.
@@ -186,7 +187,7 @@ Supports Ollama (free/local), OpenAI, DeepSeek, OpenRouter, or any OpenAI-compat
 
 - **Language:** Go 1.24+ — single binary, no runtime dependencies
 - **Storage:** SQLite + FTS5 (pure Go, zero CGO) — `~/.cortex/cortex.db`
-- **Search:** BM25 keyword + optional HNSW ANN for semantic
+- **Search:** BM25 keyword + optional HNSW ANN for semantic, plus hybrid (WSF) and RRF fusion modes
 - **Extraction:** Rule-based pipeline + optional LLM assist, auto-infer on import
 - **Graph:** Interactive 2D knowledge graph explorer with cluster visualization
 - **Connectors:** GitHub, Gmail, Calendar, Drive, Slack — with fact extraction

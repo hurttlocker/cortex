@@ -99,7 +99,7 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 
 func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 	tool := mcp.NewTool("cortex_search",
-		mcp.WithDescription("Search Cortex memory using BM25 keyword, semantic, or hybrid search. Returns scored results with source provenance. Optionally scope by project."),
+		mcp.WithDescription("Search Cortex memory using BM25 keyword, semantic, hybrid, or RRF search. Returns scored results with source provenance. Optionally scope by project."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("query",
@@ -107,8 +107,8 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 			mcp.Description("Search query string"),
 		),
 		mcp.WithString("mode",
-			mcp.Description("Search mode: bm25, semantic, or hybrid (default: hybrid)"),
-			mcp.Enum("keyword", "bm25", "semantic", "hybrid"),
+			mcp.Description("Search mode: bm25, semantic, hybrid, or rrf (default: keyword)"),
+			mcp.Enum("keyword", "bm25", "semantic", "hybrid", "rrf"),
 		),
 		mcp.WithNumber("limit",
 			mcp.Description("Maximum number of results (default: 10, max: 50)"),
