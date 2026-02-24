@@ -3952,6 +3952,9 @@ func outputTTYSearch(query string, results []search.Result, showMetadata bool, e
 			if r.MemoryClass != "" {
 				fmt.Printf("  class:%s", r.MemoryClass)
 			}
+			if !r.ImportedAt.IsZero() {
+				fmt.Printf("  📅 %s", r.ImportedAt.Format("2006-01-02"))
+			}
 			fmt.Println()
 		}
 		// Show metadata if requested (--show-metadata flag, Issue #30)
