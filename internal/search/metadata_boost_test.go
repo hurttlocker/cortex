@@ -136,3 +136,109 @@ func TestApplyMetadataBoosts_BothAgentAndChannel(t *testing.T) {
 		t.Errorf("expected double boost (%f) > single boost (%f)", boosted[0].Score, boosted[1].Score)
 	}
 }
+
+func TestFilterBySource(t *testing.T) {
+	results := []Result{
+		{Content: "github issue", SourceFile: "github:issues/123"},
+		{Content: "gmail message", SourceFile: "gmail:inbox/msg-1"},
+		{Content: "local file", SourceFile: "memory/2026-02-23.md"},
+		{Content: "github PR", SourceFile: "github:pulls/456"},
+	}
+
+	filtered := filterBySource(results, "github")
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 github results, got %d", len(filtered))
+	}
+	if filtered[0].Content != "github issue" {
+		t.Errorf("expected github issue first, got %q", filtered[0].Content)
+	}
+	if filtered[1].Content != "github PR" {
+		t.Errorf("expected github PR second, got %q", filtered[1].Content)
+	}
+}
+
+func TestFilterBySource_CaseInsensitive(t *testing.T) {
+	results := []Result{
+		{Content: "github", SourceFile: "GitHub:issues/1"},
+		{Content: "other", SourceFile: "memory/notes.md"},
+	}
+
+	filtered := filterBySource(results, "github")
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(filtered))
+	}
+}
+
+func TestFilterBySource_NoMatch(t *testing.T) {
+	results := []Result{
+		{Content: "local", SourceFile: "memory/notes.md"},
+	}
+
+	filtered := filterBySource(results, "slack")
+	if len(filtered) != 0 {
+		t.Fatalf("expected 0 results, got %d", len(filtered))
+	}
+}
+
+func TestIsConnectorSource(t *testing.T) {
+	tests := []struct {
+		source string
+		want   bool
+	}{
+		{"github:issues/123", true},
+		{"gmail:inbox/msg-1", true},
+		{"calendar:events/abc", true},
+		{"drive:docs/file", true},
+		{"slack:channels/general", true},
+		{"discord:messages/456", true},
+		{"telegram:chats/789", true},
+		{"notion:pages/abc", true},
+		{"memory/2026-02-23.md", false},
+		{"MEMORY.md", false},
+		{"/Users/q/notes.md", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		got := isConnectorSource(tt.source)
+		if got != tt.want {
+			t.Errorf("isConnectorSource(%q) = %v, want %v", tt.source, got, tt.want)
+		}
+	}
+}
+
+func TestApplySourceWeight(t *testing.T) {
+	results := []Result{
+		{Content: "manual import", SourceFile: "memory/notes.md", Score: 1.0},
+		{Content: "connector import", SourceFile: "github:issues/1", Score: 1.0},
+	}
+
+	weighted := applySourceWeight(results, false)
+
+	// Manual should be boosted, connector should be penalized
+	manualScore := weighted[0].Score
+	connectorScore := weighted[1].Score
+
+	// After sorting, manual (1.05) should be first, connector (0.97) second
+	if weighted[0].SourceFile != "memory/notes.md" {
+		t.Errorf("expected manual import first after source weighting, got %q", weighted[0].SourceFile)
+	}
+	if manualScore <= connectorScore {
+		t.Errorf("expected manual score (%f) > connector score (%f)", manualScore, connectorScore)
+	}
+}
+
+func TestApplySourceWeight_Explain(t *testing.T) {
+	results := []Result{
+		{Content: "connector", SourceFile: "github:issues/1", Score: 1.0},
+	}
+
+	weighted := applySourceWeight(results, true)
+
+	if weighted[0].Explain == nil {
+		t.Fatal("expected explain details when explain=true")
+	}
+	if weighted[0].Explain.RankComponents.SourceWeight != sourceWeightConnector {
+		t.Errorf("expected source weight %f, got %f", sourceWeightConnector, weighted[0].Explain.RankComponents.SourceWeight)
+	}
+}
