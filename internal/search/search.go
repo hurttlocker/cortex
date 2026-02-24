@@ -115,6 +115,7 @@ type Options struct {
 	BoostChannel      string // Boost results from this channel (e.g., "discord", "telegram")
 	After             string // Filter memories imported after date YYYY-MM-DD (Issue #30)
 	Before            string // Filter memories imported before date YYYY-MM-DD (Issue #30)
+	Source            string // Filter by source prefix (e.g., "github", "gmail") (Issue #199)
 	IncludeSuperseded bool   // Include memories backed only by superseded facts
 	Explain           bool   // Attach explainability/provenance payloads to results
 }
@@ -206,6 +207,9 @@ type RankComponents struct {
 	AgentBoost   float64 `json:"agent_boost,omitempty"`
 	ChannelBoost float64 `json:"channel_boost,omitempty"`
 	RecencyBoost float64 `json:"recency_boost,omitempty"`
+
+	// Source weighting (Issue #199)
+	SourceWeight float64 `json:"source_weight,omitempty"`
 }
 
 type confidenceDetail struct {
@@ -339,6 +343,11 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		return results, err
 	}
 
+	// Apply source filter (Issue #199)
+	if opts.Source != "" {
+		results = filterBySource(results, opts.Source)
+	}
+
 	// Apply metadata filters (Issue #30)
 	if opts.Agent != "" || opts.Channel != "" || opts.After != "" || opts.Before != "" {
 		results = filterByMetadata(results, opts)
@@ -362,6 +371,7 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	// Metadata-aware ranking boosts (Issue #148)
 	results = applyMetadataBoosts(results, opts)
 	results = applyRecencyBoost(results, opts.Explain)
+	results = applySourceWeight(results, opts.Explain)
 
 	if !opts.IncludeSuperseded {
 		results = e.filterSupersededMemories(ctx, results)
@@ -855,6 +865,11 @@ const (
 	recencyBoostToday     = 1.10
 	recencyBoostThisWeek  = 1.05
 	recencyBoostThisMonth = 1.02
+
+	// Source weight: manual imports get a boost over connector imports (Issue #199).
+	// Connector sources use format "provider:path", manual sources are file paths.
+	sourceWeightManual    = 1.05 // Boost for manually imported files
+	sourceWeightConnector = 0.97 // Slight penalty for connector-imported records
 )
 
 // applyMetadataBoosts boosts results that match the calling agent/channel context.
@@ -925,6 +940,61 @@ func applyRecencyBoost(results []Result, explain bool) []Result {
 		if explain {
 			ensureExplain(&results[i])
 			results[i].Explain.RankComponents.RecencyBoost = boost
+		}
+	}
+
+	// Re-sort by score descending
+	sort.SliceStable(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
+	return results
+}
+
+// filterBySource filters results to those whose SourceFile starts with the given prefix.
+// For connector imports, SourceFile is "provider:path" (e.g., "github:issues").
+// Matches case-insensitively on the provider portion.
+func filterBySource(results []Result, source string) []Result {
+	var filtered []Result
+	lowerSource := strings.ToLower(source)
+	for _, r := range results {
+		lowerSrc := strings.ToLower(r.SourceFile)
+		if strings.HasPrefix(lowerSrc, lowerSource+":") || strings.HasPrefix(lowerSrc, lowerSource+"/") || strings.EqualFold(r.SourceFile, source) {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+// isConnectorSource returns true if the source file looks like a connector import.
+// Connector sources use "provider:path" format (e.g., "github:issues/123").
+func isConnectorSource(sourceFile string) bool {
+	// Known connector provider prefixes
+	connectorPrefixes := []string{"github:", "gmail:", "calendar:", "drive:", "slack:", "discord:", "telegram:", "notion:"}
+	lower := strings.ToLower(sourceFile)
+	for _, prefix := range connectorPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// applySourceWeight gives manual imports a slight boost over connector imports.
+// Manual imports are first-party curated content; connector data is bulk-ingested.
+func applySourceWeight(results []Result, explain bool) []Result {
+	for i := range results {
+		var weight float64
+		if isConnectorSource(results[i].SourceFile) {
+			weight = sourceWeightConnector
+		} else {
+			weight = sourceWeightManual
+		}
+
+		results[i].Score *= weight
+		if explain {
+			ensureExplain(&results[i])
+			results[i].Explain.RankComponents.SourceWeight = weight
 		}
 	}
 

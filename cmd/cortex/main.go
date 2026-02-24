@@ -588,6 +588,7 @@ func runSearch(args []string) error {
 	beforeFlag := ""
 	boostAgentFlag := ""
 	boostChannelFlag := ""
+	sourceFlag := ""
 	showMetadata := false
 	explain := false
 	includeSuperseded := false
@@ -626,6 +627,11 @@ func runSearch(args []string) error {
 			beforeFlag = args[i]
 		case strings.HasPrefix(args[i], "--before="):
 			beforeFlag = strings.TrimPrefix(args[i], "--before=")
+		case args[i] == "--source" && i+1 < len(args):
+			i++
+			sourceFlag = args[i]
+		case strings.HasPrefix(args[i], "--source="):
+			sourceFlag = strings.TrimPrefix(args[i], "--source=")
 		case args[i] == "--show-metadata":
 			showMetadata = true
 		case args[i] == "--boost-agent" && i+1 < len(args):
@@ -695,7 +701,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--source <provider>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 	if limit < 1 || limit > 1000 {
 		return fmt.Errorf("--limit must be between 1 and 1000")
@@ -764,6 +770,7 @@ func runSearch(args []string) error {
 		Channel:           channelFlag,
 		After:             afterFlag,
 		Before:            beforeFlag,
+		Source:            sourceFlag,
 		IncludeSuperseded: includeSuperseded,
 		Explain:           explain,
 		BoostAgent:        boostAgentFlag,
@@ -3993,6 +4000,9 @@ func outputTTYSearch(query string, results []search.Result, showMetadata bool, e
 			}
 			if e.RankComponents.HybridBM25Contribution != nil && e.RankComponents.HybridSemanticContribution != nil {
 				fmt.Printf("     • hybrid: bm25=%.3f semantic=%.3f\n", *e.RankComponents.HybridBM25Contribution, *e.RankComponents.HybridSemanticContribution)
+			}
+			if e.RankComponents.SourceWeight != 0 {
+				fmt.Printf("     • source_weight=%.3f\n", e.RankComponents.SourceWeight)
 			}
 			if e.Why != "" {
 				fmt.Printf("     💡 %s\n", e.Why)
