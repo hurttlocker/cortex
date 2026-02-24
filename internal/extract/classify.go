@@ -176,7 +176,7 @@ func ClassifyFacts(ctx context.Context, provider llm.Provider, facts []Classifya
 			}
 
 			// Skip invalid types
-			if !isValidFactType(c.FactType) && c.FactType != "config" {
+			if !isValidFactType(c.FactType) {
 				result.Errors++
 				continue
 			}

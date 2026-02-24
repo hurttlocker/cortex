@@ -210,7 +210,7 @@ func summarizeCluster(ctx context.Context, provider llm.Provider, cluster Cluste
 		if sf.Predicate == "" || sf.Object == "" {
 			continue
 		}
-		if !isValidFactType(sf.FactType) && sf.FactType != "config" {
+		if !isValidFactType(sf.FactType) {
 			sf.FactType = "kv"
 		}
 		if sf.Confidence <= 0 || sf.Confidence > 1.0 {

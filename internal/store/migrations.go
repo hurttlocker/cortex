@@ -163,7 +163,7 @@ func (s *SQLiteStore) runBootstrapDDL() error {
 			subject         TEXT,
 			predicate       TEXT,
 			object          TEXT,
-			fact_type       TEXT NOT NULL CHECK(fact_type IN ('kv','relationship','preference','temporal','identity','location','decision','state')),
+			fact_type       TEXT NOT NULL CHECK(fact_type IN ('kv','relationship','preference','temporal','identity','location','decision','state','config')),
 			confidence      REAL DEFAULT 1.0,
 			decay_rate      REAL DEFAULT 0.01,
 			last_reinforced DATETIME DEFAULT CURRENT_TIMESTAMP,
