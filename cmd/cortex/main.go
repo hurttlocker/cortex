@@ -2356,18 +2356,10 @@ func classifyImportedKVFacts(ctx context.Context, s store.Store, llmFlag string,
 		return &ClassifyImportStats{}, nil
 	}
 
-	// Get kv facts only from newly imported memories
+	// Get kv facts only from newly imported memories — never broaden scope
 	kvFacts, err := s.ListFactsByMemoryIDs(ctx, newMemoryIDs, "kv", 500)
 	if err != nil {
-		// Fallback: if ListFactsByMemoryIDs not available, use old path
-		kvFacts, err = s.ListFacts(ctx, store.ListOpts{
-			FactType: "kv",
-			Limit:    500,
-			SortBy:   "date",
-		})
-		if err != nil {
-			return nil, fmt.Errorf("searching kv facts: %w", err)
-		}
+		return nil, fmt.Errorf("listing kv facts for new memories: %w", err)
 	}
 
 	if len(kvFacts) == 0 {
@@ -3436,6 +3428,16 @@ func runReimport(args []string) error {
 	if strings.HasPrefix(dbPath, "~/") {
 		home, _ := os.UserHomeDir()
 		dbPath = home + dbPath[1:]
+	}
+
+	// Auto-backup before wipe (safety net for failed/incomplete reimports)
+	if _, statErr := os.Stat(dbPath); statErr == nil {
+		backupPath := dbPath + ".pre-reimport"
+		if copyErr := copyFile(dbPath, backupPath); copyErr != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: could not backup DB to %s: %v\n", backupPath, copyErr)
+		} else {
+			fmt.Printf("  ✓ Backed up to %s\n", backupPath)
+		}
 	}
 
 	fmt.Println("Step 1/3: Wiping database...")
@@ -5683,6 +5685,26 @@ func tryCreateProvider(llmFlag string) (llm.Provider, error) {
 		return nil, err
 	}
 	return llm.NewProvider(cfg)
+}
+
+// copyFile copies src to dst. Used for pre-reimport backups.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := out.ReadFrom(in); err != nil {
+		return err
+	}
+	return out.Sync()
 }
 
 // formatBytes formats bytes into a human-readable string.

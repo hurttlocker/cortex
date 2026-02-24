@@ -640,6 +640,42 @@ func TestEngine_ImportFile(t *testing.T) {
 	}
 }
 
+func TestEngine_ImportFile_NewMemoryIDs(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	e := NewEngine(s)
+
+	path := filepath.Join(testdataDir(t), "sample-memory.md")
+
+	// First import should populate NewMemoryIDs
+	result1, err := e.ImportFile(ctx, path, ImportOptions{})
+	if err != nil {
+		t.Fatalf("First import failed: %v", err)
+	}
+	if result1.MemoriesNew == 0 {
+		t.Fatal("Expected new memories")
+	}
+	if len(result1.NewMemoryIDs) != result1.MemoriesNew {
+		t.Errorf("NewMemoryIDs length (%d) != MemoriesNew (%d)",
+			len(result1.NewMemoryIDs), result1.MemoriesNew)
+	}
+	// All IDs should be positive
+	for i, id := range result1.NewMemoryIDs {
+		if id <= 0 {
+			t.Errorf("NewMemoryIDs[%d] = %d, want positive", i, id)
+		}
+	}
+
+	// Second import — no new memories, no new IDs
+	result2, err := e.ImportFile(ctx, path, ImportOptions{})
+	if err != nil {
+		t.Fatalf("Second import failed: %v", err)
+	}
+	if len(result2.NewMemoryIDs) != 0 {
+		t.Errorf("Expected 0 NewMemoryIDs on re-import, got %d", len(result2.NewMemoryIDs))
+	}
+}
+
 func TestEngine_Dedup_SameContent(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
