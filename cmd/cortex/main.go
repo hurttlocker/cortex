@@ -1267,9 +1267,11 @@ func runExtract(args []string) error {
 		return fmt.Errorf("reading file: %w", err)
 	}
 
-	// Configure LLM if requested
+	// Configure old LLM for tier-2 extraction (if provider is compatible).
+	// When --enrich is set, skip old tier-2 entirely — the new internal/llm
+	// enrichment replaces it with better quality and no retry storms.
 	var llmConfig *extract.LLMConfig
-	if llmFlag != "" {
+	if llmFlag != "" && !enrichFlag {
 		var err error
 		llmConfig, err = extract.ResolveLLMConfig(llmFlag)
 		if err != nil {
@@ -1281,6 +1283,7 @@ func runExtract(args []string) error {
 			}
 		}
 	}
+	// When --enrich is set, llmConfig stays nil → rule-only extraction + LLM enrichment
 
 	// Run extraction
 	pipeline := extract.NewPipeline(llmConfig)

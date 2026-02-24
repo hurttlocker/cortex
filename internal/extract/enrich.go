@@ -19,7 +19,8 @@ import (
 
 const (
 	// enrichTimeout is the maximum time for a single enrichment call.
-	enrichTimeout = 10 * time.Second
+	// OpenRouter can be slow (10s+ cold start), so we give generous headroom.
+	enrichTimeout = 30 * time.Second
 
 	// enrichMaxChunkLen caps the chunk text sent to the LLM.
 	enrichMaxChunkLen = 3000
