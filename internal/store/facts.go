@@ -152,6 +152,25 @@ func (s *SQLiteStore) UpdateFactConfidence(ctx context.Context, id int64, confid
 	return nil
 }
 
+// UpdateFactType changes the fact_type of a fact. Used by `cortex classify`.
+func (s *SQLiteStore) UpdateFactType(ctx context.Context, id int64, factType string) error {
+	result, err := s.db.ExecContext(ctx,
+		"UPDATE facts SET fact_type = ? WHERE id = ?", factType, id,
+	)
+	if err != nil {
+		return fmt.Errorf("updating fact type: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("fact %d not found", id)
+	}
+	return nil
+}
+
 // ReinforceFact updates the last_reinforced timestamp to now.
 func (s *SQLiteStore) ReinforceFact(ctx context.Context, id int64) error {
 	now := time.Now().UTC()

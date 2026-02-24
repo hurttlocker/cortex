@@ -61,6 +61,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "classify":
+		if err := runClassify(args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "embed":
 		if err := runEmbed(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -1331,6 +1336,184 @@ func runExtract(args []string) error {
 	}
 
 	return outputExtractTTY(filepath, facts)
+}
+
+func runClassify(args []string) error {
+	llmFlag := ""
+	batchSize := extract.DefaultClassifyBatchSize
+	limit := 0
+	dryRun := false
+	jsonOutput := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--llm" && i+1 < len(args):
+			i++
+			llmFlag = args[i]
+		case strings.HasPrefix(args[i], "--llm="):
+			llmFlag = strings.TrimPrefix(args[i], "--llm=")
+		case args[i] == "--batch-size" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --batch-size: %s", args[i])
+			}
+			batchSize = n
+		case args[i] == "--limit" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --limit: %s", args[i])
+			}
+			limit = n
+		case args[i] == "--dry-run" || args[i] == "-n":
+			dryRun = true
+		case args[i] == "--json":
+			jsonOutput = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		}
+	}
+
+	if llmFlag == "" {
+		return fmt.Errorf("usage: cortex classify --llm <provider/model> [--batch-size N] [--limit N] [--dry-run] [--json]")
+	}
+
+	// Create LLM provider
+	llmCfg, err := llm.ParseLLMFlag(llmFlag)
+	if err != nil {
+		return fmt.Errorf("parsing --llm: %w", err)
+	}
+	provider, err := llm.NewProvider(llmCfg)
+	if err != nil {
+		return fmt.Errorf("creating LLM provider: %w", err)
+	}
+
+	// Open store
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Get kv-type facts to classify
+	listLimit := 10000
+	if limit > 0 {
+		listLimit = limit
+	}
+	facts, err := s.ListFacts(ctx, store.ListOpts{
+		FactType: "kv",
+		Limit:    listLimit,
+	})
+	if err != nil {
+		return fmt.Errorf("listing facts: %w", err)
+	}
+
+	if len(facts) == 0 {
+		fmt.Println("No kv-type facts to classify.")
+		return nil
+	}
+
+	if limit > 0 && len(facts) > limit {
+		facts = facts[:limit]
+	}
+
+	fmt.Printf("Found %d kv-type facts to classify (batch size: %d, model: %s)\n",
+		len(facts), batchSize, provider.Name())
+	if dryRun {
+		fmt.Println("DRY RUN — no changes will be applied")
+	}
+	fmt.Println()
+
+	// Convert store facts to classifiable facts
+	classifyFacts := make([]extract.ClassifyableFact, len(facts))
+	for i, f := range facts {
+		classifyFacts[i] = extract.ClassifyableFact{
+			ID:        f.ID,
+			Subject:   f.Subject,
+			Predicate: f.Predicate,
+			Object:    f.Object,
+			FactType:  f.FactType,
+		}
+	}
+
+	// Run classification
+	opts := extract.ClassifyOpts{
+		BatchSize:     batchSize,
+		MinConfidence: 0.8,
+		Limit:         limit,
+		DryRun:        dryRun,
+	}
+
+	result, err := extract.ClassifyFacts(ctx, provider, classifyFacts, opts)
+	if err != nil {
+		return fmt.Errorf("classification failed: %w", err)
+	}
+
+	// Apply changes (unless dry run)
+	applied := 0
+	if !dryRun {
+		sqlStore, ok := s.(*store.SQLiteStore)
+		if !ok {
+			return fmt.Errorf("classify requires SQLite store")
+		}
+		for _, c := range result.Classified {
+			if err := sqlStore.UpdateFactType(ctx, c.FactID, c.NewType); err != nil {
+				fmt.Fprintf(os.Stderr, "  Warning: failed to update fact %d: %v\n", c.FactID, err)
+				continue
+			}
+			applied++
+		}
+	}
+
+	// Output
+	if jsonOutput {
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+
+	// Type distribution
+	typeCounts := make(map[string]int)
+	for _, c := range result.Classified {
+		typeCounts[c.NewType]++
+	}
+
+	fmt.Printf("Results (%s, %s):\n", result.Model, result.Latency.Round(time.Millisecond))
+	fmt.Printf("  Total processed: %d\n", result.TotalFacts)
+	fmt.Printf("  Reclassified:    %d\n", len(result.Classified))
+	fmt.Printf("  Unchanged:       %d\n", result.Unchanged)
+	fmt.Printf("  Errors:          %d\n", result.Errors)
+	fmt.Printf("  Batches:         %d\n", result.BatchCount)
+
+	if len(typeCounts) > 0 {
+		fmt.Println("\n  Type distribution:")
+		for t, count := range typeCounts {
+			fmt.Printf("    kv → %-15s %d facts\n", t, count)
+		}
+	}
+
+	if dryRun && len(result.Classified) > 0 {
+		fmt.Println("\n  Sample reclassifications:")
+		showCount := len(result.Classified)
+		if showCount > 10 {
+			showCount = 10
+		}
+		for _, c := range result.Classified[:showCount] {
+			fmt.Printf("    #%d: %s → %s (%.0f%%)\n", c.FactID, c.OldType, c.NewType, c.Confidence*100)
+		}
+		if len(result.Classified) > 10 {
+			fmt.Printf("    ... and %d more\n", len(result.Classified)-10)
+		}
+	}
+
+	if !dryRun {
+		fmt.Printf("\n  ✅ Applied: %d fact type updates\n", applied)
+	}
+
+	return nil
 }
 
 func runList(args []string) error {
