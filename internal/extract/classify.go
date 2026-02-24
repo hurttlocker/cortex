@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -165,6 +166,9 @@ func ClassifyFacts(ctx context.Context, provider llm.Provider, facts []Classifya
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, concurrency)
+	completedBatches := 0
+	totalBatches := len(batches)
+	reclassifiedSoFar := 0
 
 	for _, batch := range batches {
 		wg.Add(1)
@@ -179,12 +183,16 @@ func ClassifyFacts(ctx context.Context, provider llm.Provider, facts []Classifya
 			mu.Lock()
 			defer mu.Unlock()
 
+			completedBatches++
+
 			if err != nil {
 				result.Errors += len(batch)
+				fmt.Fprintf(os.Stderr, "  [%d/%d] batch error: %v\n", completedBatches, totalBatches, err)
 				return
 			}
 
 			result.BatchCount++
+			batchReclassified := 0
 
 			// Build lookup for this batch
 			factMap := make(map[int64]*ClassifyableFact, len(batch))
@@ -222,6 +230,7 @@ func ClassifyFacts(ctx context.Context, provider llm.Provider, facts []Classifya
 					NewType:    c.FactType,
 					Confidence: c.Confidence,
 				})
+				batchReclassified++
 			}
 
 			// Facts in batch not returned by LLM
@@ -234,6 +243,15 @@ func ClassifyFacts(ctx context.Context, provider llm.Provider, facts []Classifya
 					result.Unchanged++
 				}
 			}
+
+			reclassifiedSoFar += batchReclassified
+			processed := completedBatches * opts.BatchSize
+			if processed > result.TotalFacts {
+				processed = result.TotalFacts
+			}
+			elapsed := time.Since(start)
+			fmt.Fprintf(os.Stderr, "  [%d/%d] %d/%d facts processed, %d reclassified (%.0fs elapsed)\n",
+				completedBatches, totalBatches, processed, result.TotalFacts, reclassifiedSoFar, elapsed.Seconds())
 		}(batch)
 	}
 
