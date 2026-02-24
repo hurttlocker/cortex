@@ -93,9 +93,9 @@ type SummarizeResult struct {
 
 // SummarizeOpts configures the summarization run.
 type SummarizeOpts struct {
-	MinClusterSize int  // Min facts in cluster to consider (default: 5)
+	MinClusterSize int   // Min facts in cluster to consider (default: 5)
 	ClusterID      int64 // Summarize specific cluster (0 = all)
-	DryRun         bool // Show plan without applying
+	DryRun         bool  // Show plan without applying
 }
 
 // DefaultSummarizeOpts returns sensible defaults.
@@ -107,9 +107,9 @@ func DefaultSummarizeOpts() SummarizeOpts {
 
 // ClusterInput is the minimal cluster data needed for summarization.
 type ClusterInput struct {
-	ID        int64
-	Name      string
-	Facts     []ClusterFactInput
+	ID    int64
+	Name  string
+	Facts []ClusterFactInput
 }
 
 // ClusterFactInput is a fact within a cluster for summarization.
