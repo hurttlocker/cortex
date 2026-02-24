@@ -703,7 +703,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid] [--limit N] [--embed <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--source <provider>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--embed <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--source <provider>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 	if limit < 1 || limit > 1000 {
 		return fmt.Errorf("--limit must be between 1 and 1000")
@@ -789,7 +789,7 @@ func runSearch(args []string) error {
 		return outputJSON(results)
 	}
 
-	return outputTTYSearch(query, results, showMetadata, explain)
+	return outputTTYSearch(query, results, showMetadata, explain, searchMode)
 }
 
 func runStats(args []string) error {
@@ -960,7 +960,6 @@ func runStale(args []string) error {
 
 	return outputStaleTTY(staleFacts, opts, totalFacts)
 }
-
 
 func runConflicts(args []string) error {
 	jsonOutput := false
@@ -2912,11 +2911,11 @@ Usage:
 
 Flags:
   --port <N>                         HTTP+SSE port (default: stdio)
-  --embed <provider/model>           Enable semantic/hybrid search
+  --embed <provider/model>           Enable semantic/hybrid/rrf search
   -h, --help                         Show this help
 
 Tools exposed:
-  cortex_search    Hybrid search across memories
+  cortex_search    Search across memories (bm25, semantic, hybrid, rrf)
   cortex_import    Add new memories from text
   cortex_stats     Get memory statistics
   cortex_facts     Query extracted facts
@@ -3921,16 +3920,21 @@ func outputJSON(results []search.Result) error {
 }
 
 func outputTTY(query string, results []search.Result) error {
-	return outputTTYSearch(query, results, false, false)
+	return outputTTYSearch(query, results, false, false, "")
 }
 
-func outputTTYSearch(query string, results []search.Result, showMetadata bool, explain bool) error {
+func outputTTYSearch(query string, results []search.Result, showMetadata bool, explain bool, mode search.Mode) error {
 	if len(results) == 0 {
 		fmt.Printf("No results for %q\n", query)
 		return nil
 	}
 
-	fmt.Printf("Results for %q (%d match", query, len(results))
+	modeTag := ""
+	if mode == search.ModeRRF || (mode == "" && strings.EqualFold(results[0].MatchType, "rrf")) {
+		modeTag = " [RRF]"
+	}
+
+	fmt.Printf("Results for %q%s (%d match", query, modeTag, len(results))
 	if len(results) != 1 {
 		fmt.Print("es")
 	}
@@ -5866,7 +5870,7 @@ Commands:
   reimport <path>     Wipe database and reimport from scratch (--embed to include embeddings)
   extract <file>      Extract facts from a single file (without importing)
   embed [provider/model] Generate embeddings for missing memories (or run daemon with --watch)
-  search <query>      Search memory (keyword, semantic, or hybrid)
+  search <query>      Search memory (keyword, semantic, hybrid, or rrf)
   reinforce <id>      Reinforce a fact (reset its decay timer)
   supersede <id>      Mark a fact as superseded by a newer fact
   update <id>         Update a memory's content (--content or --file)
@@ -5893,10 +5897,10 @@ Global Flags:
   -h, --help          Show this help message
 
 Search Flags:
-  --mode <mode>       Search mode: keyword, semantic, hybrid (default: keyword)
+  --mode <mode>       Search mode: keyword, semantic, hybrid, rrf (default: keyword)
   --limit <N>         Maximum results (default: 10)
   --min-score <F>     Minimum search score threshold (default: mode-dependent; --min-confidence still works)
-  --embed <provider/model> Embedding provider for semantic/hybrid search (e.g., --embed ollama/all-minilm)
+  --embed <provider/model> Embedding provider for semantic/hybrid/rrf search (e.g., --embed ollama/all-minilm)
   --project <name>    Scope search to a specific project (e.g., --project trading)
   --class <list>      Filter by memory class (e.g., --class rule,decision)
   --no-class-boost    Disable class-aware ranking boosts
@@ -6004,7 +6008,7 @@ Update:
 
 MCP Flags:
   --port <N>          Start HTTP+SSE transport on port (default: stdio)
-  --embed <provider/model> Enable semantic/hybrid search via embeddings
+  --embed <provider/model> Enable semantic/hybrid/rrf search via embeddings
 
 Examples:
   cortex list --limit 50

@@ -17,7 +17,7 @@ type Preset struct {
 	Template    string `yaml:"template" json:"template"`         // User prompt template ({{context}} and {{query}} are replaced)
 	MaxTokens   int    `yaml:"max_tokens" json:"max_tokens"`     // Max output tokens (default: 1024)
 	SearchLimit int    `yaml:"search_limit" json:"search_limit"` // How many memories to search for context (default: 20)
-	SearchMode  string `yaml:"search_mode" json:"search_mode"`   // "hybrid", "bm25", "semantic" (default: "hybrid")
+	SearchMode  string `yaml:"search_mode" json:"search_mode"`   // "hybrid", "rrf", "bm25", "semantic" (default: "hybrid")
 }
 
 // BuiltinPresets are the presets that ship with Cortex.

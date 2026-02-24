@@ -171,7 +171,10 @@ func TestGraphAPIDepthCap(t *testing.T) {
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
-	resp, _ := http.Get(ts.URL + "/api/graph?fact_id=1&depth=99")
+	resp, err := http.Get(ts.URL + "/api/graph?fact_id=1&depth=99")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
 	defer resp.Body.Close()
 
 	var result ExportResult

@@ -1,9 +1,10 @@
 // Package search provides search capabilities for Cortex.
 //
-// Three search modes:
+// Four search modes:
 // - BM25 keyword search via SQLite FTS5 (instant, zero dependencies)
 // - Semantic search via embedding similarity (any provider: Ollama, OpenAI, etc.)
 // - Hybrid mode combines both using Weighted Score Fusion (α=0.3 BM25, 0.7 semantic)
+// - RRF mode combines both using Reciprocal Rank Fusion (rank-based scoring)
 //
 // Each mode applies minimum score filtering to prevent garbage-in/results-out.
 package search
@@ -82,6 +83,7 @@ const (
 	ModeKeyword  Mode = "keyword"
 	ModeSemantic Mode = "semantic"
 	ModeHybrid   Mode = "hybrid"
+	ModeRRF      Mode = "rrf"
 )
 
 // ParseMode converts a string to a Mode, returning an error for invalid values.
@@ -93,8 +95,10 @@ func ParseMode(s string) (Mode, error) {
 		return ModeSemantic, nil
 	case "hybrid":
 		return ModeHybrid, nil
+	case "rrf":
+		return ModeRRF, nil
 	default:
-		return "", fmt.Errorf("invalid search mode %q (valid: keyword, semantic, hybrid)", s)
+		return "", fmt.Errorf("invalid search mode %q (valid: keyword, semantic, hybrid, rrf)", s)
 	}
 }
 
@@ -146,7 +150,7 @@ func effectiveMinScore(mode Mode, configured float64) float64 {
 	switch mode {
 	case ModeSemantic:
 		return defaultMinSemantic
-	case ModeHybrid:
+	case ModeHybrid, ModeRRF:
 		return defaultMinHybrid
 	default:
 		return defaultMinBM25
@@ -164,7 +168,7 @@ type Result struct {
 	Metadata      *store.Metadata `json:"metadata,omitempty"` // Structured metadata (Issue #30)
 	Score         float64         `json:"score"`
 	Snippet       string          `json:"snippet,omitempty"`
-	MatchType     string          `json:"match_type"` // "bm25", "semantic", "hybrid"
+	MatchType     string          `json:"match_type"` // "bm25", "semantic", "hybrid", "rrf"
 	MemoryID      int64           `json:"memory_id"`
 	ImportedAt    time.Time       `json:"imported_at,omitempty"` // For metadata date filtering
 	Explain       *ExplainDetails `json:"explain,omitempty"`
@@ -335,6 +339,8 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		results, err = e.searchSemantic(ctx, query, opts)
 	case ModeHybrid:
 		results, err = e.searchHybrid(ctx, query, opts)
+	case ModeRRF:
+		results, err = e.searchRRF(ctx, query, opts)
 	default:
 		return nil, fmt.Errorf("unknown search mode: %q", opts.Mode)
 	}
@@ -1673,10 +1679,71 @@ func (e *Engine) searchHybrid(ctx context.Context, query string, opts Options) (
 	return mergeWeightedScores(bm25Result.results, semanticResult.results, opts.Limit, opts.Explain), nil
 }
 
+// searchRRF performs both BM25 and semantic search, merging results with
+// Reciprocal Rank Fusion (RRF).
+func (e *Engine) searchRRF(ctx context.Context, query string, opts Options) ([]Result, error) {
+	candidateOpts := opts
+	candidateOpts.Limit = opts.Limit * 3
+	if candidateOpts.Limit < 15 {
+		candidateOpts.Limit = 15
+	}
+
+	type searchResult struct {
+		results []Result
+		err     error
+	}
+
+	bm25Chan := make(chan searchResult, 1)
+	semanticChan := make(chan searchResult, 1)
+
+	go func() {
+		results, err := e.searchBM25(ctx, query, candidateOpts)
+		bm25Chan <- searchResult{results, err}
+	}()
+
+	go func() {
+		results, err := e.searchSemantic(ctx, query, candidateOpts)
+		semanticChan <- searchResult{results, err}
+	}()
+
+	bm25Result := <-bm25Chan
+	semanticResult := <-semanticChan
+
+	if bm25Result.err != nil && semanticResult.err != nil {
+		return nil, fmt.Errorf("both searches failed: BM25: %w, Semantic: %v", bm25Result.err, semanticResult.err)
+	} else if bm25Result.err != nil {
+		return fuseRRFWithOptions(
+			nil,
+			semanticResult.results,
+			opts.Limit,
+			opts.Explain,
+			DefaultRRFConfig(),
+		), nil
+	} else if semanticResult.err != nil {
+		return fuseRRFWithOptions(
+			bm25Result.results,
+			nil,
+			opts.Limit,
+			opts.Explain,
+			DefaultRRFConfig(),
+		), nil
+	}
+
+	return fuseRRFWithOptions(
+		bm25Result.results,
+		semanticResult.results,
+		opts.Limit,
+		opts.Explain,
+		DefaultRRFConfig(),
+	), nil
+}
+
 // mergeWeightedScores combines BM25 and semantic results using normalized score fusion.
 //
-// Why not RRF? RRF with k=60 was designed for large candidate sets (hundreds).
-// With 5-15 candidates, all scores compress to 0.016-0.033 — indistinguishable.
+// This remains the default for ModeHybrid. ModeRRF uses FuseRRF instead.
+//
+// Why keep weighted fusion? RRF with k=60 was designed for large candidate sets (hundreds).
+// With 5-15 candidates, scores compress to 0.016-0.033.
 //
 // Weighted Score Fusion:
 //  1. Normalize each result set's scores to 0-1 (min-max within set)

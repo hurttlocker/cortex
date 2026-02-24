@@ -431,8 +431,10 @@ func TestParseMode(t *testing.T) {
 		{"bm25", ModeKeyword, false},
 		{"semantic", ModeSemantic, false},
 		{"hybrid", ModeHybrid, false},
+		{"rrf", ModeRRF, false},
 		{"Keyword", ModeKeyword, false},
 		{"HYBRID", ModeHybrid, false},
+		{"RRF", ModeRRF, false},
 		{"invalid", "", true},
 		{"", "", true},
 	}

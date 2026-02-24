@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,6 +202,34 @@ func TestSearchToolWithMode(t *testing.T) {
 
 	if len(results) == 0 {
 		t.Fatal("expected at least one BM25 result for 'open-source Go memory'")
+	}
+}
+
+func TestSearchToolWithRRFModeAccepted(t *testing.T) {
+	s := setupTestStore(t)
+	defer s.Close()
+
+	srv := NewServer(ServerConfig{Store: s, DBPath: ":memory:"})
+
+	result := callTool(t, srv, "cortex_search", map[string]interface{}{
+		"query": "open-source Go memory",
+		"mode":  "rrf",
+		"limit": float64(5),
+	})
+
+	text := getTextContent(t, result)
+	if result.IsError {
+		t.Fatalf("expected mode=rrf to be accepted and runnable, got error: %q", text)
+	}
+	if strings.Contains(strings.ToLower(text), "invalid mode") {
+		t.Fatalf("expected mode=rrf to be accepted by parser, got: %q", text)
+	}
+	var results []search.Result
+	if err := json.Unmarshal([]byte(text), &results); err != nil {
+		t.Fatalf("parsing search results: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one result in rrf mode")
 	}
 }
 
