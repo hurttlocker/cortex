@@ -115,7 +115,7 @@ func EnrichFacts(ctx context.Context, provider llm.Provider, chunk string, ruleF
 
 	response, err := provider.Complete(enrichCtx, prompt, llm.CompletionOpts{
 		Temperature: 0.1,
-		MaxTokens:   1024,
+		MaxTokens:   8192,
 		System:      enrichSystemPrompt,
 	})
 	if err != nil {
