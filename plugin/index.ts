@@ -783,14 +783,27 @@ const cortexPlugin = {
 
         connectCmd
           .command("sync")
-          .description("Sync connectors")
+          .description("Sync connectors (with fact extraction)")
           .argument("[provider]", "Specific provider to sync (omit for all)")
-          .action(async (provider?: string) => {
+          .option("--no-extract", "Skip fact extraction on imported records")
+          .option("--no-infer", "Skip edge inference after extraction")
+          .action(async (provider?: string, options?: { extract?: boolean; infer?: boolean }) => {
             try {
               const args = ["connect", "sync"];
-              if (provider) args.push(provider);
+              if (provider) {
+                args.push("--provider", provider);
+              } else {
+                args.push("--all");
+              }
+              // Default: extract facts (use --no-extract to disable)
+              if (options?.extract !== false) {
+                args.push("--extract");
+              }
+              if (options?.infer === false) {
+                args.push("--no-infer");
+              }
               const { stdout } = await execFileAsync(cfg.binaryPath, args, {
-                timeout: 60000,
+                timeout: 120000,
                 env: { ...process.env, CORTEX_DB: cfg.dbPath },
               });
               console.log(stdout.trim());

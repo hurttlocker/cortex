@@ -119,6 +119,9 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 		mcp.WithString("agent_id",
 			mcp.Description("Filter and boost results for a specific agent (e.g., 'mister', 'hawk'). Agent's facts rank higher; global facts still visible."),
 		),
+		mcp.WithString("source",
+			mcp.Description("Filter results by source prefix (e.g., 'github', 'gmail'). Matches connector-imported records by provider name."),
+		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -157,6 +160,10 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 		if agentID, err := req.RequireString("agent_id"); err == nil && agentID != "" {
 			opts.Agent = agentID
 			opts.BoostAgent = agentID
+		}
+
+		if source, err := req.RequireString("source"); err == nil && source != "" {
+			opts.Source = source
 		}
 
 		results, err := engine.Search(ctx, query, opts)
