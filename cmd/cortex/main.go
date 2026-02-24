@@ -561,38 +561,50 @@ func runImport(args []string) error {
 		}
 
 		// Run LLM enrichment (default when extracting, skip with --no-enrich)
+		// Graceful degradation: if no API key, skip silently with one-line notice.
+		llmAvailable := enableEnrichment
 		if enableEnrichment && extractionStats != nil {
 			enrichLLM := llmFlag
 			if enrichLLM == "" {
 				enrichLLM = extract.DefaultEnrichModel // grok-4.1-fast
 			}
-			fmt.Println("\nRunning LLM enrichment...")
-			enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  Enrichment error: %v\n", err)
-			} else if enrichStats.NewFacts > 0 {
-				fmt.Printf("  🧠 Enrichment: +%d new facts from LLM (%.1fs avg latency)\n",
-					enrichStats.NewFacts, enrichStats.AvgLatency.Seconds())
+			// Pre-check: can we create the provider?
+			if _, err := tryCreateProvider(enrichLLM); err != nil {
+				fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key). Pass --no-enrich to silence this.\n")
+				llmAvailable = false
 			} else {
-				fmt.Println("  🧠 Enrichment: LLM found no additional facts")
+				fmt.Println("\nRunning LLM enrichment...")
+				enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  Enrichment error: %v\n", err)
+				} else if enrichStats.NewFacts > 0 {
+					fmt.Printf("  🧠 Enrichment: +%d new facts from LLM (%.1fs avg latency)\n",
+						enrichStats.NewFacts, enrichStats.AvgLatency.Seconds())
+				} else {
+					fmt.Println("  🧠 Enrichment: LLM found no additional facts")
+				}
 			}
 		}
 
 		// Auto-classify kv facts from this import (default when enriching, skip with --no-classify)
-		if enableEnrichment && !noClassify && !opts.DryRun {
+		if llmAvailable && !noClassify && !opts.DryRun {
 			classifyLLM := llmFlag
 			if classifyLLM == "" {
 				classifyLLM = extract.DefaultClassifyModel // deepseek-v3.2
 			}
-			fmt.Println("\nClassifying facts...")
-			classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  Classification error: %v\n", err)
-			} else if classifyStats.Reclassified > 0 {
-				fmt.Printf("  🏷️  Classified: %d/%d kv facts reclassified (%.1fs)\n",
-					classifyStats.Reclassified, classifyStats.Total, classifyStats.Duration.Seconds())
+			if _, err := tryCreateProvider(classifyLLM); err != nil {
+				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key). Pass --no-classify to silence this.\n")
 			} else {
-				fmt.Println("  🏷️  Classification: no kv facts needed reclassification")
+				fmt.Println("\nClassifying facts...")
+				classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  Classification error: %v\n", err)
+				} else if classifyStats.Reclassified > 0 {
+					fmt.Printf("  🏷️  Classified: %d/%d kv facts reclassified (%.1fs)\n",
+						classifyStats.Reclassified, classifyStats.Total, classifyStats.Duration.Seconds())
+				} else {
+					fmt.Println("  🏷️  Classification: no kv facts needed reclassification")
+				}
 			}
 		}
 	}
@@ -1522,28 +1534,23 @@ func runExtract(args []string) error {
 		return fmt.Errorf("extraction failed: %w", err)
 	}
 
-	// Run LLM enrichment if requested
+	// Run LLM enrichment (graceful skip when no API key configured)
 	if enrichFlag {
 		enrichLLM := llmFlag
 		if enrichLLM == "" {
 			enrichLLM = extract.DefaultEnrichModel // grok-4.1-fast
 		}
-		llmCfg, err := llm.ParseLLMFlag(enrichLLM)
-		if err != nil {
-			return fmt.Errorf("parsing --llm for enrichment: %w", err)
-		}
-		provider, err := llm.NewProvider(llmCfg)
-		if err != nil {
-			return fmt.Errorf("creating LLM provider for enrichment: %w", err)
-		}
-
-		result, err := extract.EnrichFacts(ctx, provider, string(content), facts)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Enrichment warning: %v (showing rule-only results)\n", err)
-		} else if len(result.NewFacts) > 0 {
-			fmt.Fprintf(os.Stderr, "🧠 Enrichment: +%d facts (%s, %s)\n",
-				len(result.NewFacts), result.Model, result.Latency.Round(time.Millisecond))
-			facts = append(facts, result.NewFacts...)
+		if provider, err := tryCreateProvider(enrichLLM); err != nil {
+			fmt.Fprintf(os.Stderr, "  Skipping enrichment (no API key?): %v\n", err)
+		} else {
+			result, err := extract.EnrichFacts(ctx, provider, string(content), facts)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Enrichment warning: %v (showing rule-only results)\n", err)
+			} else if len(result.NewFacts) > 0 {
+				fmt.Fprintf(os.Stderr, "🧠 Enrichment: +%d facts (%s, %s)\n",
+					len(result.NewFacts), result.Model, result.Latency.Round(time.Millisecond))
+				facts = append(facts, result.NewFacts...)
+			}
 		}
 	}
 
@@ -5606,6 +5613,16 @@ func isTTY() bool {
 		return false
 	}
 	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+// tryCreateProvider attempts to create an LLM provider, returning nil + error
+// if API keys are missing. Used for graceful degradation when LLM is default-on.
+func tryCreateProvider(llmFlag string) (llm.Provider, error) {
+	cfg, err := llm.ParseLLMFlag(llmFlag)
+	if err != nil {
+		return nil, err
+	}
+	return llm.NewProvider(cfg)
 }
 
 // formatBytes formats bytes into a human-readable string.

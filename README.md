@@ -95,7 +95,7 @@ See [docs/connectors.md](docs/connectors.md) for full connector setup.
 
 **Import-first.** Start with the files you already have — `MEMORY.md`, JSON configs, YAML, CSV, conversation logs. Every other tool says "start fresh." Cortex says "bring everything."
 
-**Zero dependencies.** No API keys, no LLM, no Docker, no database server. A single Go binary + SQLite. Semantic search is optional (add Ollama when you want it).
+**Zero dependencies.** No API keys required, no Docker, no database server. A single Go binary + SQLite. LLM enrichment is optional — dramatically improves fact quality when enabled, but rules work fine offline.
 
 **Observable.** `cortex stats` shows what your agent knows. `cortex stale` shows what's fading. `cortex conflicts` finds contradictions. `cortex alerts` notifies you proactively.
 
@@ -123,7 +123,7 @@ Your files ──→ Import ──→ Fact extraction ──→ SQLite + FTS5
 |---------|-------------|
 | **Hybrid + RRF search** | BM25 + semantic with weighted score fusion (hybrid) or rank fusion (`--mode rrf`). |
 | **Ebbinghaus decay** | 7 decay rates by fact type. Identity lasts 693 days, temporal fades in 7. |
-| **Fact extraction** | Rule-based + optional LLM. Finds entities, decisions, preferences, relationships. |
+| **Fact extraction** | Rule-based + LLM enrichment (v0.9.0). Finds entities, decisions, preferences, relationships. Auto-classifies facts. |
 | **Conflict detection** | Same subject + predicate, different object → alert. Real-time on ingest. |
 | **Import filters** | `--ext md,txt` / `--exclude-ext log,tmp` — control exactly what gets imported. |
 | **Auto-infer** | `--extract` on import runs fact extraction + edge inference automatically. |
@@ -139,7 +139,7 @@ Your files ──→ Import ──→ Fact extraction ──→ SQLite + FTS5
 | | Cortex | Mem0 | Zep | Letta |
 |---|:---:|:---:|:---:|:---:|
 | Import existing files | ✅ | ❌ | ❌ | ❌ |
-| Zero LLM dependency | ✅ | ❌ | ❌ | ❌ |
+| Works without LLM | ✅ | ❌ | ❌ | ❌ |
 | Confidence decay | ✅ | ❌ | ❌ | ❌ |
 | Conflict detection | ✅ | ❌ | ❌ | ❌ |
 | Knowledge graph explorer | ✅ | ❌ | ❌ | ❌ |
@@ -149,17 +149,79 @@ Your files ──→ Import ──→ Fact extraction ──→ SQLite + FTS5
 | Works offline | ✅ | ❌ | ❌ | ❌ |
 | Export / portability | ✅ | ❌ | ❌ | ❌ |
 
+## LLM-powered features (v0.9.0)
+
+LLM features are **optional** — Cortex works fully offline with rule-based extraction. When you add an API key, facts get smarter automatically.
+
+### Without LLM (default for new users)
+
+Rule-based extraction handles structured text well (key-value pairs, dates, emails, locations). The governor caps extraction at 10 facts per memory with minimum quality thresholds, preventing garbage accumulation.
+
+```bash
+cortex import ~/notes/ --recursive --extract           # Rules only — works offline
+cortex import ~/notes/ --recursive --extract --no-enrich  # Explicit: skip LLM even if key exists
+```
+
+### With LLM (recommended)
+
+Set one or both API keys for dramatically better fact quality:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."    # For enrichment + classification
+export GEMINI_API_KEY="AI..."             # For query expansion (free tier)
+```
+
+| Feature | Model | Cost | What it does |
+|---------|-------|------|-------------|
+| **Enrichment** | Grok 4.1 Fast (via OpenRouter) | ~$0.01/file | Finds decisions, relationships, implicit facts rules miss |
+| **Classification** | DeepSeek V3.2 (via OpenRouter) | ~$0.50/20K facts | Reclassifies generic `kv` facts → decision, config, state, etc. |
+| **Query expansion** | Gemini 2.0 Flash | Free | Expands vague queries into better search terms |
+| **Conflict resolution** | Any OpenRouter model | ~$0.01/batch | Auto-resolves contradictory facts |
+
+```bash
+# Import with enrichment (default when OPENROUTER_API_KEY is set)
+cortex import ~/notes/ --recursive --extract
+
+# Bulk reclassify existing kv facts (one-time sweep, ~55 min for 20K facts)
+cortex classify --limit 25000 --batch-size 20 --concurrency 5
+
+# Expand search queries through LLM
+cortex search "what was that trading thing" --expand
+
+# Auto-resolve conflicts
+cortex conflicts --resolve llm
+```
+
+**Cost:** <$1/month at typical usage. Full corpus reimport: ~$2-3.
+
+### Choosing models
+
+We benchmarked 6 models across enrichment and classification. Results:
+
+| Task | Best Model | Why |
+|------|-----------|-----|
+| Enrichment | Grok 4.1 Fast | Only model that reliably finds new facts (+26 across 3 test files vs ≤9 for others) |
+| Classification | DeepSeek V3.2 | 76% reclassification, 0 errors, $0.50/20K facts. Batch-size 20 optimal. |
+| Query expansion | Gemini 2.0 Flash | Free tier, 2.3x faster than alternatives, adequate quality for search |
+
+Models that didn't work: MiniMax M2.5 (80% error rate), Codex Mini (8% success), Gemini thinking models (consume JSON in reasoning phase).
+
 ## CLI reference
 
 ```bash
 cortex import <path> [--recursive] [--extract]  # Import files or directories
+  [--no-enrich] [--no-classify]                 #   Skip LLM enrichment/classification
   [--ext md,txt] [--exclude-ext log,tmp]        #   Filter by file extension
 cortex search <query> [--mode hybrid|bm25|semantic|rrf]  # Search memories
+  [--expand] [--llm google/gemini-2.0-flash]    #   LLM query expansion
+cortex classify [--limit N] [--batch-size 20]   # Reclassify kv facts with LLM
+  [--concurrency 5] [--dry-run]                 #   Parallel batches, preview mode
+cortex conflicts [--resolve llm] [--dry-run]    # Detect/resolve contradictions
+cortex summarize [--cluster N]                  # Consolidate fact clusters
 cortex reason <query> [--recursive]             # LLM reasoning over memory
 cortex graph [--serve --port 8090]              # Knowledge graph explorer
 cortex stats                                    # What your agent knows
 cortex stale [--days 30]                        # Fading facts
-cortex conflicts                                # Contradictions
 cortex reinforce <fact-id>                      # Reset decay timer
 cortex connect add <provider> --config '{...}'  # Add external connector
 cortex connect sync --all [--extract]           # Sync + extract facts

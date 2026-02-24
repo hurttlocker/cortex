@@ -622,13 +622,14 @@ Call me at (555) 123-4567.`
 		factTypes[fact.FactType]++
 	}
 
-	// With tightened governor (v0.9.0), dates in KV pairs stay as KV type.
-	// Standalone date/email regex still fires but governor may filter short predicates.
-	expectedTypes := []string{"kv", "identity"}
-	for _, expectedType := range expectedTypes {
-		if factTypes[expectedType] == 0 {
-			t.Errorf("Expected at least one fact of type %q, got types: %v", expectedType, factTypes)
-		}
+	// With tightened governor (v0.9.0), identity/temporal facts mostly come from
+	// LLM enrichment. Rule extraction focuses on KV + location patterns.
+	// At minimum, we expect kv and location types from rules alone.
+	if factTypes["kv"] == 0 {
+		t.Errorf("Expected at least one kv fact, got types: %v", factTypes)
+	}
+	if factTypes["location"] == 0 {
+		t.Errorf("Expected at least one location fact, got types: %v", factTypes)
 	}
 
 	// Print facts for debugging (remove in final version)
