@@ -3465,6 +3465,23 @@ func runReimport(args []string) error {
 		} else {
 			fmt.Printf("  ✓ Extracted %d facts\n", extractionStats.FactsExtracted)
 		}
+
+		// v0.9.0: LLM enrichment on reimport (graceful skip if no API key)
+		enrichLLM := llmFlag
+		if enrichLLM == "" {
+			enrichLLM = extract.DefaultEnrichModel
+		}
+		if _, err := tryCreateProvider(enrichLLM); err != nil {
+			fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key). Set OPENROUTER_API_KEY for better facts.\n")
+		} else {
+			fmt.Println("  Running LLM enrichment...")
+			enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  Enrichment error: %v\n", err)
+			} else if enrichStats.NewFacts > 0 {
+				fmt.Printf("  🧠 Enrichment: +%d new facts from LLM\n", enrichStats.NewFacts)
+			}
+		}
 	}
 
 	// Step 3: Embed (if requested)

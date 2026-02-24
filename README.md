@@ -194,6 +194,20 @@ cortex conflicts --resolve llm
 
 **Cost:** <$1/month at typical usage. Full corpus reimport: ~$2-3.
 
+### Upgrading from older versions
+
+If you have an existing database with thousands of generic `kv` facts from before v0.9.0, the cleanest path is a fresh reimport:
+
+```bash
+# Wipe and reimport (backs up nothing — export first if needed)
+cortex reimport ~/your-notes/ --recursive --extract --force
+
+# Or if you want to keep the DB and just reclassify existing facts:
+cortex classify --limit 50000 --batch-size 20 --concurrency 5
+```
+
+The reimport path uses the tightened governor (≤10 facts/memory) and auto-enriches with LLM if you have an API key. The classify-only path leaves your memories intact and just fixes the fact types.
+
 ### Choosing models
 
 We benchmarked 6 models across enrichment and classification. Results:
