@@ -543,10 +543,10 @@ func runImport(args []string) error {
 		totalResult.Add(result)
 	}
 
-	// Run extraction if requested
+	// Run extraction if requested — ONLY on newly imported memories (not all recent)
 	if enableExtraction && !opts.DryRun && totalResult.MemoriesNew > 0 {
 		fmt.Println("\nRunning extraction...")
-		extractionStats, err := runExtractionOnImportedMemories(ctx, s, llmFlag)
+		extractionStats, err := runExtractionOnImportedMemories(ctx, s, llmFlag, totalResult.NewMemoryIDs)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Extraction error: %v\n", err)
 		} else {
@@ -574,7 +574,7 @@ func runImport(args []string) error {
 				llmAvailable = false
 			} else {
 				fmt.Println("\nRunning LLM enrichment...")
-				enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM)
+				enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM, totalResult.NewMemoryIDs)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "  Enrichment error: %v\n", err)
 				} else if enrichStats.NewFacts > 0 {
@@ -596,7 +596,7 @@ func runImport(args []string) error {
 				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key). Pass --no-classify to silence this.\n")
 			} else {
 				fmt.Println("\nClassifying facts...")
-				classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM)
+				classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM, totalResult.NewMemoryIDs)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "  Classification error: %v\n", err)
 				} else if classifyStats.Reclassified > 0 {
@@ -2152,11 +2152,14 @@ type ExtractionStats struct {
 }
 
 // runExtractionOnImportedMemories runs extraction on recently imported memories.
-func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag string) (*ExtractionStats, error) {
-	// Get recently imported memories (limit to reasonable batch size)
-	memories, err := s.ListMemories(ctx, store.ListOpts{Limit: 1000, SortBy: "date"})
+func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag string, newMemoryIDs []int64) (*ExtractionStats, error) {
+	// Only process newly imported memories — never re-extract on existing ones
+	if len(newMemoryIDs) == 0 {
+		return &ExtractionStats{}, nil
+	}
+	memories, err := s.GetMemoriesByIDs(ctx, newMemoryIDs)
 	if err != nil {
-		return nil, fmt.Errorf("listing memories: %w", err)
+		return nil, fmt.Errorf("fetching new memories: %w", err)
 	}
 
 	// Configure LLM if requested
@@ -2241,7 +2244,12 @@ type EnrichmentStats struct {
 // runEnrichmentOnImportedMemories runs LLM enrichment on recently imported memories.
 // For each memory, it re-runs rule extraction to get the baseline, then asks the LLM
 // what the rules missed. New facts are stored with extraction_method="llm-enrich".
-func runEnrichmentOnImportedMemories(ctx context.Context, s store.Store, llmFlag string) (*EnrichmentStats, error) {
+func runEnrichmentOnImportedMemories(ctx context.Context, s store.Store, llmFlag string, newMemoryIDs []int64) (*EnrichmentStats, error) {
+	// Only enrich newly imported memories — never re-enrich existing ones
+	if len(newMemoryIDs) == 0 {
+		return &EnrichmentStats{}, nil
+	}
+
 	// Resolve LLM provider (using the new internal/llm package)
 	llmCfg, err := llm.ParseLLMFlag(llmFlag)
 	if err != nil {
@@ -2252,10 +2260,9 @@ func runEnrichmentOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 		return nil, fmt.Errorf("creating LLM provider: %w", err)
 	}
 
-	// Get recently imported memories
-	memories, err := s.ListMemories(ctx, store.ListOpts{Limit: 1000, SortBy: "date"})
+	memories, err := s.GetMemoriesByIDs(ctx, newMemoryIDs)
 	if err != nil {
-		return nil, fmt.Errorf("listing memories: %w", err)
+		return nil, fmt.Errorf("fetching new memories: %w", err)
 	}
 
 	pipeline := extract.NewPipeline()
@@ -2340,19 +2347,27 @@ type ClassifyImportStats struct {
 	Duration     time.Duration
 }
 
-// classifyImportedKVFacts reclassifies kv-type facts from the most recent import batch.
+// classifyImportedKVFacts reclassifies kv-type facts from newly imported memories only.
 // Uses the classification pipeline to assign proper types (decision, config, state, etc.)
-func classifyImportedKVFacts(ctx context.Context, s store.Store, llmFlag string) (*ClassifyImportStats, error) {
+func classifyImportedKVFacts(ctx context.Context, s store.Store, llmFlag string, newMemoryIDs []int64) (*ClassifyImportStats, error) {
 	start := time.Now()
 
-	// Get recent kv facts (from today's import — limit 500 to keep costs bounded)
-	kvFacts, err := s.ListFacts(ctx, store.ListOpts{
-		FactType: "kv",
-		Limit:    500,
-		SortBy:   "date",
-	})
+	if len(newMemoryIDs) == 0 {
+		return &ClassifyImportStats{}, nil
+	}
+
+	// Get kv facts only from newly imported memories
+	kvFacts, err := s.ListFactsByMemoryIDs(ctx, newMemoryIDs, "kv", 500)
 	if err != nil {
-		return nil, fmt.Errorf("searching kv facts: %w", err)
+		// Fallback: if ListFactsByMemoryIDs not available, use old path
+		kvFacts, err = s.ListFacts(ctx, store.ListOpts{
+			FactType: "kv",
+			Limit:    500,
+			SortBy:   "date",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("searching kv facts: %w", err)
+		}
 	}
 
 	if len(kvFacts) == 0 {
@@ -3350,13 +3365,15 @@ func runUpdate(args []string) error {
 
 func runReimport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex reimport <path> [--recursive] [--extract] [--embed <provider/model>] [--force]")
+		return fmt.Errorf("usage: cortex reimport <path> [--recursive] [--extract] [--no-enrich] [--no-classify] [--embed <provider/model>] [--force]")
 	}
 
 	// Parse flags
 	var paths []string
 	recursive := false
 	enableExtraction := false
+	noEnrich := false
+	noClassify := false
 	embedFlag := ""
 	llmFlag := ""
 	force := false
@@ -3367,6 +3384,10 @@ func runReimport(args []string) error {
 			recursive = true
 		case args[i] == "--extract":
 			enableExtraction = true
+		case args[i] == "--no-enrich":
+			noEnrich = true
+		case args[i] == "--no-classify":
+			noClassify = true
 		case args[i] == "--embed" && i+1 < len(args):
 			i++
 			embedFlag = args[i]
@@ -3456,30 +3477,52 @@ func runReimport(args []string) error {
 	fmt.Printf("  ✓ Imported %d files (%d new memories, %d unchanged)\n",
 		totalResult.FilesImported, totalResult.MemoriesNew, totalResult.MemoriesUnchanged)
 
-	// Run extraction if requested
+	// Run extraction if requested — only on newly imported memories
 	if enableExtraction && totalResult.MemoriesNew > 0 {
 		fmt.Println("  Extracting facts...")
-		extractionStats, err := runExtractionOnImportedMemories(ctx, s, llmFlag)
+		extractionStats, err := runExtractionOnImportedMemories(ctx, s, llmFlag, totalResult.NewMemoryIDs)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Extraction error: %v\n", err)
 		} else {
 			fmt.Printf("  ✓ Extracted %d facts\n", extractionStats.FactsExtracted)
 		}
 
-		// v0.9.0: LLM enrichment on reimport (graceful skip if no API key)
-		enrichLLM := llmFlag
-		if enrichLLM == "" {
-			enrichLLM = extract.DefaultEnrichModel
+		// v0.9.0: LLM enrichment on reimport (graceful skip if no API key or --no-enrich)
+		if !noEnrich {
+			enrichLLM := llmFlag
+			if enrichLLM == "" {
+				enrichLLM = extract.DefaultEnrichModel
+			}
+			if _, err := tryCreateProvider(enrichLLM); err != nil {
+				fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key). Set OPENROUTER_API_KEY for better facts.\n")
+			} else {
+				fmt.Println("  Running LLM enrichment...")
+				enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM, totalResult.NewMemoryIDs)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  Enrichment error: %v\n", err)
+				} else if enrichStats.NewFacts > 0 {
+					fmt.Printf("  🧠 Enrichment: +%d new facts from LLM\n", enrichStats.NewFacts)
+				}
+			}
 		}
-		if _, err := tryCreateProvider(enrichLLM); err != nil {
-			fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key). Set OPENROUTER_API_KEY for better facts.\n")
-		} else {
-			fmt.Println("  Running LLM enrichment...")
-			enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  Enrichment error: %v\n", err)
-			} else if enrichStats.NewFacts > 0 {
-				fmt.Printf("  🧠 Enrichment: +%d new facts from LLM\n", enrichStats.NewFacts)
+
+		// v0.9.0: Auto-classify on reimport (skip with --no-classify)
+		if !noClassify && !noEnrich {
+			classifyLLM := llmFlag
+			if classifyLLM == "" {
+				classifyLLM = extract.DefaultClassifyModel
+			}
+			if _, err := tryCreateProvider(classifyLLM); err != nil {
+				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key).\n")
+			} else {
+				fmt.Println("  Classifying facts...")
+				classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM, totalResult.NewMemoryIDs)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  Classification error: %v\n", err)
+				} else if classifyStats.Reclassified > 0 {
+					fmt.Printf("  🏷️  Classified: %d/%d kv facts reclassified\n",
+						classifyStats.Reclassified, classifyStats.Total)
+				}
 			}
 		}
 	}

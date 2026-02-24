@@ -33,6 +33,7 @@ type ImportResult struct {
 	MemoriesUpdated   int
 	MemoriesUnchanged int
 	MemoriesNearDuped int // Suppressed by near-duplicate hygiene
+	NewMemoryIDs      []int64
 	Errors            []ImportError
 }
 
@@ -45,6 +46,7 @@ func (r *ImportResult) Add(other *ImportResult) {
 	r.MemoriesUpdated += other.MemoriesUpdated
 	r.MemoriesUnchanged += other.MemoriesUnchanged
 	r.MemoriesNearDuped += other.MemoriesNearDuped
+	r.NewMemoryIDs = append(r.NewMemoryIDs, other.NewMemoryIDs...)
 	r.Errors = append(r.Errors, other.Errors...)
 }
 

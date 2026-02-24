@@ -180,6 +180,7 @@ type Store interface {
 	AddFact(ctx context.Context, f *Fact) (int64, error)
 	GetFact(ctx context.Context, id int64) (*Fact, error)
 	ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, error)
+	ListFactsByMemoryIDs(ctx context.Context, memoryIDs []int64, factType string, limit int) ([]*Fact, error)
 	UpdateFactConfidence(ctx context.Context, id int64, confidence float64) error
 	UpdateFactType(ctx context.Context, id int64, factType string) error
 	ReinforceFact(ctx context.Context, id int64) error

@@ -376,7 +376,7 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 		}
 	}
 
-	_, err = e.store.AddMemory(ctx, mem)
+	newID, err := e.store.AddMemory(ctx, mem)
 	if err != nil {
 		if isDuplicateMemoryInsert(err) {
 			existing, findErr := e.store.FindByHash(ctx, hash)
@@ -399,6 +399,7 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 	}
 
 	result.MemoriesNew++
+	result.NewMemoryIDs = append(result.NewMemoryIDs, newID)
 	return nil
 }
 

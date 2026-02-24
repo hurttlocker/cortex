@@ -133,6 +133,59 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 	return facts, rows.Err()
 }
 
+// ListFactsByMemoryIDs returns facts for specific memory IDs, optionally filtered by type.
+func (s *SQLiteStore) ListFactsByMemoryIDs(ctx context.Context, memoryIDs []int64, factType string, limit int) ([]*Fact, error) {
+	if len(memoryIDs) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+
+	placeholders := make([]string, len(memoryIDs))
+	args := make([]interface{}, len(memoryIDs))
+	for i, id := range memoryIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type,
+		f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.superseded_by, f.agent_id
+		FROM facts f
+		WHERE f.memory_id IN (%s) AND f.superseded_by IS NULL`,
+		strings.Join(placeholders, ","))
+
+	if factType != "" {
+		query += " AND f.fact_type = ?"
+		args = append(args, factType)
+	}
+
+	query += fmt.Sprintf(" ORDER BY f.created_at DESC LIMIT %d", limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing facts by memory IDs: %w", err)
+	}
+	defer rows.Close()
+
+	var facts []*Fact
+	for rows.Next() {
+		f := &Fact{}
+		var supersededBy sql.NullInt64
+		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
+			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
+			&f.SourceQuote, &f.CreatedAt, &supersededBy, &f.AgentID); err != nil {
+			return nil, fmt.Errorf("scanning fact row: %w", err)
+		}
+		if supersededBy.Valid {
+			v := supersededBy.Int64
+			f.SupersededBy = &v
+		}
+		facts = append(facts, f)
+	}
+	return facts, rows.Err()
+}
+
 // UpdateFactConfidence updates the confidence value for a fact.
 func (s *SQLiteStore) UpdateFactConfidence(ctx context.Context, id int64, confidence float64) error {
 	result, err := s.db.ExecContext(ctx,
