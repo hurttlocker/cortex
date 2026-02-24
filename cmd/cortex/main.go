@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"os/signal"
@@ -17,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hurttlocker/cortex/internal/codexrollout"
 	"github.com/hurttlocker/cortex/internal/connect"
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/extract"
@@ -170,23 +168,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-	case "codex-rollout-report":
-		exitCode := runCodexRolloutReportCLI(args[1:], os.Stdout, os.Stderr)
-		if exitCode != 0 {
-			os.Exit(exitCode)
-		}
 	case "connect":
 		if err := runConnect(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-	case "alerts":
-		if err := runAlerts(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-	case "watch":
-		if err := runWatch(args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -312,19 +295,22 @@ func boolToInt(v bool) int {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--similarity-threshold 0.95] [--dedupe-window-sec 300] [--capture-low-signal] [--capture-min-chars 20] [--capture-low-signal-pattern <phrase>] [--llm <provider/model>] [--embed <provider/model>]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--include .md,.txt] [--exclude .go,.js] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--llm <provider/model>] [--embed <provider/model>]")
 	}
 
 	// Parse flags
 	var paths []string
 	opts := ingest.ImportOptions{}
 	enableExtraction := false
+	noInfer := false
 	llmFlag := ""
 	embedFlag := ""
 	projectFlag := ""
 	classFlag := ""
 	metadataFlag := ""
 	autoTag := false
+	includeExts := ""
+	excludeExts := ""
 	captureDedupe := false
 	similarityThreshold := 0.95
 	dedupeWindowSec := 300
@@ -340,6 +326,8 @@ func runImport(args []string) error {
 			opts.DryRun = true
 		case args[i] == "--extract":
 			enableExtraction = true
+		case args[i] == "--no-infer":
+			noInfer = true
 		case args[i] == "--project" && i+1 < len(args):
 			i++
 			projectFlag = args[i]
@@ -415,10 +403,38 @@ func runImport(args []string) error {
 			embedFlag = args[i]
 		case strings.HasPrefix(args[i], "--embed="):
 			embedFlag = strings.TrimPrefix(args[i], "--embed=")
+		case args[i] == "--include" && i+1 < len(args):
+			i++
+			includeExts = args[i]
+		case strings.HasPrefix(args[i], "--include="):
+			includeExts = strings.TrimPrefix(args[i], "--include=")
+		case args[i] == "--exclude" && i+1 < len(args):
+			i++
+			excludeExts = args[i]
+		case strings.HasPrefix(args[i], "--exclude="):
+			excludeExts = strings.TrimPrefix(args[i], "--exclude=")
 		case strings.HasPrefix(args[i], "-"):
 			return fmt.Errorf("unknown flag: %s", args[i])
 		default:
 			paths = append(paths, args[i])
+		}
+	}
+
+	// Parse comma-separated include/exclude extensions
+	if includeExts != "" {
+		for _, ext := range strings.Split(includeExts, ",") {
+			ext = strings.TrimSpace(ext)
+			if ext != "" {
+				opts.Include = append(opts.Include, ext)
+			}
+		}
+	}
+	if excludeExts != "" {
+		for _, ext := range strings.Split(excludeExts, ",") {
+			ext = strings.TrimSpace(ext)
+			if ext != "" {
+				opts.Exclude = append(opts.Exclude, ext)
+			}
 		}
 	}
 
@@ -518,6 +534,20 @@ func runImport(args []string) error {
 		}
 	}
 
+	// Auto-infer edges after extraction
+	if enableExtraction && !noInfer && !opts.DryRun && totalResult.MemoriesNew > 0 {
+		if sqlStore, ok := s.(*store.SQLiteStore); ok {
+			inferOpts := store.DefaultInferenceOpts()
+			inferOpts.DryRun = false
+			inferResult, inferErr := sqlStore.RunInference(ctx, inferOpts)
+			if inferErr != nil {
+				fmt.Fprintf(os.Stderr, "  Inference error: %v\n", inferErr)
+			} else if inferResult.EdgesCreated > 0 {
+				fmt.Printf("🔗 Inferred %d new edges\n", inferResult.EdgesCreated)
+			}
+		}
+	}
+
 	// Run embedding if requested
 	if embedFlag != "" && !opts.DryRun && totalResult.MemoriesNew > 0 {
 		fmt.Println("\nGenerating embeddings...")
@@ -528,37 +558,6 @@ func runImport(args []string) error {
 			fmt.Printf("  Embeddings generated: %d\n", embedStats.EmbeddingsAdded)
 			if embedStats.HNSWRebuilt {
 				fmt.Printf("  HNSW rebuilt: %d vectors\n", embedStats.HNSWVectorCount)
-			}
-		}
-	}
-
-	// Check watch queries against newly imported content
-	if !opts.DryRun && totalResult.MemoriesNew > 0 {
-		if sqlStore, ok := s.(*store.SQLiteStore); ok {
-			watches, _ := sqlStore.ListWatches(ctx, true)
-			if len(watches) > 0 {
-				// Query for recently imported memories (last 60s)
-				cutoff := time.Now().UTC().Add(-60 * time.Second)
-				recentMems, _ := s.ListMemories(ctx, store.ListOpts{
-					Limit:  totalResult.MemoriesNew,
-					SortBy: "date",
-				})
-				var recentIDs []int64
-				for _, m := range recentMems {
-					if m.ImportedAt.After(cutoff) {
-						recentIDs = append(recentIDs, m.ID)
-					}
-				}
-				if len(recentIDs) > 0 {
-					matches, _ := sqlStore.CheckWatchesForMemories(ctx, recentIDs)
-					if len(matches) > 0 {
-						fmt.Printf("\n👁️  %d watch match(es):\n", len(matches))
-						for _, m := range matches {
-							fmt.Printf("  • %q matched memory #%d (%.0f%%): %s\n",
-								m.Query, m.MemoryID, m.Score*100, m.Snippet)
-						}
-					}
-				}
 			}
 		}
 	}
@@ -953,673 +952,6 @@ func runStale(args []string) error {
 	return outputStaleTTY(staleFacts, opts, totalFacts)
 }
 
-func runAlerts(args []string) error {
-	// Check for subcommands first
-	if len(args) > 0 {
-		switch args[0] {
-		case "check-decay":
-			return runAlertsCheckDecay(args[1:])
-		case "digest":
-			return runAlertsDigest(args[1:])
-		case "reinforce":
-			return runAlertsReinforce(args[1:])
-		}
-	}
-
-	jsonOutput := false
-	ackID := int64(0)
-	ackAll := false
-	alertType := ""
-	limitFlag := 20
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--json":
-			jsonOutput = true
-		case "--ack":
-			if i+1 < len(args) {
-				i++
-				id, err := strconv.ParseInt(args[i], 10, 64)
-				if err != nil {
-					return fmt.Errorf("invalid alert ID: %s", args[i])
-				}
-				ackID = id
-			} else {
-				return fmt.Errorf("--ack requires an alert ID")
-			}
-		case "--ack-all":
-			ackAll = true
-		case "--type":
-			if i+1 < len(args) {
-				i++
-				alertType = args[i]
-			}
-		case "--limit":
-			if i+1 < len(args) {
-				i++
-				l, err := strconv.Atoi(args[i])
-				if err != nil {
-					return fmt.Errorf("invalid limit: %s", args[i])
-				}
-				limitFlag = l
-			}
-		case "-h", "--help":
-			fmt.Println(`cortex alerts — View and manage proactive alerts
-
-Usage:
-  cortex alerts                     List unacknowledged alerts
-  cortex alerts --ack <id>          Acknowledge an alert
-  cortex alerts --ack-all           Acknowledge all alerts
-  cortex alerts --type conflict     Filter by type (conflict, decay, match)
-  cortex alerts --json              Output as JSON
-  cortex alerts --limit 50          Max results (default: 20)
-
-Decay Notifications:
-  cortex alerts check-decay         Scan facts and generate decay alerts
-  cortex alerts digest              Grouped summary of fading facts
-  cortex alerts reinforce <id>      Reinforce fact from alert ("still true")
-
-Options for check-decay:
-  --warning 0.5                     Warning threshold (default: 0.5)
-  --critical 0.3                    Critical threshold (default: 0.3)
-  --json                            Output as JSON`)
-			return nil
-		}
-	}
-
-	storeIface, err := store.NewStore(getStoreConfig())
-	if err != nil {
-		return err
-	}
-	defer storeIface.Close()
-
-	s, ok := storeIface.(*store.SQLiteStore)
-	if !ok {
-		return fmt.Errorf("alerts require SQLiteStore backend")
-	}
-
-	ctx := context.Background()
-
-	// Handle acknowledgment
-	if ackID > 0 {
-		if err := s.AcknowledgeAlert(ctx, ackID); err != nil {
-			return err
-		}
-		fmt.Printf("✓ Alert %d acknowledged.\n", ackID)
-		return nil
-	}
-
-	if ackAll {
-		count, err := s.AcknowledgeAllAlerts(ctx, store.AlertType(alertType))
-		if err != nil {
-			return err
-		}
-		fmt.Printf("✓ %d alert(s) acknowledged.\n", count)
-		return nil
-	}
-
-	// List alerts
-	unacked := false
-	filter := store.AlertFilter{
-		Type:         store.AlertType(alertType),
-		Acknowledged: &unacked,
-		Limit:        limitFlag,
-	}
-
-	alerts, err := s.ListAlerts(ctx, filter)
-	if err != nil {
-		return err
-	}
-
-	if jsonOutput {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(alerts)
-	}
-
-	if len(alerts) == 0 {
-		fmt.Println("No unacknowledged alerts. ✓")
-		return nil
-	}
-
-	fmt.Printf("📋 %d unacknowledged alert(s):\n\n", len(alerts))
-	for _, a := range alerts {
-		icon := "ℹ️"
-		switch a.Severity {
-		case store.AlertSeverityWarning:
-			icon = "🟡"
-		case store.AlertSeverityCritical:
-			icon = "🔴"
-		}
-		fmt.Printf("%s [%s] #%d (%s) — %s\n", icon, a.AlertType, a.ID, a.Severity, a.Message)
-		fmt.Printf("   Created: %s\n", a.CreatedAt.Format("2006-01-02 15:04:05"))
-		if a.FactID != nil {
-			fmt.Printf("   Facts: #%d", *a.FactID)
-			if a.RelatedFactID != nil {
-				fmt.Printf(" vs #%d", *a.RelatedFactID)
-			}
-			fmt.Println()
-		}
-		fmt.Println()
-	}
-
-	fmt.Printf("Acknowledge: cortex alerts --ack <id> | cortex alerts --ack-all\n")
-	return nil
-}
-
-// runAlertsCheckDecay scans all facts and creates decay alerts for those crossing thresholds.
-func runAlertsCheckDecay(args []string) error {
-	thresholds := store.DefaultDecayThresholds()
-	jsonOutput := false
-
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "--warning" && i+1 < len(args):
-			i++
-			v, err := strconv.ParseFloat(args[i], 64)
-			if err != nil {
-				return fmt.Errorf("invalid --warning value: %s", args[i])
-			}
-			thresholds.Warning = v
-		case strings.HasPrefix(args[i], "--warning="):
-			v, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--warning="), 64)
-			if err != nil {
-				return fmt.Errorf("invalid --warning value: %s", args[i])
-			}
-			thresholds.Warning = v
-		case args[i] == "--critical" && i+1 < len(args):
-			i++
-			v, err := strconv.ParseFloat(args[i], 64)
-			if err != nil {
-				return fmt.Errorf("invalid --critical value: %s", args[i])
-			}
-			thresholds.Critical = v
-		case strings.HasPrefix(args[i], "--critical="):
-			v, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--critical="), 64)
-			if err != nil {
-				return fmt.Errorf("invalid --critical value: %s", args[i])
-			}
-			thresholds.Critical = v
-		case args[i] == "--json":
-			jsonOutput = true
-		case args[i] == "-h" || args[i] == "--help":
-			fmt.Println(`cortex alerts check-decay — Scan facts for confidence decay
-
-Usage:
-  cortex alerts check-decay                    Run decay scan with defaults
-  cortex alerts check-decay --warning 0.5      Set warning threshold
-  cortex alerts check-decay --critical 0.3     Set critical threshold
-  cortex alerts check-decay --json             Output results as JSON
-
-Thresholds (effective confidence = base × e^(-decay_rate × days)):
-  Warning:  < 0.5 (default) — fact is losing reliability
-  Critical: < 0.3 (default) — fact is unreliable, needs reinforcement`)
-			return nil
-		}
-	}
-
-	storeIface, err := store.NewStore(getStoreConfig())
-	if err != nil {
-		return err
-	}
-	defer storeIface.Close()
-	wireWebhook(storeIface)
-
-	s, ok := storeIface.(*store.SQLiteStore)
-	if !ok {
-		return fmt.Errorf("decay check requires SQLiteStore backend")
-	}
-
-	ctx := context.Background()
-	result, err := s.CheckDecayAlerts(ctx, thresholds)
-	if err != nil {
-		return err
-	}
-
-	if jsonOutput {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(result)
-	}
-
-	fmt.Printf("🔍 Decay scan complete\n")
-	fmt.Printf("   Facts scanned:   %d\n", result.FactsScanned)
-	fmt.Printf("   Alerts created:  %d (%d warning, %d critical)\n",
-		result.AlertsCreated, result.WarningCount, result.CriticalCount)
-	if result.AlertsSkipped > 0 {
-		fmt.Printf("   Skipped (exist): %d\n", result.AlertsSkipped)
-	}
-
-	if len(result.SubjectGroups) > 0 {
-		fmt.Printf("\n📊 Fading by subject:\n")
-		for subject, count := range result.SubjectGroups {
-			fmt.Printf("   %s: %d fact(s)\n", subject, count)
-		}
-	}
-
-	if result.AlertsCreated > 0 {
-		fmt.Printf("\nView: cortex alerts --type decay\n")
-		fmt.Printf("Reinforce: cortex alerts reinforce <alert-id>\n")
-	}
-
-	return nil
-}
-
-// runAlertsDigest shows a grouped summary of fading facts.
-func runAlertsDigest(args []string) error {
-	thresholds := store.DefaultDecayThresholds()
-	jsonOutput := false
-
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "--warning" && i+1 < len(args):
-			i++
-			v, err := strconv.ParseFloat(args[i], 64)
-			if err != nil {
-				return fmt.Errorf("invalid --warning value: %s", args[i])
-			}
-			thresholds.Warning = v
-		case args[i] == "--critical" && i+1 < len(args):
-			i++
-			v, err := strconv.ParseFloat(args[i], 64)
-			if err != nil {
-				return fmt.Errorf("invalid --critical value: %s", args[i])
-			}
-			thresholds.Critical = v
-		case args[i] == "--json":
-			jsonOutput = true
-		case args[i] == "-h" || args[i] == "--help":
-			fmt.Println(`cortex alerts digest — Grouped summary of fading facts
-
-Usage:
-  cortex alerts digest              Show fading facts grouped by subject
-  cortex alerts digest --json       Output as JSON
-  cortex alerts digest --warning 0.5 --critical 0.3`)
-			return nil
-		}
-	}
-
-	storeIface, err := store.NewStore(getStoreConfig())
-	if err != nil {
-		return err
-	}
-	defer storeIface.Close()
-
-	s, ok := storeIface.(*store.SQLiteStore)
-	if !ok {
-		return fmt.Errorf("digest requires SQLiteStore backend")
-	}
-
-	ctx := context.Background()
-	groups, err := s.GetDecayDigest(ctx, thresholds)
-	if err != nil {
-		return err
-	}
-
-	if jsonOutput {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(groups)
-	}
-
-	if len(groups) == 0 {
-		fmt.Println("No fading facts. All knowledge is fresh. ✓")
-		return nil
-	}
-
-	totalFacts := 0
-	totalCritical := 0
-	for _, g := range groups {
-		totalFacts += g.FactCount
-		totalCritical += g.CriticalCount
-	}
-
-	fmt.Printf("📉 Decay Digest: %d fading fact(s) across %d subject(s)\n\n", totalFacts, len(groups))
-
-	for _, g := range groups {
-		icon := "🟡"
-		if g.CriticalCount > 0 {
-			icon = "🔴"
-		}
-		fmt.Printf("%s %s — %d fact(s) fading (worst: %.0f%%)\n",
-			icon, g.Subject, g.FactCount, g.WorstConfidence*100)
-
-		for _, sf := range g.SampleFacts {
-			marker := "  "
-			if sf.Effective < thresholds.Critical {
-				marker = "!!"
-			}
-			fmt.Printf("   %s #%d: %s = %s (%.0f%%)\n",
-				marker, sf.FactID, sf.Predicate, sf.Object, sf.Effective*100)
-		}
-		if g.FactCount > len(g.SampleFacts) {
-			fmt.Printf("   ... and %d more\n", g.FactCount-len(g.SampleFacts))
-		}
-		fmt.Println()
-	}
-
-	fmt.Printf("Reinforce: cortex reinforce <fact-id> | cortex alerts reinforce <alert-id>\n")
-	return nil
-}
-
-// runAlertsReinforce reinforces a fact from its decay alert and acknowledges the alert.
-func runAlertsReinforce(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex alerts reinforce <alert-id>")
-	}
-
-	alertID, err := strconv.ParseInt(args[0], 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid alert ID: %s", args[0])
-	}
-
-	storeIface, err := store.NewStore(getStoreConfig())
-	if err != nil {
-		return err
-	}
-	defer storeIface.Close()
-
-	s, ok := storeIface.(*store.SQLiteStore)
-	if !ok {
-		return fmt.Errorf("reinforce requires SQLiteStore backend")
-	}
-
-	ctx := context.Background()
-	if err := s.ReinforceFromAlert(ctx, alertID); err != nil {
-		return err
-	}
-
-	fmt.Printf("✓ Fact reinforced and alert #%d acknowledged. Confidence reset.\n", alertID)
-	return nil
-}
-
-// runWatch manages persistent watch queries.
-func runWatch(args []string) error {
-	if len(args) == 0 {
-		return runWatchList(nil)
-	}
-
-	switch args[0] {
-	case "add":
-		return runWatchAdd(args[1:])
-	case "list":
-		return runWatchList(args[1:])
-	case "remove", "rm":
-		return runWatchRemove(args[1:])
-	case "pause":
-		return runWatchSetActive(args[1:], false)
-	case "resume":
-		return runWatchSetActive(args[1:], true)
-	case "test":
-		return runWatchTest(args[1:])
-	case "-h", "--help", "help":
-		fmt.Println(`cortex watch — Persistent watch queries with alert notifications
-
-Usage:
-  cortex watch                                    List active watches
-  cortex watch add "deployment failures"          Watch for matching imports
-  cortex watch add "ADA price" --threshold 0.8    Custom match threshold
-  cortex watch list [--all]                       List watches (--all includes paused)
-  cortex watch remove <id>                        Delete a watch
-  cortex watch pause <id>                         Pause a watch
-  cortex watch resume <id>                        Resume a watch
-  cortex watch test <id> --memory <memory-id>     Test a watch against a memory
-
-Options:
-  --threshold 0.7     Minimum match score (0-1, default: 0.7)
-  --agent <id>        Scope watch to a specific agent
-  --json              Output as JSON`)
-		return nil
-	default:
-		return fmt.Errorf("unknown watch subcommand: %s (try: add, list, remove, pause, resume, test)", args[0])
-	}
-}
-
-func runWatchAdd(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex watch add <query> [--threshold 0.7] [--agent <id>]")
-	}
-
-	query := args[0]
-	threshold := 0.7
-	agentID := ""
-
-	for i := 1; i < len(args); i++ {
-		switch {
-		case args[i] == "--threshold" && i+1 < len(args):
-			i++
-			v, err := strconv.ParseFloat(args[i], 64)
-			if err != nil {
-				return fmt.Errorf("invalid --threshold: %s", args[i])
-			}
-			threshold = v
-		case strings.HasPrefix(args[i], "--threshold="):
-			v, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--threshold="), 64)
-			if err != nil {
-				return fmt.Errorf("invalid --threshold: %s", args[i])
-			}
-			threshold = v
-		case args[i] == "--agent" && i+1 < len(args):
-			i++
-			agentID = args[i]
-		}
-	}
-
-	storeIface, err := store.NewStore(getStoreConfig())
-	if err != nil {
-		return err
-	}
-	defer storeIface.Close()
-
-	s, ok := storeIface.(*store.SQLiteStore)
-	if !ok {
-		return fmt.Errorf("watches require SQLiteStore backend")
-	}
-
-	w := &store.WatchQuery{
-		Query:     query,
-		Threshold: threshold,
-		AgentID:   agentID,
-	}
-
-	if err := s.CreateWatch(context.Background(), w); err != nil {
-		return err
-	}
-
-	fmt.Printf("✓ Watch #%d created: %q (threshold: %.0f%%)\n", w.ID, w.Query, w.Threshold*100)
-	fmt.Printf("  New imports matching this query will generate alerts.\n")
-	return nil
-}
-
-func runWatchList(args []string) error {
-	showAll := false
-	jsonOutput := false
-
-	for _, arg := range args {
-		switch arg {
-		case "--all":
-			showAll = true
-		case "--json":
-			jsonOutput = true
-		}
-	}
-
-	storeIface, err := store.NewStore(getStoreConfig())
-	if err != nil {
-		return err
-	}
-	defer storeIface.Close()
-
-	s, ok := storeIface.(*store.SQLiteStore)
-	if !ok {
-		return fmt.Errorf("watches require SQLiteStore backend")
-	}
-
-	watches, err := s.ListWatches(context.Background(), !showAll)
-	if err != nil {
-		return err
-	}
-
-	if jsonOutput {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(watches)
-	}
-
-	if len(watches) == 0 {
-		fmt.Println("No active watches. Add one: cortex watch add \"your query\"")
-		return nil
-	}
-
-	fmt.Printf("👁️  %d watch(es):\n\n", len(watches))
-	for _, w := range watches {
-		status := "🟢"
-		if !w.Active {
-			status = "⏸️ "
-		}
-		fmt.Printf("%s #%d: %q (threshold: %.0f%%, matches: %d)\n",
-			status, w.ID, w.Query, w.Threshold*100, w.MatchCount)
-		if w.LastMatchedAt != nil {
-			fmt.Printf("   Last match: %s\n", w.LastMatchedAt.Format("2006-01-02 15:04:05"))
-		}
-		if w.AgentID != "" {
-			fmt.Printf("   Agent: %s\n", w.AgentID)
-		}
-	}
-	return nil
-}
-
-func runWatchRemove(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex watch remove <id>")
-	}
-
-	id, err := strconv.ParseInt(args[0], 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid watch ID: %s", args[0])
-	}
-
-	storeIface, err := store.NewStore(getStoreConfig())
-	if err != nil {
-		return err
-	}
-	defer storeIface.Close()
-
-	s, ok := storeIface.(*store.SQLiteStore)
-	if !ok {
-		return fmt.Errorf("watches require SQLiteStore backend")
-	}
-
-	if err := s.RemoveWatch(context.Background(), id); err != nil {
-		return err
-	}
-
-	fmt.Printf("✓ Watch #%d removed.\n", id)
-	return nil
-}
-
-func runWatchSetActive(args []string, active bool) error {
-	if len(args) == 0 {
-		action := "pause"
-		if active {
-			action = "resume"
-		}
-		return fmt.Errorf("usage: cortex watch %s <id>", action)
-	}
-
-	id, err := strconv.ParseInt(args[0], 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid watch ID: %s", args[0])
-	}
-
-	storeIface, err := store.NewStore(getStoreConfig())
-	if err != nil {
-		return err
-	}
-	defer storeIface.Close()
-
-	s, ok := storeIface.(*store.SQLiteStore)
-	if !ok {
-		return fmt.Errorf("watches require SQLiteStore backend")
-	}
-
-	if err := s.SetWatchActive(context.Background(), id, active); err != nil {
-		return err
-	}
-
-	action := "paused"
-	if active {
-		action = "resumed"
-	}
-	fmt.Printf("✓ Watch #%d %s.\n", id, action)
-	return nil
-}
-
-func runWatchTest(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex watch test <watch-id> --memory <memory-id>")
-	}
-
-	watchID, err := strconv.ParseInt(args[0], 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid watch ID: %s", args[0])
-	}
-
-	memoryID := int64(0)
-	for i := 1; i < len(args); i++ {
-		if args[i] == "--memory" && i+1 < len(args) {
-			i++
-			memoryID, err = strconv.ParseInt(args[i], 10, 64)
-			if err != nil {
-				return fmt.Errorf("invalid memory ID: %s", args[i])
-			}
-		}
-	}
-
-	if memoryID == 0 {
-		return fmt.Errorf("--memory <id> is required")
-	}
-
-	storeIface, err := store.NewStore(getStoreConfig())
-	if err != nil {
-		return err
-	}
-	defer storeIface.Close()
-
-	s, ok := storeIface.(*store.SQLiteStore)
-	if !ok {
-		return fmt.Errorf("watches require SQLiteStore backend")
-	}
-
-	ctx := context.Background()
-
-	w, err := s.GetWatch(ctx, watchID)
-	if err != nil {
-		return err
-	}
-
-	// Get memory content
-	var content string
-	row := s.GetDB().QueryRowContext(ctx, "SELECT content FROM memories WHERE id = ?", memoryID)
-	if err := row.Scan(&content); err != nil {
-		return fmt.Errorf("memory %d not found: %w", memoryID, err)
-	}
-
-	score := store.Bm25MatchScoreExported(content, w.Query)
-	snippet := store.ExtractSnippetExported(content, w.Query, 120)
-
-	fmt.Printf("🔍 Watch #%d: %q\n", w.ID, w.Query)
-	fmt.Printf("   Memory #%d: %s\n", memoryID, snippet)
-	fmt.Printf("   Score: %.0f%% (threshold: %.0f%%)\n", score*100, w.Threshold*100)
-
-	if score >= w.Threshold {
-		fmt.Printf("   ✅ MATCH — would trigger alert\n")
-	} else {
-		fmt.Printf("   ❌ No match — below threshold\n")
-	}
-
-	return nil
-}
 
 func runConflicts(args []string) error {
 	jsonOutput := false
@@ -2073,15 +1405,6 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 			_, err := s.AddFact(ctx, fact)
 			if err != nil {
 				continue // Skip storage errors
-			}
-
-			// Proactive conflict detection (#162): check new fact against existing
-			if sqlStore, ok := s.(*store.SQLiteStore); ok {
-				if alertCount, alertErr := observe.CheckAndAlertConflicts(ctx, sqlStore, fact); alertErr == nil && alertCount > 0 {
-					if globalVerbose {
-						fmt.Printf("  ⚠️  %d conflict alert(s) created for fact #%d\n", alertCount, fact.ID)
-					}
-				}
 			}
 
 			stats.FactsExtracted++
@@ -5522,19 +4845,6 @@ func writeReasonTelemetry(event reasonRunTelemetry) error {
 	return nil
 }
 
-func runCodexRolloutReportCLI(args []string, out io.Writer, errOut io.Writer) int {
-	res, err := codexrollout.Execute(args)
-	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return 0
-		}
-		fmt.Fprintf(errOut, "Error: %v\n", err)
-		return 1
-	}
-	fmt.Fprintln(out, res.Output)
-	return res.ExitCode
-}
-
 type benchCLIOptions struct {
 	embedFlag     string
 	includeLocal  bool
@@ -6274,13 +5584,11 @@ Commands:
   export              Export the full memory store in different formats
   stale               Find outdated memory entries
   conflicts           Detect contradictory facts
-  alerts              View and manage proactive alerts (conflicts, decay, watches)
   cleanup             Remove garbage memories and headless facts
                       --purge-noise  Run fact quality governor to remove noise + enforce caps
   optimize            Manual DB maintenance (integrity check, VACUUM, ANALYZE)
   reason <query>      LLM reasoning over memories (search → prompt → analyze)
   bench               Benchmark LLM models for reason (speed, cost, quality)
-  codex-rollout-report Summarize reason telemetry + optional rollout guardrails
   projects            List all project tags with memory/fact counts
   tag                 Tag memories by project (--project, --source, --id, --auto)
   connect             Manage external service connectors (init, add, sync, status)
@@ -6425,9 +5733,6 @@ Examples:
   cortex search "deployment rule" --explain --json
   cortex bench --compare google/gemini-2.5-flash,deepseek/deepseek-v3.2 --recursive
   cortex bench --models openai/gpt-5.1-codex-mini,google/gemini-3-flash-preview --output bench.md
-  cortex codex-rollout-report --warn-only                 # Warn-only mode (exit 0)
-  cortex codex-rollout-report --warn-only=false           # Strict mode (non-zero on warnings)
-  cortex codex-rollout-report --one-shot-p95-warn-ms 15000 --recursive-known-cost-min-share 0.90
   cortex mcp                          # Start MCP server (stdio, for Claude Desktop/Cursor)
   cortex mcp --port 8080              # Start MCP server (HTTP+SSE)
 

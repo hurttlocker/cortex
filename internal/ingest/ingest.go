@@ -221,6 +221,11 @@ func (e *Engine) ImportDir(ctx context.Context, dir string, opts ImportOptions) 
 		return nil, fmt.Errorf("walking directory: %w", err)
 	}
 
+	// Apply include/exclude extension filters
+	if len(opts.Include) > 0 || len(opts.Exclude) > 0 {
+		files = filterByExtension(files, opts.Include, opts.Exclude)
+	}
+
 	total := len(files)
 
 	for i, file := range files {
@@ -250,6 +255,43 @@ func (e *Engine) ImportDir(ctx context.Context, dir string, opts ImportOptions) 
 	}
 
 	return result, nil
+}
+
+// normalizeExt ensures an extension starts with "." and is lowercase.
+func normalizeExt(ext string) string {
+	ext = strings.ToLower(strings.TrimSpace(ext))
+	if ext != "" && !strings.HasPrefix(ext, ".") {
+		ext = "." + ext
+	}
+	return ext
+}
+
+// filterByExtension filters file paths by include/exclude extension lists.
+// If include is non-empty, only files whose extension matches one in include are kept.
+// If exclude is non-empty, files whose extension matches one in exclude are removed.
+// Include is applied first (allowlist), then exclude (blocklist).
+func filterByExtension(files []string, include, exclude []string) []string {
+	incSet := make(map[string]bool, len(include))
+	for _, ext := range include {
+		incSet[normalizeExt(ext)] = true
+	}
+	excSet := make(map[string]bool, len(exclude))
+	for _, ext := range exclude {
+		excSet[normalizeExt(ext)] = true
+	}
+
+	var filtered []string
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f))
+		if len(incSet) > 0 && !incSet[ext] {
+			continue
+		}
+		if excSet[ext] {
+			continue
+		}
+		filtered = append(filtered, f)
+	}
+	return filtered
 }
 
 // processMemory handles dedup and storage for a single memory chunk.
