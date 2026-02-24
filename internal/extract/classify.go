@@ -22,9 +22,9 @@ const (
 	classifyTimeout = 3 * time.Minute
 
 	// DefaultClassifyBatchSize is the default number of facts per LLM batch.
-	// Benchmarked Feb 2026: batch-size 10 gives 0 errors across all models;
+	// Benchmarked Feb 2026: batch-size 20 gives 0 errors with DeepSeek V3.2 + 92% reclassification.
 	// batch-size 50 caused timeouts for MiniMax, DeepSeek, Grok via OpenRouter.
-	DefaultClassifyBatchSize = 10
+	DefaultClassifyBatchSize = 20
 
 	// classifyMinConfidence is the threshold below which reclassifications are skipped.
 	classifyMinConfidence = 0.8
@@ -88,7 +88,7 @@ type ClassifyResult struct {
 
 // ClassifyOpts configures the classification run.
 type ClassifyOpts struct {
-	BatchSize     int     // Facts per LLM batch (default: 10)
+	BatchSize     int     // Facts per LLM batch (default: 20)
 	MinConfidence float64 // Min confidence to apply reclassification (default: 0.8)
 	Limit         int     // Max facts to process (0 = all)
 	DryRun        bool    // Show changes without applying
