@@ -20,9 +20,9 @@ type googleProvider struct {
 
 // Google AI request/response types.
 type googleRequest struct {
-	Contents         []googleContent   `json:"contents"`
+	Contents          []googleContent  `json:"contents"`
 	SystemInstruction *googleContent   `json:"systemInstruction,omitempty"`
-	GenerationConfig *googleGenConfig  `json:"generationConfig,omitempty"`
+	GenerationConfig  *googleGenConfig `json:"generationConfig,omitempty"`
 }
 
 type googleContent struct {

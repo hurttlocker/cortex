@@ -20,11 +20,11 @@ type openrouterProvider struct {
 
 // OpenRouter request/response types (OpenAI-compatible).
 type orRequest struct {
-	Model          string          `json:"model"`
-	Messages       []orMessage     `json:"messages"`
-	MaxTokens      int             `json:"max_tokens,omitempty"`
-	Temperature    float64         `json:"temperature"`
-	ResponseFormat *orResponseFmt  `json:"response_format,omitempty"`
+	Model          string         `json:"model"`
+	Messages       []orMessage    `json:"messages"`
+	MaxTokens      int            `json:"max_tokens,omitempty"`
+	Temperature    float64        `json:"temperature"`
+	ResponseFormat *orResponseFmt `json:"response_format,omitempty"`
 }
 
 type orMessage struct {
