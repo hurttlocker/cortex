@@ -12,7 +12,7 @@ const path = require("path");
 const https = require("https");
 const os = require("os");
 
-const VERSION = "v0.4.0";
+const VERSION = "v0.9.0";
 const REPO = "hurttlocker/cortex";
 const BIN_DIR = path.join(__dirname, "..", "bin");
 const BIN_NAME = os.platform() === "win32" ? "cortex.exe" : "cortex";
