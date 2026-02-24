@@ -17,13 +17,20 @@ import (
 
 const (
 	// classifyTimeout is the max time for a single batch classification call.
-	classifyTimeout = 30 * time.Second
+	// Batch-size 10 keeps most models under 15s, but cold starts can spike.
+	classifyTimeout = 3 * time.Minute
 
 	// DefaultClassifyBatchSize is the default number of facts per LLM batch.
-	DefaultClassifyBatchSize = 50
+	// Benchmarked Feb 2026: batch-size 10 gives 0 errors across all models;
+	// batch-size 50 caused timeouts for MiniMax, DeepSeek, Grok via OpenRouter.
+	DefaultClassifyBatchSize = 10
 
 	// classifyMinConfidence is the threshold below which reclassifications are skipped.
 	classifyMinConfidence = 0.8
+
+	// DefaultClassifyModel is the recommended model for classification (best quality/cost balance).
+	// Benchmarked Feb 2026: DeepSeek V3.2 reclassified 38/50 (76%), 0 errors, 34s, $0.25/$0.40/M.
+	DefaultClassifyModel = "openrouter/deepseek/deepseek-v3.2"
 )
 
 const classifySystemPrompt = `You are a fact classification system for a personal knowledge base. Each fact has a subject, predicate, and object. Your job is to assign the most accurate TYPE to each fact.

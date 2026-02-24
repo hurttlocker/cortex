@@ -19,14 +19,18 @@ import (
 
 const (
 	// enrichTimeout is the maximum time for a single enrichment call.
-	// OpenRouter can be slow (10s+ cold start), so we give generous headroom.
-	enrichTimeout = 30 * time.Second
+	// OpenRouter models (Grok, DeepSeek) can take 20-30s; generous headroom.
+	enrichTimeout = 3 * time.Minute
 
 	// enrichMaxChunkLen caps the chunk text sent to the LLM.
 	enrichMaxChunkLen = 3000
 
 	// enrichMaxRuleFacts caps how many rule facts are included in the prompt.
 	enrichMaxRuleFacts = 30
+
+	// DefaultEnrichModel is the recommended model for enrichment (best at finding new facts).
+	// Benchmarked Feb 2026: Grok 4.1 Fast found +26 facts across 3 files; all others found ≤9.
+	DefaultEnrichModel = "openrouter/x-ai/grok-4.1-fast"
 )
 
 const enrichSystemPrompt = `You are a fact enrichment system for a personal knowledge base. You receive a text chunk AND a list of facts already extracted by rule-based parsing.

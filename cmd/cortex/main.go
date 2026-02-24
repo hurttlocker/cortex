@@ -556,9 +556,13 @@ func runImport(args []string) error {
 		}
 
 		// Run LLM enrichment if --enrich flag provided
-		if enableEnrichment && llmFlag != "" && extractionStats != nil {
+		if enableEnrichment && extractionStats != nil {
+			enrichLLM := llmFlag
+			if enrichLLM == "" {
+				enrichLLM = extract.DefaultEnrichModel // grok-4.1-fast
+			}
 			fmt.Println("\nRunning LLM enrichment...")
-			enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, llmFlag)
+			enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "  Enrichment error: %v\n", err)
 			} else if enrichStats.NewFacts > 0 {
@@ -567,8 +571,6 @@ func runImport(args []string) error {
 			} else {
 				fmt.Println("  🧠 Enrichment: LLM found no additional facts")
 			}
-		} else if enableEnrichment && llmFlag == "" {
-			fmt.Println("  ⚠️  --enrich requires --llm <provider/model>")
 		}
 	}
 
@@ -1313,8 +1315,12 @@ func runExtract(args []string) error {
 	}
 
 	// Run LLM enrichment if requested
-	if enrichFlag && llmFlag != "" {
-		llmCfg, err := llm.ParseLLMFlag(llmFlag)
+	if enrichFlag {
+		enrichLLM := llmFlag
+		if enrichLLM == "" {
+			enrichLLM = extract.DefaultEnrichModel // grok-4.1-fast
+		}
+		llmCfg, err := llm.ParseLLMFlag(enrichLLM)
 		if err != nil {
 			return fmt.Errorf("parsing --llm for enrichment: %w", err)
 		}
@@ -1331,8 +1337,6 @@ func runExtract(args []string) error {
 				len(result.NewFacts), result.Model, result.Latency.Round(time.Millisecond))
 			facts = append(facts, result.NewFacts...)
 		}
-	} else if enrichFlag && llmFlag == "" {
-		fmt.Fprintf(os.Stderr, "⚠️  --enrich requires --llm <provider/model>\n")
 	}
 
 	// Output results
@@ -1381,7 +1385,7 @@ func runClassify(args []string) error {
 	}
 
 	if llmFlag == "" {
-		return fmt.Errorf("usage: cortex classify --llm <provider/model> [--batch-size N] [--limit N] [--dry-run] [--json]")
+		llmFlag = extract.DefaultClassifyModel // deepseek-v3.2
 	}
 
 	// Create LLM provider
