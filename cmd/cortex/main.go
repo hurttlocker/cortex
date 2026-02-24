@@ -23,6 +23,7 @@ import (
 	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/graph"
 	"github.com/hurttlocker/cortex/internal/ingest"
+	"github.com/hurttlocker/cortex/internal/llm"
 	cortexmcp "github.com/hurttlocker/cortex/internal/mcp"
 	"github.com/hurttlocker/cortex/internal/observe"
 	"github.com/hurttlocker/cortex/internal/reason"
@@ -599,6 +600,8 @@ func runSearch(args []string) error {
 	showMetadata := false
 	explain := false
 	includeSuperseded := false
+	expandFlag := false
+	llmFlag := ""
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -655,6 +658,13 @@ func runSearch(args []string) error {
 			explain = true
 		case args[i] == "--include-superseded":
 			includeSuperseded = true
+		case args[i] == "--expand":
+			expandFlag = true
+		case args[i] == "--llm" && i+1 < len(args):
+			i++
+			llmFlag = args[i]
+		case strings.HasPrefix(args[i], "--llm="):
+			llmFlag = strings.TrimPrefix(args[i], "--llm=")
 		case args[i] == "--mode" && i+1 < len(args):
 			i++
 			mode = args[i]
@@ -708,7 +718,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--embed <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--source <provider>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--source <provider>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 	if limit < 1 || limit > 1000 {
 		return fmt.Errorf("--limit must be between 1 and 1000")
@@ -784,9 +794,60 @@ func runSearch(args []string) error {
 		BoostChannel:      boostChannelFlag,
 	}
 
-	results, err := engine.Search(ctx, query, opts)
-	if err != nil {
-		return err
+	// Query expansion: use LLM to generate multiple search queries
+	var expandedQueries []string
+	if expandFlag {
+		llmCfg, err := llm.ParseLLMFlag(llmFlag)
+		if err != nil {
+			return fmt.Errorf("parsing --llm flag: %w", err)
+		}
+
+		provider, err := llm.NewProvider(llmCfg)
+		if err != nil {
+			return fmt.Errorf("creating LLM provider for --expand: %w", err)
+		}
+
+		expandResult, err := search.ExpandQuery(ctx, provider, query)
+		if err != nil {
+			return fmt.Errorf("expanding query: %w", err)
+		}
+		expandedQueries = expandResult.Expanded
+
+		if globalVerbose {
+			fmt.Fprintf(os.Stderr, "  Expanded queries (%s, %dms): %v\n",
+				provider.Name(), expandResult.Latency.Milliseconds(), expandedQueries)
+		}
+	}
+
+	var results []search.Result
+	if len(expandedQueries) > 1 {
+		// Run search for each expanded query and merge via RRF
+		expandOpts := opts
+		expandOpts.Limit = opts.Limit * 3 // fetch more candidates before RRF merge
+		if expandOpts.Limit < 15 {
+			expandOpts.Limit = 15
+		}
+
+		var allResults [][]search.Result
+		for _, eq := range expandedQueries {
+			r, err := engine.Search(ctx, eq, expandOpts)
+			if err != nil {
+				if globalVerbose {
+					fmt.Fprintf(os.Stderr, "  Warning: search for %q failed: %v\n", eq, err)
+				}
+				continue
+			}
+			allResults = append(allResults, r)
+		}
+
+		results = mergeExpandedResults(allResults, opts.Limit)
+	} else {
+		// Normal search (no expansion or expansion returned only original)
+		var err error
+		results, err = engine.Search(ctx, query, opts)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Determine output format
@@ -794,7 +855,46 @@ func runSearch(args []string) error {
 		return outputJSON(results)
 	}
 
+	// Show expanded queries header in TTY mode
+	if len(expandedQueries) > 1 {
+		fmt.Printf("🔍 Query expanded into %d searches:\n", len(expandedQueries))
+		for i, eq := range expandedQueries {
+			if i == 0 {
+				fmt.Printf("   • %s (original)\n", eq)
+			} else {
+				fmt.Printf("   • %s\n", eq)
+			}
+		}
+		fmt.Println()
+	}
+
 	return outputTTYSearch(query, results, showMetadata, explain, searchMode)
+}
+
+// mergeExpandedResults merges results from multiple expanded queries using RRF.
+// Each result set is treated as a separate ranked list.
+func mergeExpandedResults(resultSets [][]search.Result, limit int) []search.Result {
+	if len(resultSets) == 0 {
+		return nil
+	}
+	if len(resultSets) == 1 {
+		if limit > 0 && len(resultSets[0]) > limit {
+			return resultSets[0][:limit]
+		}
+		return resultSets[0]
+	}
+
+	// Pairwise RRF merge across all result sets
+	cfg := search.DefaultRRFConfig()
+	merged := resultSets[0]
+	for i := 1; i < len(resultSets); i++ {
+		merged = search.FuseRRF(merged, resultSets[i], cfg)
+	}
+
+	if limit > 0 && len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged
 }
 
 func runStats(args []string) error {
