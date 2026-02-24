@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/hurttlocker/cortex/internal/store"
@@ -300,6 +301,183 @@ func TestSearchAPINoResults(t *testing.T) {
 
 	if result.Total != 0 {
 		t.Fatalf("expected 0 results, got %d", result.Total)
+	}
+}
+
+func TestFactsAPIBySubject(t *testing.T) {
+	st := newTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	memID, err := st.AddMemory(ctx, &store.Memory{
+		Content:       "Cortex graph API facts endpoint test",
+		SourceFile:    "graph.md",
+		SourceLine:    1,
+		SourceSection: "graph",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+
+	if _, err := st.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "Cortex",
+		Predicate:  "language",
+		Object:     "Go",
+		Confidence: 0.9,
+		FactType:   "identity",
+	}); err != nil {
+		t.Fatalf("add fact1: %v", err)
+	}
+	if _, err := st.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "Cortex",
+		Predicate:  "database",
+		Object:     "SQLite",
+		Confidence: 0.8,
+		FactType:   "kv",
+	}); err != nil {
+		t.Fatalf("add fact2: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/facts", func(w http.ResponseWriter, r *http.Request) {
+		handleFactsAPI(w, r, st)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/facts?subject=cortex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var out FactsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.Total != 2 {
+		t.Fatalf("expected 2 facts, got %d", out.Total)
+	}
+	for _, f := range out.Facts {
+		if f.MemoryID != memID {
+			t.Fatalf("expected memory_id %d, got %d", memID, f.MemoryID)
+		}
+		if !strings.Contains(f.Source, "graph.md") {
+			t.Fatalf("expected source to include graph.md, got %q", f.Source)
+		}
+	}
+}
+
+func TestFactsAPIByMemoryID(t *testing.T) {
+	st := newTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	memID, err := st.AddMemory(ctx, &store.Memory{
+		Content:       "Fact by memory id endpoint test",
+		SourceFile:    "memory-id.md",
+		SourceLine:    1,
+		SourceSection: "memory",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+
+	if _, err := st.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "Memory",
+		Predicate:  "kind",
+		Object:     "test",
+		Confidence: 0.9,
+		FactType:   "kv",
+	}); err != nil {
+		t.Fatalf("add fact: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/facts", func(w http.ResponseWriter, r *http.Request) {
+		handleFactsAPI(w, r, st)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + fmt.Sprintf("/api/facts?memory_id=%d", memID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var out FactsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.Total != 1 {
+		t.Fatalf("expected 1 fact, got %d", out.Total)
+	}
+	if out.Facts[0].MemoryID != memID {
+		t.Fatalf("expected memory_id %d, got %d", memID, out.Facts[0].MemoryID)
+	}
+}
+
+func TestSearchAPIIncludesMatchedNodeIDs(t *testing.T) {
+	st := newTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	memID, err := st.AddMemory(ctx, &store.Memory{
+		Content:       "Alice is the CEO of Acme Corp",
+		SourceFile:    "acme.md",
+		SourceLine:    1,
+		SourceSection: "acme",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+
+	if _, err := st.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "Alice",
+		Predicate:  "role",
+		Object:     "CEO",
+		Confidence: 0.95,
+		FactType:   "identity",
+	}); err != nil {
+		t.Fatalf("add fact: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/search", func(w http.ResponseWriter, r *http.Request) {
+		handleSearchAPI(w, r, st)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/search?q=CEO")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var out SearchResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(out.Facts) == 0 {
+		t.Fatal("expected at least one fact result")
+	}
+	if len(out.MatchedNodeIDs) == 0 {
+		t.Fatal("expected matched_node_ids in search response")
 	}
 }
 

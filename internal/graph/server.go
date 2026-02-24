@@ -10,9 +10,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	searchpkg "github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
@@ -27,13 +30,16 @@ type ServerConfig struct {
 
 // ExportNode is the visualization-friendly format for a fact.
 type ExportNode struct {
-	ID         int64   `json:"id"`
-	Subject    string  `json:"subject"`
-	Predicate  string  `json:"predicate"`
-	Object     string  `json:"object"`
-	Confidence float64 `json:"confidence"`
-	AgentID    string  `json:"agent_id,omitempty"`
-	FactType   string  `json:"type"`
+	ID          int64    `json:"id"`
+	Subject     string   `json:"subject"`
+	Predicate   string   `json:"predicate"`
+	Object      string   `json:"object"`
+	Confidence  float64  `json:"confidence"`
+	AgentID     string   `json:"agent_id,omitempty"`
+	FactType    string   `json:"type"`
+	FactCount   int      `json:"fact_count,omitempty"`
+	LastUpdated string   `json:"last_updated,omitempty"`
+	SourceTypes []string `json:"source_types,omitempty"`
 }
 
 // ExportEdge is the visualization-friendly format for an edge.
@@ -113,6 +119,11 @@ func Serve(cfg ServerConfig) error {
 	// Search API endpoint — search facts by text
 	mux.HandleFunc("/api/search", func(w http.ResponseWriter, r *http.Request) {
 		handleSearchAPI(w, r, cfg.Store)
+	})
+
+	// Facts API endpoint — facts by subject or memory.
+	mux.HandleFunc("/api/facts", func(w http.ResponseWriter, r *http.Request) {
+		handleFactsAPI(w, r, cfg.Store)
 	})
 
 	// Sample cluster endpoint — returns a cluster of related facts for demo/exploration
@@ -279,18 +290,122 @@ func handleGraphAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStor
 // SearchFact is a lightweight fact for search results.
 type SearchFact struct {
 	ID         int64   `json:"id"`
+	MemoryID   int64   `json:"memory_id"`
 	Subject    string  `json:"subject"`
 	Predicate  string  `json:"predicate"`
 	Object     string  `json:"object"`
 	Confidence float64 `json:"confidence"`
 	FactType   string  `json:"type"`
 	AgentID    string  `json:"agent_id,omitempty"`
+	Source     string  `json:"source,omitempty"`
+}
+
+type SearchMemory struct {
+	MemoryID   int64   `json:"memory_id"`
+	SourceFile string  `json:"source_file"`
+	Snippet    string  `json:"snippet,omitempty"`
+	Score      float64 `json:"score"`
+}
+
+type FactsResponse struct {
+	Facts []SearchFact `json:"facts"`
+	Total int          `json:"total"`
 }
 
 // SearchResult is the search API response.
 type SearchResult struct {
-	Facts []SearchFact `json:"facts"`
-	Total int          `json:"total"`
+	Facts          []SearchFact   `json:"facts"`
+	Memories       []SearchMemory `json:"memories,omitempty"`
+	MatchedNodeIDs []int64        `json:"matched_node_ids,omitempty"`
+	Total          int            `json:"total"`
+}
+
+func handleFactsAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStore) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	ctx := context.Background()
+	subject := strings.TrimSpace(r.URL.Query().Get("subject"))
+	memoryIDRaw := strings.TrimSpace(r.URL.Query().Get("memory_id"))
+
+	if subject == "" && memoryIDRaw == "" {
+		writeJSON(w, 400, map[string]string{"error": "subject or memory_id parameter required"})
+		return
+	}
+
+	db := st.GetDB()
+	facts := make([]SearchFact, 0)
+
+	if memoryIDRaw != "" {
+		memoryID, err := strconv.ParseInt(memoryIDRaw, 10, 64)
+		if err != nil || memoryID <= 0 {
+			writeJSON(w, 400, map[string]string{"error": "invalid memory_id"})
+			return
+		}
+
+		memFacts, err := st.GetFactsByMemoryIDs(ctx, []int64{memoryID})
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		mem, _ := st.GetMemory(ctx, memoryID)
+		sourceFile := ""
+		if mem != nil {
+			sourceFile = mem.SourceFile
+		}
+		for _, f := range memFacts {
+			facts = append(facts, SearchFact{
+				ID:         f.ID,
+				MemoryID:   f.MemoryID,
+				Subject:    f.Subject,
+				Predicate:  f.Predicate,
+				Object:     f.Object,
+				Confidence: f.Confidence,
+				FactType:   f.FactType,
+				AgentID:    f.AgentID,
+				Source:     sourceFile,
+			})
+		}
+	}
+
+	if subject != "" {
+		rows, err := db.QueryContext(ctx,
+			`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.confidence, f.fact_type, COALESCE(f.agent_id, ''), COALESCE(m.source_file, '')
+			 FROM facts f
+			 LEFT JOIN memories m ON m.id = f.memory_id
+			 WHERE LOWER(f.subject) = LOWER(?)
+			   AND (f.superseded_by IS NULL OR f.superseded_by = 0)
+			 ORDER BY f.confidence DESC, f.id DESC`,
+			subject,
+		)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+
+		seen := make(map[int64]bool)
+		for rows.Next() {
+			var f SearchFact
+			if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object, &f.Confidence, &f.FactType, &f.AgentID, &f.Source); err != nil {
+				continue
+			}
+			if seen[f.ID] {
+				continue
+			}
+			seen[f.ID] = true
+			facts = append(facts, f)
+		}
+	}
+
+	sort.Slice(facts, func(i, j int) bool {
+		if facts[i].Confidence == facts[j].Confidence {
+			return facts[i].ID > facts[j].ID
+		}
+		return facts[i].Confidence > facts[j].Confidence
+	})
+
+	writeJSON(w, 200, FactsResponse{Facts: facts, Total: len(facts)})
 }
 
 func handleSearchAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStore) {
@@ -310,32 +425,112 @@ func handleSearchAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSto
 		}
 	}
 
-	// Direct SQL search on facts table — fast LIKE matching on subject/predicate/object
-	db := st.GetDB()
-	q := "%" + query + "%"
-	rows, err := db.QueryContext(context.Background(),
-		`SELECT id, subject, predicate, object, confidence, fact_type, COALESCE(agent_id, '')
-		 FROM facts
-		 WHERE (subject LIKE ? OR predicate LIKE ? OR object LIKE ?)
-		   AND (superseded_by IS NULL OR superseded_by = 0)
-		 ORDER BY confidence DESC
-		 LIMIT ?`, q, q, q, limit)
+	ctx := context.Background()
+	engine := searchpkg.NewEngine(st)
+	memResults, err := engine.Search(ctx, query, searchpkg.Options{
+		Mode:  searchpkg.ModeKeyword,
+		Limit: limit,
+	})
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	defer rows.Close()
 
-	var facts []SearchFact
-	for rows.Next() {
-		var f SearchFact
-		if err := rows.Scan(&f.ID, &f.Subject, &f.Predicate, &f.Object, &f.Confidence, &f.FactType, &f.AgentID); err != nil {
+	memoryIDs := make([]int64, 0, len(memResults))
+	memories := make([]SearchMemory, 0, len(memResults))
+	seenMemory := make(map[int64]bool, len(memResults))
+	for _, m := range memResults {
+		if seenMemory[m.MemoryID] {
 			continue
 		}
-		facts = append(facts, f)
+		seenMemory[m.MemoryID] = true
+		memoryIDs = append(memoryIDs, m.MemoryID)
+		memories = append(memories, SearchMemory{
+			MemoryID:   m.MemoryID,
+			SourceFile: m.SourceFile,
+			Snippet:    m.Snippet,
+			Score:      m.Score,
+		})
 	}
 
-	writeJSON(w, 200, SearchResult{Facts: facts, Total: len(facts)})
+	factRows, err := st.GetFactsByMemoryIDs(ctx, memoryIDs)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	memSource := make(map[int64]string, len(memResults))
+	for _, m := range memResults {
+		if _, ok := memSource[m.MemoryID]; !ok {
+			memSource[m.MemoryID] = m.SourceFile
+		}
+	}
+
+	facts := make([]SearchFact, 0, len(factRows))
+	matchedNodeIDs := make([]int64, 0, len(factRows))
+	queryLower := strings.ToLower(query)
+	for _, f := range factRows {
+		text := strings.ToLower(strings.TrimSpace(f.Subject + " " + f.Predicate + " " + f.Object))
+		if queryLower != "" && !strings.Contains(text, queryLower) {
+			continue
+		}
+		facts = append(facts, SearchFact{
+			ID:         f.ID,
+			MemoryID:   f.MemoryID,
+			Subject:    f.Subject,
+			Predicate:  f.Predicate,
+			Object:     f.Object,
+			Confidence: f.Confidence,
+			FactType:   f.FactType,
+			AgentID:    f.AgentID,
+			Source:     memSource[f.MemoryID],
+		})
+		matchedNodeIDs = append(matchedNodeIDs, f.ID)
+	}
+
+	if len(facts) == 0 {
+		// Fallback to direct fact search so graph browse still works when memories match weakly.
+		db := st.GetDB()
+		q := "%" + query + "%"
+		rows, err := db.QueryContext(ctx,
+			`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.confidence, f.fact_type, COALESCE(f.agent_id, ''), COALESCE(m.source_file, '')
+			 FROM facts f
+			 LEFT JOIN memories m ON m.id = f.memory_id
+			 WHERE (f.subject LIKE ? OR f.predicate LIKE ? OR f.object LIKE ?)
+			   AND (f.superseded_by IS NULL OR f.superseded_by = 0)
+			 ORDER BY f.confidence DESC
+			 LIMIT ?`, q, q, q, limit)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var f SearchFact
+				if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object, &f.Confidence, &f.FactType, &f.AgentID, &f.Source); err != nil {
+					continue
+				}
+				facts = append(facts, f)
+				matchedNodeIDs = append(matchedNodeIDs, f.ID)
+			}
+		}
+	}
+
+	sort.Slice(facts, func(i, j int) bool {
+		if facts[i].Confidence == facts[j].Confidence {
+			return facts[i].ID > facts[j].ID
+		}
+		return facts[i].Confidence > facts[j].Confidence
+	})
+	if len(facts) > limit {
+		facts = facts[:limit]
+	}
+	if len(matchedNodeIDs) > limit*6 {
+		matchedNodeIDs = matchedNodeIDs[:limit*6]
+	}
+
+	writeJSON(w, 200, SearchResult{
+		Facts:          facts,
+		Memories:       memories,
+		MatchedNodeIDs: matchedNodeIDs,
+		Total:          len(facts),
+	})
 }
 
 func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStore) {
@@ -427,6 +622,7 @@ func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSt
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
+	enrichNodeMetadata(ctx, db, nodes)
 
 	edges, edgeErr := loadEdgesForNodeIDs(ctx, db, nodeIDs, 0.0)
 	edgeMode := "fact_edges_v1"
@@ -513,6 +709,7 @@ func buildSubjectGraphResult(ctx context.Context, db *sql.DB, subject string, li
 	if err := rows.Err(); err != nil {
 		return ExportResult{}, err
 	}
+	enrichNodeMetadata(ctx, db, nodes)
 
 	edges, edgeErr := loadEdgesForNodeIDs(ctx, db, nodeIDs, minConf)
 	edgeMode := "fact_edges_v1"
@@ -557,6 +754,114 @@ func buildSubjectGraphResult(ctx context.Context, db *sql.DB, subject string, li
 			"fallback_edges":      fallbackEdges,
 		},
 	}, nil
+}
+
+func enrichNodeMetadata(ctx context.Context, db *sql.DB, nodes []ExportNode) {
+	if len(nodes) == 0 {
+		return
+	}
+
+	subjectSet := make(map[string]bool, len(nodes))
+	subjects := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		subject := strings.TrimSpace(node.Subject)
+		if subject == "" || subjectSet[subject] {
+			continue
+		}
+		subjectSet[subject] = true
+		subjects = append(subjects, subject)
+	}
+	if len(subjects) == 0 {
+		return
+	}
+
+	placeholders := make([]string, len(subjects))
+	args := make([]interface{}, len(subjects))
+	for i, s := range subjects {
+		placeholders[i] = "?"
+		args[i] = s
+	}
+
+	query := fmt.Sprintf(
+		`SELECT f.subject,
+		        COUNT(*) as fact_count,
+		        COALESCE(MAX(f.created_at), ''),
+		        COALESCE(GROUP_CONCAT(DISTINCT
+		          CASE
+		            WHEN INSTR(COALESCE(m.source_file, ''), ':') > 0 THEN SUBSTR(m.source_file, 1, INSTR(m.source_file, ':') - 1)
+		            WHEN TRIM(COALESCE(m.source_file, '')) = '' THEN 'unknown'
+		            ELSE 'manual'
+		          END
+		        ), '')
+		 FROM facts f
+		 LEFT JOIN memories m ON m.id = f.memory_id
+		 WHERE (f.superseded_by IS NULL OR f.superseded_by = 0)
+		   AND f.subject IN (%s)
+		 GROUP BY f.subject`,
+		strings.Join(placeholders, ","),
+	)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type meta struct {
+		count      int
+		last       string
+		sourceType []string
+	}
+	metaBySubject := make(map[string]meta, len(subjects))
+	for rows.Next() {
+		var subject string
+		var factCount int
+		var lastRaw string
+		var sourceRaw string
+		if err := rows.Scan(&subject, &factCount, &lastRaw, &sourceRaw); err != nil {
+			continue
+		}
+		types := make([]string, 0)
+		for _, src := range strings.Split(sourceRaw, ",") {
+			src = strings.TrimSpace(src)
+			if src == "" {
+				continue
+			}
+			types = append(types, src)
+		}
+		sort.Strings(types)
+		metaBySubject[subject] = meta{
+			count:      factCount,
+			last:       normalizeStoreTimestamp(lastRaw),
+			sourceType: types,
+		}
+	}
+
+	for i := range nodes {
+		if m, ok := metaBySubject[nodes[i].Subject]; ok {
+			nodes[i].FactCount = m.count
+			nodes[i].LastUpdated = m.last
+			nodes[i].SourceTypes = m.sourceType
+		}
+	}
+}
+
+func normalizeStoreTimestamp(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	layouts := []string{
+		"2006-01-02 15:04:05",
+		time.RFC3339,
+		time.RFC3339Nano,
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.UTC().Format(time.RFC3339)
+		}
+	}
+	return raw
 }
 
 func parseBoundedInt(raw string, fallback, min, max int) int {

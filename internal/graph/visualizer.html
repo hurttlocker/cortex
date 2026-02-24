@@ -74,7 +74,7 @@
   .filter-group label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
 
   .input-row { display: flex; gap: 6px; align-items: center; }
-  input[type="text"], input[type="number"] {
+  input[type="text"], input[type="number"], select {
     width: 100%; background: rgba(9,9,11,0.8); border: 1px solid #303036; border-radius: 8px;
     color: var(--text); padding: 8px 10px; font-size: 13px; outline: none;
     transition: border-color 0.15s, box-shadow 0.15s;
@@ -84,6 +84,7 @@
     border-color: var(--accent);
     box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.25);
   }
+  select option { background: #0f1013; color: var(--text); }
 
   .btn {
     padding: 7px 14px; border: 1px solid #303036; border-radius: 8px;
@@ -326,6 +327,13 @@
         <input type="range" id="confSlider" aria-label="Minimum confidence" min="0" max="100" value="0" />
         <span class="range-val" id="confValue">0%</span>
       </div>
+      <label for="timeWindow" style="margin-top:8px">Time Window</label>
+      <select id="timeWindow" aria-label="Time window">
+        <option value="all">All time</option>
+        <option value="today">Today</option>
+        <option value="week">This week</option>
+        <option value="month">This month</option>
+      </select>
     </div>
 
     <!-- Edge Types -->
@@ -446,6 +454,7 @@ let searchDebounce = null;
 let autoFitPending = false;
 let lastNodeClick = { id: null, at: 0 };
 let currentViewMode = 'cluster';
+let activeSearchNodeIDs = new Set();
 const HELP_2D = `
   <kbd>Drag node</kbd> Reposition &nbsp; <kbd>Drag canvas</kbd> Pan &nbsp; <kbd>Scroll</kbd> Zoom<br>
   <kbd>Click</kbd> Select node &nbsp; <kbd>Double-click</kbd> Focus subject &nbsp; <kbd>Hover</kbd> Tooltip
@@ -459,6 +468,26 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = s || '';
   return d.innerHTML;
+}
+
+function dimColor(color, alpha) {
+  if (!color) return `rgba(113,113,122,${alpha})`;
+  if (color.startsWith('rgba(')) {
+    return color.replace(/rgba\(([^)]+),[^)]+\)/, `rgba($1,${alpha})`);
+  }
+  if (color.startsWith('rgb(')) {
+    return color.replace('rgb(', 'rgba(').replace(')', `,${alpha})`);
+  }
+  if (color.startsWith('#') && (color.length === 7 || color.length === 4)) {
+    let hex = color.slice(1);
+    if (hex.length === 3) hex = hex.split('').map(ch => ch + ch).join('');
+    const n = parseInt(hex, 16);
+    const r = (n >> 16) & 255;
+    const g = (n >> 8) & 255;
+    const b = n & 255;
+    return `rgba(${r},${g},${b},${alpha})`;
+  }
+  return `rgba(113,113,122,${alpha})`;
 }
 
 function hashString(s) {
@@ -620,6 +649,28 @@ function nodeColorFor(node) {
   return subjectColor(node.subject);
 }
 
+function timeCutoffForPreset(preset) {
+  const now = Date.now();
+  switch (preset) {
+    case 'today':
+      return now - (24 * 60 * 60 * 1000);
+    case 'week':
+      return now - (7 * 24 * 60 * 60 * 1000);
+    case 'month':
+      return now - (30 * 24 * 60 * 60 * 1000);
+    default:
+      return null;
+  }
+}
+
+function nodePassesTimeWindow(node, cutoffMs) {
+  if (cutoffMs == null) return true;
+  if (!node.last_updated) return false;
+  const ts = Date.parse(node.last_updated);
+  if (Number.isNaN(ts)) return false;
+  return ts >= cutoffMs;
+}
+
 function shouldRenderLabel(node) {
   if (!document.getElementById('showLabels').checked) return false;
   if (!graphData || !graphData.nodes) return false;
@@ -674,11 +725,31 @@ function drawLabelOverlay() {
 function updateGraphStyling() {
   const showArrows = document.getElementById('showArrows').checked;
   const showLabels = document.getElementById('showLabels').checked;
+  const query = (document.getElementById('searchInput').value || '').trim().toLowerCase();
+  const hasSearch = query.length >= 2;
 
   if (Graph2D) {
     const nodes2D = Graph2D.graphData()?.nodes || [];
     const subjectStats = buildSubjectStats(nodes2D);
-    Graph2D.nodeColor(nodeColorFor);
+    Graph2D.nodeColor(n => {
+      const base = nodeColorFor(n);
+      if (!hasSearch) return base;
+      if (activeSearchNodeIDs.size > 0) {
+        return activeSearchNodeIDs.has(n.id) ? '#ffffff' : dimColor(base, 0.2);
+      }
+      const text = `${n.subject || ''} ${n.predicate || ''} ${n.object || ''}`.toLowerCase();
+      return text.includes(query) ? '#ffffff' : dimColor(base, 0.2);
+    });
+    Graph2D.nodeVal(n => {
+      let v = 0.95 + (n.confidence || 0) * 2.4;
+      if (hasSearch && activeSearchNodeIDs.has(n.id)) v *= 1.75;
+      return v;
+    });
+    Graph2D.linkLabel(link => {
+      if (link._isCooc) return `Co-occurrence: ${link.count || 1}`;
+      const predicate = link.label ? ` • ${link.label}` : '';
+      return `${edgeTypeName(link.type)}${predicate}`;
+    });
     Graph2D.linkDirectionalArrowLength(link => {
       if (link._isCooc) return 0;
       return showArrows ? 3 : 0;
@@ -863,11 +934,14 @@ function renderGraph() {
   if (!graphData || !Graph) return;
 
   const confMin = parseInt(document.getElementById('confSlider').value, 10) / 100;
+  const timePreset = document.getElementById('timeWindow').value;
+  const cutoffMs = timeCutoffForPreset(timePreset);
   const activeTypes = new Set();
   document.querySelectorAll('#edgeToggles input:checked').forEach(cb => activeTypes.add(cb.dataset.type));
 
-  const nodes = (graphData.nodes || []).filter(n => n.confidence >= confMin);
+  const nodes = (graphData.nodes || []).filter(n => n.confidence >= confMin && nodePassesTimeWindow(n, cutoffMs));
   const nodeIds = new Set(nodes.map(n => n.id));
+  const nodeById = new Map(nodes.map(n => [n.id, n]));
   if (selectedNode && !nodeIds.has(selectedNode.id)) selectedNode = null;
 
   const links = [];
@@ -877,7 +951,11 @@ function renderGraph() {
       if (TOGGLE_EDGE_TYPES.has(e.type)) return activeTypes.has(e.type);
       return true; // keep non-standard edge types visible
     })
-    .forEach(e => links.push({ ...e, _isCooc: false }));
+    .forEach(e => links.push({
+      ...e,
+      _isCooc: false,
+      label: nodeById.get(e.source)?.predicate || ''
+    }));
 
   if (document.getElementById('showCoocs').checked) {
     (graphData.cooccurrences || [])
@@ -922,7 +1000,36 @@ function renderGraph() {
   }
 }
 
-function showDetail(d) {
+function connectedNodesFor(nodeId) {
+  if (!graphData || !graphData.edges || !graphData.nodes) return [];
+  const nodeById = new Map((graphData.nodes || []).map(n => [n.id, n]));
+  const seen = new Set();
+  const out = [];
+  for (const edge of graphData.edges || []) {
+    let other = null;
+    if (edge.source === nodeId) other = edge.target;
+    else if (edge.target === nodeId) other = edge.source;
+    if (!other || seen.has(other) || !nodeById.has(other)) continue;
+    seen.add(other);
+    out.push(nodeById.get(other));
+  }
+  return out;
+}
+
+function focusNodeById(nodeId) {
+  const runtimeNodes = Graph2D && Graph2D.graphData() ? (Graph2D.graphData().nodes || []) : [];
+  const node = runtimeNodes.find(n => n.id === nodeId) || ((graphData && graphData.nodes) ? graphData.nodes.find(n => n.id === nodeId) : null);
+  if (!node) return;
+  selectedNode = node;
+  showDetail(node);
+  updateGraphStyling();
+  if (Graph2D && Number.isFinite(node.x) && Number.isFinite(node.y)) {
+    Graph2D.centerAt(node.x, node.y, 700);
+    Graph2D.zoom(2.8, 700);
+  }
+}
+
+async function showDetail(d) {
   const panel = document.getElementById('detailPanel');
   panel.innerHTML = `
     <div class="fact-id">#${d.id}</div>
@@ -931,7 +1038,57 @@ function showDetail(d) {
     <div class="detail-row"><span class="detail-label">Object</span><span class="detail-value">${esc(d.object)}</span></div>
     <div class="detail-row"><span class="detail-label">Type</span><span class="detail-value"><span class="detail-badge" style="background:${FACT_TYPE_COLORS[d.type] || '#555'}22;color:${FACT_TYPE_COLORS[d.type] || '#999'}">${esc(d.type || 'unknown')}</span></span></div>
     <div class="detail-row"><span class="detail-label">Confidence</span><span class="detail-value">${(d.confidence * 100).toFixed(1)}%</span></div>
-    <div class="detail-row"><span class="detail-label">Agent</span><span class="detail-value">${esc(d.agent_id || '(global)')}</span></div>
+    <div class="detail-row"><span class="detail-label">Facts</span><span class="detail-value">${d.fact_count || '—'}</span></div>
+    <div class="detail-row"><span class="detail-label">Updated</span><span class="detail-value">${esc(d.last_updated || '—')}</span></div>
+    <div class="detail-row"><span class="detail-label">Sources</span><span class="detail-value">${esc((d.source_types || []).join(', ') || '—')}</span></div>
+    <div style="margin-top:10px;font-size:12px;color:var(--muted)">Loading subject facts…</div>
+    <div class="detail-actions">
+      <button class="btn btn-sm btn-ghost" onclick="expandFrom(${d.id})">Expand from here</button>
+      <button class="btn btn-sm btn-primary" onclick="loadSelectedSubject()">Focus subject</button>
+    </div>
+  `;
+
+  let facts = [];
+  try {
+    const resp = await fetch(`/api/facts?subject=${encodeURIComponent(d.subject || '')}`);
+    if (resp.ok) {
+      const payload = await resp.json();
+      facts = (payload.facts || []).slice().sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+    }
+  } catch (_) {}
+
+  const factItems = facts.slice(0, 14).map(f => `
+    <div style="padding:6px 0;border-top:1px solid rgba(63,63,70,0.5);">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        <span class="detail-badge" style="background:${FACT_TYPE_COLORS[f.type] || '#555'}22;color:${FACT_TYPE_COLORS[f.type] || '#999'}">${esc(f.type || 'unknown')}</span>
+        <span style="font-size:11px;color:var(--muted)">${((f.confidence || 0) * 100).toFixed(0)}%</span>
+      </div>
+      <div style="font-size:12px;color:#e4e4e7;line-height:1.45;margin-top:4px;">${esc(f.subject)} ${esc(f.predicate)} ${esc(f.object)}</div>
+      <div style="font-size:11px;color:#8b8b96;margin-top:2px;">${esc(f.source || 'unknown source')}</div>
+    </div>
+  `).join('');
+
+  const connected = connectedNodesFor(d.id).slice(0, 12);
+  const connectedHtml = connected.map(n => `
+    <button class="btn btn-sm btn-ghost" style="margin:3px 3px 0 0" onclick="focusNodeById(${n.id})">${esc(truncate(n.subject || `#${n.id}`, 26))}</button>
+  `).join('');
+
+  panel.innerHTML = `
+    <div class="fact-id">#${d.id}</div>
+    <div class="detail-row"><span class="detail-label">Subject</span><span class="detail-value">${esc(d.subject)}</span></div>
+    <div class="detail-row"><span class="detail-label">Predicate</span><span class="detail-value">${esc(d.predicate)}</span></div>
+    <div class="detail-row"><span class="detail-label">Object</span><span class="detail-value">${esc(d.object)}</span></div>
+    <div class="detail-row"><span class="detail-label">Type</span><span class="detail-value"><span class="detail-badge" style="background:${FACT_TYPE_COLORS[d.type] || '#555'}22;color:${FACT_TYPE_COLORS[d.type] || '#999'}">${esc(d.type || 'unknown')}</span></span></div>
+    <div class="detail-row"><span class="detail-label">Confidence</span><span class="detail-value">${(d.confidence * 100).toFixed(1)}%</span></div>
+    <div class="detail-row"><span class="detail-label">Facts</span><span class="detail-value">${facts.length || d.fact_count || 0}</span></div>
+    <div class="detail-row"><span class="detail-label">Updated</span><span class="detail-value">${esc(d.last_updated || '—')}</span></div>
+    <div class="detail-row"><span class="detail-label">Sources</span><span class="detail-value">${esc((d.source_types || []).join(', ') || '—')}</span></div>
+    <div style="margin-top:10px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;">Subject Facts</div>
+    <div style="margin-top:6px;max-height:220px;overflow:auto;border:1px solid rgba(63,63,70,0.6);border-radius:8px;padding:0 8px;background:rgba(8,8,10,0.7);">
+      ${factItems || '<div style="padding:10px 2px;color:var(--muted);font-size:12px">No subject facts found.</div>'}
+    </div>
+    <div style="margin-top:10px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;">Connected Nodes</div>
+    <div style="margin-top:6px;display:flex;flex-wrap:wrap;">${connectedHtml || '<span style="color:var(--muted);font-size:12px">No connected nodes.</span>'}</div>
     <div class="detail-actions">
       <button class="btn btn-sm btn-ghost" onclick="expandFrom(${d.id})">Expand from here</button>
       <button class="btn btn-sm btn-primary" onclick="loadSelectedSubject()">Focus subject</button>
@@ -956,6 +1113,8 @@ function hideBrowseResults() {
 async function searchFacts(query) {
   const el = document.getElementById('browseResults');
   if (!query || query.length < 2) {
+    activeSearchNodeIDs = new Set();
+    updateGraphStyling();
     hideBrowseResults();
     return;
   }
@@ -966,10 +1125,15 @@ async function searchFacts(query) {
     const results = await resp.json();
 
     if (!results.facts || results.facts.length === 0) {
+      activeSearchNodeIDs = new Set(results.matched_node_ids || []);
+      updateGraphStyling();
       el.innerHTML = '<div class="browse-item" style="cursor:default"><span class="bi-text">No results</span></div>';
       el.style.display = 'block';
       return;
     }
+
+    activeSearchNodeIDs = new Set(results.matched_node_ids || []);
+    updateGraphStyling();
 
     el.innerHTML = results.facts.map(f =>
       `<div class="browse-item" onclick="selectSearchResult(${f.id})">
@@ -1016,20 +1180,10 @@ async function loadCluster(query) {
 
 function highlightSearch(query) {
   if (!Graph || !graphData) return;
-
-  if (!query) {
-    updateGraphStyling();
-    return;
+  if (!query || query.trim().length < 2) {
+    activeSearchNodeIDs = new Set();
   }
-
-  const q = query.toLowerCase();
-  Graph.nodeColor(n => {
-    const text = `${n.subject || ''} ${n.predicate || ''} ${n.object || ''}`.toLowerCase();
-    if (text.includes(q)) return '#ffffff';
-    // Dim non-matching nodes by using a lower-alpha color
-    const base = nodeColorFor(n);
-    return base.replace(')', ', 0.22)').replace('rgb(', 'rgba(');
-  });
+  updateGraphStyling();
 }
 
 document.getElementById('depthSlider').addEventListener('input', e => {
@@ -1038,6 +1192,10 @@ document.getElementById('depthSlider').addEventListener('input', e => {
 
 document.getElementById('confSlider').addEventListener('input', e => {
   document.getElementById('confValue').textContent = `${e.target.value}%`;
+  if (graphData) renderGraph();
+});
+
+document.getElementById('timeWindow').addEventListener('change', () => {
   if (graphData) renderGraph();
 });
 
@@ -1059,7 +1217,7 @@ document.getElementById('searchInput').addEventListener('input', e => {
   searchDebounce = setTimeout(() => {
     searchFacts(q);
     highlightSearch(q);
-  }, 260);
+  }, 300);
 });
 
 document.getElementById('searchInput').addEventListener('keydown', e => {
