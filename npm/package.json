@@ -1,5 +1,5 @@
 {
-  "name": "@cortex-ai/mcp",
+  "name": "@hurttlocker/cortex-mcp",
   "version": "0.9.0",
   "description": "Memory that forgets — persistent agent memory with Ebbinghaus decay. Zero-config MCP server.",
   "keywords": [

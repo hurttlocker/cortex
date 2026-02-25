@@ -1,4 +1,4 @@
-# @cortex-ai/mcp
+# @hurttlocker/cortex-mcp
 
 **Memory that forgets** — persistent agent memory with Ebbinghaus decay.
 
@@ -14,7 +14,7 @@ Zero-config MCP server for AI agents. No API keys. No cloud account. No setup wi
   "mcpServers": {
     "cortex": {
       "command": "npx",
-      "args": ["-y", "@cortex-ai/mcp"]
+      "args": ["-y", "@hurttlocker/cortex-mcp"]
     }
   }
 }
@@ -26,7 +26,7 @@ Zero-config MCP server for AI agents. No API keys. No cloud account. No setup wi
   "mcpServers": {
     "cortex": {
       "command": "npx",
-      "args": ["-y", "@cortex-ai/mcp"]
+      "args": ["-y", "@hurttlocker/cortex-mcp"]
     }
   }
 }
@@ -39,7 +39,7 @@ Zero-config MCP server for AI agents. No API keys. No cloud account. No setup wi
     "cortex": {
       "transport": "stdio",
       "command": "npx",
-      "args": ["-y", "@cortex-ai/mcp"]
+      "args": ["-y", "@hurttlocker/cortex-mcp"]
     }
   }
 }
@@ -94,12 +94,12 @@ Import text → Extract facts → Store with timestamp
 
 ### HTTP+SSE transport
 ```bash
-npx @cortex-ai/mcp --port 8080
+npx @hurttlocker/cortex-mcp --port 8080
 ```
 
 ### Custom database path
 ```bash
-CORTEX_DB=~/my-project/memory.db npx @cortex-ai/mcp
+CORTEX_DB=~/my-project/memory.db npx @hurttlocker/cortex-mcp
 ```
 
 ### With semantic search (requires Ollama)
@@ -108,7 +108,7 @@ CORTEX_DB=~/my-project/memory.db npx @cortex-ai/mcp
 ollama pull nomic-embed-text
 
 # Cortex auto-detects Ollama for semantic search
-npx @cortex-ai/mcp
+npx @hurttlocker/cortex-mcp
 ```
 
 ## Links
