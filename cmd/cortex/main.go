@@ -112,6 +112,8 @@ func main() {
 		exitWithError(runConnect(args[1:]))
 	case "doctor":
 		exitWithError(runDoctor(args[1:]))
+	case "completion":
+		exitWithError(runCompletion(args[1:]))
 	case "mcp":
 		exitWithError(runMCP(args[1:]))
 	case "version":
@@ -7606,210 +7608,149 @@ func execCommand(name string, args ...string) error {
 	return cmd.Run()
 }
 
+// cortexCommands is the authoritative list of top-level commands for completion.
+var cortexCommands = []string{
+	"import", "reimport", "search", "list", "export", "update",
+	"extract", "classify", "reinforce", "supersede", "fact-history",
+	"stats", "stale", "conflicts", "agents", "projects",
+	"graph", "cluster",
+	"reason", "bench",
+	"cleanup", "optimize", "embed", "tag",
+	"connect",
+	"mcp", "doctor", "completion", "version", "help",
+}
+
+func runCompletion(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf(`usage: cortex completion <shell>
+
+Supported shells: bash, zsh, fish
+
+Examples:
+  cortex completion bash > ~/.bash_completion.d/cortex
+  cortex completion zsh  > ~/.zfunc/_cortex
+  cortex completion fish > ~/.config/fish/completions/cortex.fish`)
+	}
+
+	switch args[0] {
+	case "bash":
+		fmt.Println(generateBashCompletion())
+	case "zsh":
+		fmt.Println(generateZshCompletion())
+	case "fish":
+		fmt.Println(generateFishCompletion())
+	default:
+		return fmt.Errorf("unsupported shell: %s (supported: bash, zsh, fish)", args[0])
+	}
+	return nil
+}
+
+func generateBashCompletion() string {
+	cmds := strings.Join(cortexCommands, " ")
+	return fmt.Sprintf(`# cortex bash completion
+_cortex_completions() {
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    local cmds="%s"
+    if [ "${COMP_CWORD}" -eq 1 ]; then
+        COMPREPLY=($(compgen -W "${cmds}" -- "${cur}"))
+    fi
+}
+complete -F _cortex_completions cortex`, cmds)
+}
+
+func generateZshCompletion() string {
+	var lines []string
+	lines = append(lines, `#compdef cortex`)
+	lines = append(lines, `_cortex() {`)
+	lines = append(lines, `  local -a commands=(`)
+	for _, cmd := range cortexCommands {
+		lines = append(lines, fmt.Sprintf(`    '%s'`, cmd))
+	}
+	lines = append(lines, `  )`)
+	lines = append(lines, `  _arguments '1:command:compadd -a commands' '*:file:_files'`)
+	lines = append(lines, `}`)
+	lines = append(lines, `_cortex "$@"`)
+	return strings.Join(lines, "\n")
+}
+
+func generateFishCompletion() string {
+	var lines []string
+	lines = append(lines, `# cortex fish completion`)
+	for _, cmd := range cortexCommands {
+		lines = append(lines, fmt.Sprintf(`complete -c cortex -n "__fish_use_subcommand" -a "%s"`, cmd))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func printUsage() {
 	fmt.Printf(`cortex %s — Import-first memory layer for AI agents
 
 Usage:
   cortex [global-flags] <command> [arguments]
+  cortex <command> --help             Show detailed help for a command
 
-Commands:
-  import <path>       Import memory from a file or directory
-  reimport <path>     Wipe database and reimport from scratch (--embed to include embeddings)
-  extract <file>      Extract facts from a single file (without importing)
-  embed [provider/model] Generate embeddings for missing memories (or run daemon with --watch)
-  search <query>      Search memory (keyword, semantic, hybrid, or rrf)
-  reinforce <id>      Reinforce a fact (reset its decay timer)
-  supersede <id>      Mark a fact as superseded by a newer fact
-  update <id>         Update a memory's content (--content or --file)
-  stats               Show memory statistics and health
-  list                List memories or facts from the store
-  export              Export the full memory store in different formats
-  stale               Find outdated memory entries
-  conflicts           Detect contradictory facts
-  cleanup             Remove garbage memories and headless facts
-                      --purge-noise  Run fact quality governor to remove noise + enforce caps
-  optimize            Manual DB maintenance (integrity check, VACUUM, ANALYZE)
-  cluster             List/rebuild topic clusters with cohesion stats
-  reason <query>      LLM reasoning over memories (search → prompt → analyze)
-  bench               Benchmark LLM models for reason (speed, cost, quality)
-  projects            List all project tags with memory/fact counts
-  agents              List known agents with memory/fact coverage
-  tag                 Tag memories by project (--project, --source, --id, --auto)
-  connect             Manage external service connectors (init, add, sync, status)
-  doctor              Validate local Cortex setup (DB, embeddings, LLM keys, connectors)
-  mcp                 Start MCP (Model Context Protocol) server
-  version             Print version
+Memory:
+  import <path>         Import memories from files or directories
+  reimport <path>       Wipe database and reimport from scratch
+  search <query>        Search memories (keyword, semantic, hybrid, or rrf)
+  list                  List memories or facts
+  export                Export memory store (json, markdown, csv)
+  update <id>           Update a memory's content
+
+Facts:
+  extract <file>        Extract facts from a file (without importing)
+  classify              Reclassify kv facts using LLM
+  reinforce <id>        Reset decay timer on a fact
+  supersede <id>        Mark a fact as superseded by a newer one
+
+Observe:
+  stats                 Memory statistics, health, and growth
+  stale                 Find outdated facts (confidence decay)
+  conflicts             Detect contradictory facts
+  agents                List known agents with per-agent stats
+  projects              List project tags with counts
+
+Knowledge Graph:
+  graph <fact_id>       Explore fact relationships (CLI)
+  graph --serve         Launch interactive graph explorer (web UI)
+  cluster               List or rebuild topic clusters
+
+LLM:
+  reason <query>        LLM reasoning over memories (search → analyze)
+  bench                 Benchmark LLM models for reasoning quality/speed
+
+Maintenance:
+  cleanup               Remove garbage memories and headless facts
+  optimize              DB maintenance (integrity check, VACUUM, ANALYZE)
+  embed <provider/model> Generate or refresh embeddings
+  tag                   Tag memories by project
+
+Connectors:
+  connect init          Initialize connector system
+  connect add <name>    Add a connector (github, gmail, discord, etc.)
+  connect sync          Sync connectors (--all or --provider <name>)
+  connect status        Show connector health and sync state
+
+Integration:
+  mcp                   Start MCP server (stdio or --port for HTTP+SSE)
+  doctor                Validate setup (DB, embeddings, LLM keys, connectors)
+  completion            Generate shell completions (bash, zsh, fish)
+  version               Print version
 
 Global Flags:
-  --db <path>         Database path (overrides CORTEX_DB env var)
-  --read-only         Open database in read-only mode (no schema changes)
-  --verbose, -v       Show detailed output
-  -h, --help          Show this help message
+  --db <path>           Database path (default: ~/.cortex/cortex.db, env: CORTEX_DB)
+  --read-only           Open database in read-only mode
+  --agent <id>          Scope operations to a specific agent
+  --verbose, -v         Show detailed output
+  -h, --help            Show this help
 
-Search Flags:
-  --mode <mode>       Search mode: keyword, semantic, hybrid, rrf (default: keyword)
-  --limit <N>         Maximum results (default: 10)
-  --min-score <F>     Minimum search score threshold (default: mode-dependent; --min-confidence still works)
-  --embed <provider/model> Embedding provider for semantic/hybrid/rrf search (e.g., --embed ollama/all-minilm)
-  --project <name>    Scope search to a specific project (e.g., --project trading)
-  --class <list>      Filter by memory class (e.g., --class rule,decision)
-  --no-class-boost    Disable class-aware ranking boosts
-  --include-superseded Include memories tied only to superseded facts
-  --explain           Show provenance + rank factors + confidence/decay signals
-  --json              Force JSON output even in TTY
+Quick Start:
+  cortex import ~/notes --extract     # Import notes and extract facts
+  cortex search "project deadline"    # Search your memories
+  cortex stats                        # Check database health
+  cortex doctor                       # Validate your setup
 
-Import Flags:
-  -r, --recursive     Recursively import from directories
-  -n, --dry-run       Show what would be imported without writing
-  --extract           Extract facts from imported memories and store them
-  --project <name>    Tag imported memories with a project (e.g., --project trading)
-  --class <name>      Assign a memory class (rule|decision|preference|identity|status|scratch)
-  --auto-tag          Infer project from file paths using built-in rules
-  --capture-dedupe    Enable near-duplicate suppression against recent captures
-  --similarity-threshold <F> Cosine similarity cutoff for dedupe (default: 0.95)
-  --dedupe-window-sec <N> Recent window in seconds for dedupe scan (default: 300)
-  --capture-low-signal Enable low-signal suppression for capture imports
-  --capture-min-chars <N> Minimum normalized chars before capture is accepted (default: 20)
-  --capture-low-signal-pattern <phrase> Add extra low-signal phrase (repeatable)
-  --embed <provider/model> Generate embeddings during import (e.g., --embed ollama/all-minilm)
-  --llm <provider/model>  Enable LLM-assisted extraction (e.g., --llm openai/gpt-4o-mini)
-
-Projects/Tag Flags:
-  cortex projects [--json]                    List all projects
-  cortex agents [--json]                      List known agents and per-agent stats
-  cortex tag --project <name> --source <pat>  Tag memories by source file pattern
-  cortex tag --project <name> --id <id>       Tag specific memories by ID
-  cortex tag --auto                           Auto-tag untagged memories using path rules
-
-Extract Flags:
-  --json              Force JSON output even in TTY
-  --llm <provider/model>  Enable LLM-assisted extraction (e.g., --llm ollama/gemma2:2b)
-
-List Flags:
-  --facts             List facts instead of memories
-  --limit <N>         Maximum results (default: 20)
-  --source <file>     Filter by source file
-  --class <list>      Filter memories by class (e.g., --class rule,decision)
-  --type <fact_type>  Filter facts by type (kv, temporal, identity, etc.)
-  --include-superseded Include superseded facts in --facts output
-  --json              Force JSON output even in TTY
-
-Export Flags:
-  --format <fmt>      Output format: json, markdown, csv (default: json)
-  --output <file>     Write to file instead of stdout
-  --facts             Export facts instead of memories
-
-Stats Flags:
-  --json              Force JSON output even in TTY
-  --growth-report     Show 24h/7d ingest growth composition report
-  --top-source-files <N> Limit top source files in growth report (default: 10)
-
-Stale/Conflict Flags:
-  --include-superseded Include superseded facts in stale/conflict views
-  --verbose, -v       Show full conflict/resolution details (skip compact output)
-  --agent <id>        Scope to a specific agent's facts
-
-Optimize Flags:
-  --check-only        Run PRAGMA integrity_check only
-  --vacuum-only       Run VACUUM only
-  --analyze-only      Run ANALYZE only
-  --json              Output report as JSON
-
-Reimport Flags:
-  -r, --recursive     Recursively import from directories
-  --extract           Extract facts from imported memories
-  --embed <provider/model> Generate embeddings after import
-  --llm <provider/model>  Enable LLM-assisted extraction
-  -f, --force         Skip confirmation prompt
-
-Embed Flags:
-  --batch-size <N>    Number of chunks per embed request (default: 10)
-  --force             Re-generate all embeddings (one-shot only)
-  --watch             Run as a daemon and refresh embeddings periodically
-  --interval <dur>    Watch interval (default: 30m, e.g. 5m, 1h)
-
-Bench Flags:
-  --models <list>     Comma-separated models (e.g. google/gemini-2.5-flash,deepseek/deepseek-v3.2)
-  --compare <m1,m2>   Quick A/B compare mode for two models
-  --recursive         Run benchmark in recursive reasoning mode
-  --max-iterations <N> Recursive iteration cap (default: 8)
-  --max-depth <N>     Recursive sub-query depth cap (default: 1)
-  --local             Include local ollama models
-  --output <file>     Write markdown report to file
-  --json              Output report as JSON
-
-Reason Telemetry:
-  ~/.cortex/reason-telemetry.jsonl appended on every cortex reason run
-  CORTEX_REASON_TELEMETRY=off disables telemetry logging
-
-Codex Rollout Report Flags:
-  --file <path>                        Telemetry file path (default: ~/.cortex/reason-telemetry.jsonl)
-  --one-shot-p95-warn-ms <N>           Warn threshold for one-shot p95 latency in ms (default: 20000)
-  --recursive-known-cost-min-share <F> Warn threshold for recursive known-cost completeness (default: 0.80)
-  --warn-only[=true|false]             Warn-only mode (default: true); strict mode exits non-zero on warnings
-
-Reinforce:
-  cortex reinforce <fact_id> [fact_id...]   Reset decay timer for specified facts
-
-Supersede:
-  cortex supersede <old_fact_id> --by <new_fact_id> [--reason <text>]
-
-Update:
-  cortex update <memory_id> --content "updated text" [--extract]
-  cortex update <memory_id> --file updated.md [--extract]
-
-MCP Flags:
-  --port <N>          Start HTTP+SSE transport on port (default: stdio)
-  --embed <provider/model> Enable semantic/hybrid/rrf search via embeddings
-
-Doctor Flags:
-  --json              Output report as JSON
-  --quiet             Show only warnings/failures in text output
-
-Cluster Flags:
-  cortex cluster                       List topic clusters
-  cortex cluster --rebuild             Recompute clusters from all active facts
-  cortex cluster --name "<cluster>"    Show detail for one cluster by name/alias
-  cortex cluster --export json         Output list/detail as JSON
-
-Examples:
-  cortex list --limit 50
-  cortex list --facts --type kv
-  cortex export --format markdown --output memories.md
-  cortex stats --growth-report
-  cortex stats --growth-report --json
-  cortex stats --growth-report --top-source-files 20
-  cortex --db ~/my-cortex.db list --source ~/notes.md
-  cortex optimize --check-only
-  cortex optimize --json
-  cortex embed ollama/nomic-embed-text --batch-size 10
-  cortex embed ollama/nomic-embed-text --watch --interval 30m --batch-size 10
-  cortex supersede 101 --by 204 --reason "policy updated"
-  cortex update 88 --content "Decision: use HNSW over FAISS" --extract
-  cortex search "deployment rule" --include-superseded
-  cortex search "deployment rule" --explain --json
-  cortex bench --compare google/gemini-2.5-flash,deepseek/deepseek-v3.2 --recursive
-  cortex bench --models openai/gpt-5.1-codex-mini,google/gemini-3-flash-preview --output bench.md
-  cortex agents --json
-  cortex cluster --rebuild
-  cortex cluster --name trading
-  cortex cluster --export json
-  cortex mcp                          # Start MCP server (stdio, for Claude Desktop/Cursor)
-  cortex mcp --port 8080              # Start MCP server (HTTP+SSE)
-  cortex doctor                       # Validate local setup and dependencies
-  cortex doctor --json                # JSON report for CI/scripts
-
-Connect:
-  cortex connect init                 # Initialize connector system
-  cortex connect add gmail            # Add a connector (shows config template)
-  cortex connect sync --all           # Sync all enabled connectors
-  cortex connect sync --provider gmail # Sync a specific connector
-  cortex connect status               # Show connector health and sync state
-  cortex connect remove gmail         # Remove a connector
-  cortex connect enable gmail         # Enable a disabled connector
-  cortex connect disable gmail        # Disable a connector
-
-Documentation:
-  https://github.com/hurttlocker/cortex
+Run 'cortex <command> --help' for detailed flags and examples.
+Documentation: https://github.com/hurttlocker/cortex
 `, version)
 }

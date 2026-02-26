@@ -2001,3 +2001,59 @@ func TestRunSearch_UnknownMode(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestCompletion_Bash(t *testing.T) {
+	exitCode, out := runMainSubprocess(t, "completion", "bash")
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "complete -F") {
+		t.Fatalf("expected bash completion function, got: %q", out)
+	}
+	// Verify all top-level commands are in the completion
+	for _, cmd := range []string{"import", "search", "stats", "mcp", "doctor"} {
+		if !strings.Contains(out, cmd) {
+			t.Errorf("completion missing command %q", cmd)
+		}
+	}
+}
+
+func TestCompletion_Zsh(t *testing.T) {
+	exitCode, out := runMainSubprocess(t, "completion", "zsh")
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "#compdef cortex") {
+		t.Fatalf("expected zsh compdef header, got: %q", out)
+	}
+}
+
+func TestCompletion_Fish(t *testing.T) {
+	exitCode, out := runMainSubprocess(t, "completion", "fish")
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "complete -c cortex") {
+		t.Fatalf("expected fish completions, got: %q", out)
+	}
+}
+
+func TestCompletion_InvalidShell(t *testing.T) {
+	exitCode, out := runMainSubprocess(t, "completion", "powershell")
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "unsupported shell") {
+		t.Fatalf("expected unsupported shell error, got: %q", out)
+	}
+}
+
+func TestCompletion_NoArgs(t *testing.T) {
+	exitCode, out := runMainSubprocess(t, "completion")
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "usage:") {
+		t.Fatalf("expected usage text, got: %q", out)
+	}
+}
