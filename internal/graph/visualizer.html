@@ -948,7 +948,15 @@ function setTimelineDefaults() {
 }
 
 function switchToCluster() {
+  // Cluster mode uses its own filter state — don't inherit stale search text
+  // from other modes. Clear the search box when entering cluster mode unless
+  // the user explicitly typed something while already in cluster mode.
+  if (currentViewMode !== 'cluster') {
+    document.getElementById('searchInput').value = '';
+  }
   const q = document.getElementById('searchInput').value.trim();
+  impactData = null;
+  timelineData = null;
   loadCluster(q);
 }
 
@@ -1219,6 +1227,24 @@ function updateGraphStyling() {
   drawLabelOverlay();
 }
 
+function clearVisualState() {
+  // Clear graph canvas (force-graph nodes/links)
+  if (Graph2D) {
+    try { Graph2D.graphData({ nodes: [], links: [] }); } catch (_) {}
+  }
+  document.getElementById('labelLayer').innerHTML = '';
+  // Clear timeline SVG
+  const tc = document.getElementById('timelineContainer');
+  if (tc) d3.select(tc).selectAll('svg').remove();
+  // Clear impact panel
+  const ip = document.getElementById('impactPanel');
+  if (ip) ip.innerHTML = '';
+  // Clear timeline tooltip
+  document.getElementById('timelineTooltip').style.display = 'none';
+  // Clear detail panel
+  document.getElementById('detailPanel').innerHTML = '<span style="color:var(--muted);font-size:13px">Click a node to inspect</span>';
+}
+
 function showLoading(message) {
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('loadingState').style.display = 'block';
@@ -1227,10 +1253,12 @@ function showLoading(message) {
   document.getElementById('statsBar').style.display = 'none';
   document.getElementById('labelLayer').innerHTML = '';
   document.getElementById('timelineTooltip').style.display = 'none';
+  clearVisualState();
   setQualityStatus(message || 'Loading graph...');
 }
 
 function showEmpty(title, subtitle) {
+  clearVisualState();
   document.getElementById('loadingState').style.display = 'none';
   document.getElementById('emptyState').style.display = 'block';
   document.querySelector('#emptyState .msg-title').textContent = title;
@@ -1468,7 +1496,10 @@ function applyImpactConcentricLayout() {
     depthGroups.get(d).push(node);
   }
 
-  const ringStep = 140;
+  // Adaptive ring spacing: wider when there are many nodes per ring to reduce overlap
+  const maxNodesPerRing = Math.max(...Array.from(depthGroups.values()).map(l => l.length), 1);
+  const ringStep = Math.max(140, Math.min(280, maxNodesPerRing * 18));
+
   for (const [depth, list] of depthGroups.entries()) {
     list.sort((a, b) => {
       if ((a.subject || '').toLowerCase() === rootSubj && (b.subject || '').toLowerCase() !== rootSubj) return -1;
@@ -1476,7 +1507,8 @@ function applyImpactConcentricLayout() {
       return a.id - b.id;
     });
 
-    const radius = depth === 0 ? (list.length > 1 ? 34 : 0) : depth * ringStep;
+    // Relaxed depth-0 packing: spread nodes in a wider circle to prevent label collisions
+    const radius = depth === 0 ? (list.length > 4 ? 60 + list.length * 6 : list.length > 1 ? 40 : 0) : depth * ringStep;
     const total = list.length;
     for (let i = 0; i < total; i += 1) {
       const angle = total === 1 ? 0 : (2 * Math.PI * i) / total;
@@ -1493,6 +1525,8 @@ async function loadImpact(subject) {
   if (!value) return;
   const token = nextRequestToken('impact');
 
+  impactData = null;
+  graphData = null;
   setViewMode('impact');
   showLoading(`Running impact analysis: ${value}`);
   document.getElementById('searchInput').value = value;
@@ -1586,6 +1620,8 @@ async function loadTimeline(subject) {
   const includeRelated = document.getElementById('timelineShowRelated').checked;
   const minConf = parseInt(document.getElementById('confSlider').value, 10) / 100;
 
+  timelineData = null;
+  graphData = null;
   document.getElementById('timelineSubject').value = value;
   document.getElementById('searchInput').value = value;
   setViewMode('timeline');
