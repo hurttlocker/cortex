@@ -92,6 +92,7 @@ type StaleOpts struct {
 	MaxDays           int     // days without reinforcement (default: 30)
 	Limit             int     // max results (default: 50)
 	IncludeSuperseded bool    // include superseded facts in stale scan
+	AgentID           string  // filter by agent_id (empty = all agents)
 }
 
 // Conflict represents two facts that may contradict each other.
@@ -475,7 +476,7 @@ func (e *Engine) GetStaleFacts(ctx context.Context, opts StaleOpts) ([]StaleFact
 	}
 
 	// Get all facts to calculate effective confidence
-	facts, err := e.store.ListFacts(ctx, store.ListOpts{Limit: 10000, IncludeSuperseded: opts.IncludeSuperseded}) // Large limit to get all facts
+	facts, err := e.store.ListFacts(ctx, store.ListOpts{Limit: 10000, IncludeSuperseded: opts.IncludeSuperseded, Agent: opts.AgentID}) // Large limit to get all facts
 	if err != nil {
 		return nil, fmt.Errorf("listing facts: %w", err)
 	}

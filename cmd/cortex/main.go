@@ -942,12 +942,18 @@ func runStats(args []string) error {
 		jsonOutput     bool
 		growthReport   bool
 		topSourceFiles int
+		agentID        string
 	}
 
 	opts := statsOpts{topSourceFiles: 10}
 
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			opts.agentID = args[i]
+		case strings.HasPrefix(args[i], "--agent="):
+			opts.agentID = strings.TrimPrefix(args[i], "--agent=")
 		case args[i] == "--json":
 			opts.jsonOutput = true
 		case args[i] == "--growth-report":
@@ -1026,10 +1032,16 @@ func runStale(args []string) error {
 		Limit:         50,
 	}
 	jsonOutput := false
+	agentFlag := ""
 
 	// Parse flags
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentFlag = args[i]
+		case strings.HasPrefix(args[i], "--agent="):
+			agentFlag = strings.TrimPrefix(args[i], "--agent=")
 		case args[i] == "--days" && i+1 < len(args):
 			i++
 			days, err := strconv.Atoi(args[i])
@@ -1086,6 +1098,7 @@ func runStale(args []string) error {
 		dbPath = store.DefaultDBPath
 	}
 	engine := observe.NewEngine(s, dbPath)
+	opts.AgentID = agentFlag
 
 	staleFacts, err := engine.GetStaleFacts(ctx, opts)
 	if err != nil {
@@ -1116,10 +1129,16 @@ func runConflicts(args []string) error {
 	keepFlag := int64(0)
 	dropFlag := int64(0)
 	includeSuperseded := false
+	agentFlag := ""
 
 	// Parse flags
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentFlag = args[i]
+		case strings.HasPrefix(args[i], "--agent="):
+			agentFlag = strings.TrimPrefix(args[i], "--agent=")
 		case args[i] == "--json":
 			jsonOutput = true
 		case args[i] == "--verbose" || args[i] == "-v":
@@ -1419,6 +1438,17 @@ func runConflicts(args []string) error {
 	conflicts, err := engine.GetConflictsLimitWithSuperseded(ctx, limitFlag, includeSuperseded)
 	if err != nil {
 		return fmt.Errorf("getting conflicts: %w", err)
+	}
+
+	// Agent filter: keep only conflicts where at least one fact belongs to the agent
+	if agentFlag != "" {
+		filtered := make([]observe.Conflict, 0, len(conflicts))
+		for _, c := range conflicts {
+			if c.Fact1.AgentID == agentFlag || c.Fact2.AgentID == agentFlag {
+				filtered = append(filtered, c)
+			}
+		}
+		conflicts = filtered
 	}
 
 	if jsonOutput || !isTTY() {
@@ -7627,6 +7657,7 @@ Stats Flags:
 Stale/Conflict Flags:
   --include-superseded Include superseded facts in stale/conflict views
   --verbose, -v       Show full conflict/resolution details (skip compact output)
+  --agent <id>        Scope to a specific agent's facts
 
 Optimize Flags:
   --check-only        Run PRAGMA integrity_check only
