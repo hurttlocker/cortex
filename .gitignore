@@ -28,6 +28,16 @@ Thumbs.db
 # Dependencies
 /vendor/
 
+# Secrets / config (never commit real keys)
+.env
+.env.*
+!.env.example
+config.yaml
+config.yml
+*.key
+*.pem
+*.p12
+
 # ONNX model (downloaded on first run)
 *.onnx
 models/
