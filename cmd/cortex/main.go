@@ -2000,6 +2000,17 @@ func runList(args []string) error {
 		}
 	}
 
+	// Validate fact type if provided
+	if factType != "" {
+		validTypes := map[string]bool{
+			"kv": true, "relationship": true, "preference": true, "temporal": true,
+			"identity": true, "location": true, "decision": true, "state": true, "config": true,
+		}
+		if !validTypes[factType] {
+			return fmt.Errorf("unknown fact type %q (valid: kv, relationship, preference, temporal, identity, location, decision, state, config)", factType)
+		}
+	}
+
 	// Open store
 	s, err := store.NewStore(getStoreConfig())
 	if err != nil {
@@ -2475,6 +2486,9 @@ func runReinforce(args []string) error {
 	}
 
 	fmt.Printf("Reinforced %d fact(s)\n", reinforced)
+	if reinforced == 0 && len(args) > 0 {
+		return fmt.Errorf("no facts were reinforced (check that the IDs exist)")
+	}
 	return nil
 }
 

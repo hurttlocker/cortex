@@ -1887,3 +1887,93 @@ func findDoctorCheck(report doctorReport, name string) (doctorCheck, bool) {
 	}
 	return doctorCheck{}, false
 }
+
+// ==================== reinforce error paths ====================
+
+func TestRunReinforce_NonexistentFactReturnsError(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	s.Close()
+
+	err = runReinforce([]string{"999999"})
+	if err == nil {
+		t.Fatal("expected error when reinforcing nonexistent fact")
+	}
+	if !strings.Contains(err.Error(), "no facts were reinforced") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// ==================== list fact type validation ====================
+
+func TestRunList_InvalidFactType(t *testing.T) {
+	err := runList([]string{"--facts", "--type", "badtype"})
+	if err == nil {
+		t.Fatal("expected error for invalid fact type")
+	}
+	if !strings.Contains(err.Error(), "unknown fact type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunList_ValidFactType(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	s.Close()
+
+	// Should not error with a valid type (even if no results)
+	err = runList([]string{"--facts", "--type", "decision", "--json"})
+	if err != nil {
+		t.Fatalf("unexpected error with valid fact type: %v", err)
+	}
+}
+
+// ==================== edge case: empty search ====================
+
+func TestRunSearch_NoQuery(t *testing.T) {
+	err := runSearch([]string{})
+	if err == nil {
+		t.Fatal("expected usage error")
+	}
+	if !strings.Contains(err.Error(), "usage:") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunSearch_UnknownMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	s.Close()
+
+	err = runSearch([]string{"test query", "--mode", "badmode"})
+	if err == nil {
+		t.Fatal("expected error for unknown search mode")
+	}
+	if !strings.Contains(err.Error(), "badmode") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
