@@ -2,9 +2,62 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.0.0] - 2026-02-26
 
-- No unreleased entries yet.
+### 🎉 v1.0 — Production Ready
+
+Cortex is stable. This release represents 6 months of development: 62,300+ lines of Go, 1,081 tests across 15 packages, deployed on 3 machines with thousands of memories in production use.
+
+**What v1.0 means:** CLI commands, MCP tool names, SQLite schema, and config format are now covered by a [stability contract](docs/STABILITY.md). We won't break your workflow in any 1.x release.
+
+### Since v0.9.0
+
+#### Added
+- **`cortex doctor`** — Health check command: validates DB, embeddings, connectors, LLM keys. Prints pass/warn/fail summary with remediation hints.
+- **Grouped CLI help** — Commands organized by category (Core, Observe, Graph, Connectors, Maintenance). Shell completions for bash, zsh, fish, PowerShell.
+- **`--agent` everywhere** — Multi-agent scoping on `classify`, `cleanup`, `graph --serve`, `connect sync`, and `mcp`. `cortex agents` lists all known agent IDs.
+- **Search quality benchmark** — 8 golden queries with precision measurement. CI-gated at 60% pass rate.
+- **Scale benchmark** — Synthetic data generator + performance tests at 1K/10K memories. Import: 2,894/sec at 10K. BM25 P99: 41.7ms.
+- **Stability contract** — `docs/STABILITY.md` defines what v1.0 guarantees.
+- **Documentation overhaul** — Complete rewrite of deep dive, architecture, connectors (5→8 providers). New getting-started guide and migration guide.
+- **MCP tool descriptions rewritten** — All 17 tools have clear trigger conditions, output shapes, and disambiguation. Example system prompts in `docs/mcp-prompts.md`.
+- **Connector auto-sync** — GitHub connector running in production with 3-hour auto-sync via launchd.
+
+#### Fixed
+- **Hybrid/RRF search gracefully degrades to BM25** when no embedder configured (was: hard error).
+- **Search JSON output strips HTML `<b>` tags** from FTS5 snippets.
+- **Empty results show human-friendly messages** instead of bare `[]`.
+- **`--days` validates positive values** (was: silently accepted negatives).
+- **`--no-enrich` warning reworded** — removed confusing double-negative.
+- **Error handling hardened** — `exitWithError()` wraps all 30+ commands. `remediationHint()` covers 12+ error patterns. Fact type validation on save.
+
+#### Changed
+- MCP tool count: 19 → 17 (removed deprecated alert tools in v0.6.0, count was stale in docs).
+- Help text now lists all 17 MCP tools + 4 resources.
+
+### Full Feature Inventory (v1.0)
+
+| Category | Features |
+|----------|----------|
+| **Import** | File/directory import, recursive, extension filter, content-hash dedup, chunking |
+| **Extraction** | Rule-based NLP, LLM enrichment (optional), auto-classification, 9 fact types |
+| **Search** | BM25, semantic, hybrid, RRF. Query expansion. Confidence decay ranking. |
+| **Graph** | Knowledge graph, cluster detection, 2D interactive explorer, impact analysis |
+| **Connectors** | GitHub, Gmail, Calendar, Drive, Slack, Discord, Telegram, Notion |
+| **MCP** | 17 tools, 4 resources, stdio + HTTP/SSE, multi-agent scoping |
+| **Observe** | Stats, stale, conflicts, alerts, doctor. Proactive health monitoring. |
+| **Reasoning** | One-shot + recursive chain-of-thought over memory corpus |
+| **Multi-Agent** | `--agent` flag on all operations, `cortex agents`, scoped MCP |
+| **Maintenance** | Cleanup, optimize, embed, doctor. Shell completions. |
+
+### Stats
+- **62,300+ lines** of Go
+- **1,081 tests** across 15 packages
+- **17 MCP tools**, 4 resources
+- **8 connectors**
+- **9 fact types** with Ebbinghaus decay
+- **5 platform binaries** (darwin arm64/amd64, linux arm64/amd64, windows amd64)
+- **< $1/month** LLM cost with enrichment enabled
 
 ## [0.9.0] - 2026-02-25
 

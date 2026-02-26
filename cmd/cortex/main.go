@@ -34,7 +34,7 @@ import (
 )
 
 // version is set by goreleaser via ldflags at build time.
-var version = "0.9.0"
+var version = "1.0.0"
 
 var (
 	globalDBPath   string
