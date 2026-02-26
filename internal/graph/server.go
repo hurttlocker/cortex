@@ -24,8 +24,9 @@ var visualizerFS embed.FS
 
 // ServerConfig holds settings for the graph visualization server.
 type ServerConfig struct {
-	Store *store.SQLiteStore
-	Port  int
+	Store       *store.SQLiteStore
+	Port        int
+	AgentFilter string // if set, all API responses are scoped to this agent
 }
 
 // ExportNode is the visualization-friendly format for a fact.
@@ -93,6 +94,22 @@ const (
 func Serve(cfg ServerConfig) error {
 	mux := http.NewServeMux()
 
+	// Middleware: if server-level agent filter is set, inject it as default query param
+	wrapAgent := func(next http.HandlerFunc) http.HandlerFunc {
+		if cfg.AgentFilter == "" {
+			return next
+		}
+		return func(w http.ResponseWriter, r *http.Request) {
+			// Only inject if the request doesn't already have ?agent=
+			if r.URL.Query().Get("agent") == "" {
+				q := r.URL.Query()
+				q.Set("agent", cfg.AgentFilter)
+				r.URL.RawQuery = q.Encode()
+			}
+			next(w, r)
+		}
+	}
+
 	// Serve the visualizer HTML
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		data, err := visualizerFS.ReadFile("visualizer.html")
@@ -117,47 +134,47 @@ func Serve(cfg ServerConfig) error {
 	})
 
 	// Graph API endpoint
-	mux.HandleFunc("/api/graph", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/graph", wrapAgent(func(w http.ResponseWriter, r *http.Request) {
 		handleGraphAPI(w, r, cfg.Store)
-	})
+	}))
 
 	// Search API endpoint — search facts by text
-	mux.HandleFunc("/api/search", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/search", wrapAgent(func(w http.ResponseWriter, r *http.Request) {
 		handleSearchAPI(w, r, cfg.Store)
-	})
+	}))
 
 	// Facts API endpoint — facts by subject or memory.
-	mux.HandleFunc("/api/facts", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/facts", wrapAgent(func(w http.ResponseWriter, r *http.Request) {
 		handleFactsAPI(w, r, cfg.Store)
-	})
+	}))
 
 	// Sample cluster endpoint — returns a cluster of related facts for demo/exploration
-	mux.HandleFunc("/api/cluster", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/cluster", wrapAgent(func(w http.ResponseWriter, r *http.Request) {
 		handleClusterAPI(w, r, cfg.Store)
-	})
+	}))
 
 	// Topic clusters endpoints.
-	mux.HandleFunc("/api/clusters", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/clusters", wrapAgent(func(w http.ResponseWriter, r *http.Request) {
 		handleClustersListAPI(w, r, cfg.Store)
-	})
-	mux.HandleFunc("/api/clusters/", func(w http.ResponseWriter, r *http.Request) {
+	}))
+	mux.HandleFunc("/api/clusters/", wrapAgent(func(w http.ResponseWriter, r *http.Request) {
 		handleClusterDetailAPI(w, r, cfg.Store)
-	})
+	}))
 
 	// Stats endpoint — DB health numbers for the banner
-	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/stats", wrapAgent(func(w http.ResponseWriter, r *http.Request) {
 		handleStatsAPI(w, r, cfg.Store)
-	})
+	}))
 
 	// Impact endpoint — grouped blast-radius view for a subject.
-	mux.HandleFunc("/api/impact", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/impact", wrapAgent(func(w http.ResponseWriter, r *http.Request) {
 		handleImpactAPI(w, r, cfg.Store)
-	})
+	}))
 
 	// Timeline endpoint — temporal evolution for a subject.
-	mux.HandleFunc("/api/timeline", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/timeline", wrapAgent(func(w http.ResponseWriter, r *http.Request) {
 		handleTimelineAPI(w, r, cfg.Store)
-	})
+	}))
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	fmt.Printf("🧠 Cortex graph visualizer: http://localhost%s\n", addr)

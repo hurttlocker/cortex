@@ -28,6 +28,9 @@ type SyncOptions struct {
 	// LLM optionally specifies an LLM provider/model for extraction (e.g., "ollama/llama3").
 	// If empty, only rule-based extraction runs.
 	LLM string
+
+	// AgentID tags all imported memories/facts with this agent identity.
+	AgentID string
 }
 
 // SyncEngine orchestrates connector syncs through the standard Cortex ingest pipeline.
@@ -129,7 +132,12 @@ func (se *SyncEngine) SyncOne(ctx context.Context, c *Connector, opts ...SyncOpt
 
 	// Import each record through the standard pipeline
 	var importedMemoryIDs []int64
-	for _, rec := range records {
+	for i := range records {
+		// Tag records with agent identity from sync options
+		if opt.AgentID != "" && records[i].AgentID == "" {
+			records[i].AgentID = opt.AgentID
+		}
+		rec := records[i]
 		memID, imported, err := se.importRecord(ctx, c.Provider, rec)
 		if err != nil {
 			if se.verbose {
@@ -222,6 +230,9 @@ func (se *SyncEngine) importRecord(ctx context.Context, provider string, rec Rec
 		ContentHash:   hash,
 		Project:       rec.Project,
 		MemoryClass:   rec.MemoryClass,
+	}
+	if rec.AgentID != "" {
+		mem.Metadata = &store.Metadata{AgentID: rec.AgentID}
 	}
 
 	id, err := se.memStore.AddMemory(ctx, mem)

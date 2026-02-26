@@ -33,6 +33,7 @@ type ServerConfig struct {
 	DBPath   string
 	Version  string         // version string for MCP server info
 	Embedder embed.Embedder // optional, for semantic/hybrid search
+	AgentID  string         // if set, all operations are scoped to this agent
 }
 
 // dbMu serializes all MCP tool calls that touch the database.
@@ -67,11 +68,14 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	}
 	observeEngine := observe.NewEngine(cfg.Store, dbPath)
 
+	// Server-level agent scope (if set, all tools default to this agent)
+	defaultAgent := cfg.AgentID
+
 	// Register tools
-	registerSearchTool(s, searchEngine)
-	registerImportTool(s, cfg.Store)
+	registerSearchTool(s, searchEngine, defaultAgent)
+	registerImportTool(s, cfg.Store, defaultAgent)
 	registerStatsTool(s, observeEngine)
-	registerFactsTool(s, cfg.Store)
+	registerFactsTool(s, cfg.Store, defaultAgent)
 	registerStaleTool(s, observeEngine)
 	registerReinforceTool(s, cfg.Store)
 	registerReasonTool(s, searchEngine, cfg.Store)
@@ -102,7 +106,7 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 
 // --- Tools ---
 
-func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
+func registerSearchTool(s *server.MCPServer, engine *search.Engine, defaultAgent string) {
 	tool := mcp.NewTool("cortex_search",
 		mcp.WithDescription("Search Cortex memory using BM25 keyword, semantic, hybrid, or RRF search. Returns scored results with source provenance. Optionally scope by project."),
 		mcp.WithReadOnlyHintAnnotation(true),
@@ -165,6 +169,9 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 		if agentID, err := req.RequireString("agent_id"); err == nil && agentID != "" {
 			opts.Agent = agentID
 			opts.BoostAgent = agentID
+		} else if defaultAgent != "" {
+			opts.Agent = defaultAgent
+			opts.BoostAgent = defaultAgent
 		}
 
 		if source, err := req.RequireString("source"); err == nil && source != "" {
@@ -181,7 +188,7 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine) {
 	})
 }
 
-func registerImportTool(s *server.MCPServer, st store.Store) {
+func registerImportTool(s *server.MCPServer, st store.Store, defaultAgent string) {
 	tool := mcp.NewTool("cortex_import",
 		mcp.WithDescription("Import a new memory into Cortex. Large content is automatically chunked (max 1500 chars per chunk). Optionally extracts facts using rule-based extraction."),
 		mcp.WithReadOnlyHintAnnotation(false),
@@ -240,7 +247,7 @@ func registerImportTool(s *server.MCPServer, st store.Store) {
 			project = p
 		}
 
-		agentID := ""
+		agentID := defaultAgent
 		if a, err := req.RequireString("agent_id"); err == nil && a != "" {
 			agentID = a
 		}
@@ -315,7 +322,7 @@ func registerStatsTool(s *server.MCPServer, engine *observe.Engine) {
 	})
 }
 
-func registerFactsTool(s *server.MCPServer, st store.Store) {
+func registerFactsTool(s *server.MCPServer, st store.Store, defaultAgent string) {
 	tool := mcp.NewTool("cortex_facts",
 		mcp.WithDescription("Query extracted facts from Cortex memory. Facts are subject-predicate-object triples with confidence scores and provenance."),
 		mcp.WithReadOnlyHintAnnotation(true),
@@ -356,6 +363,8 @@ func registerFactsTool(s *server.MCPServer, st store.Store) {
 
 		if agentID, err := req.RequireString("agent_id"); err == nil && agentID != "" {
 			opts.Agent = agentID
+		} else if defaultAgent != "" {
+			opts.Agent = defaultAgent
 		}
 
 		facts, err := st.ListFacts(ctx, opts)

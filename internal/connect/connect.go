@@ -65,6 +65,9 @@ type Record struct {
 
 	// ProviderMeta holds provider-specific metadata as JSON.
 	ProviderMeta json.RawMessage
+
+	// AgentID tags the imported memory with an agent identity.
+	AgentID string
 }
 
 // Connector represents a configured and registered connector instance.

@@ -1439,3 +1439,91 @@ func TestGetConfidenceDistribution(t *testing.T) {
 		t.Errorf("expected 2 high confidence facts, got %d", dist.High)
 	}
 }
+
+func TestAgentIsolation_FactsFilterByAgent(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	// Import two memories — one for agent "mister", one for "hawk"
+	misterMemID, err := s.AddMemory(ctx, &Memory{
+		Content:    "Mister's trading decisions for QQQ",
+		SourceFile: "test.md",
+		Metadata:   &Metadata{AgentID: "mister"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hawkMemID, err := s.AddMemory(ctx, &Memory{
+		Content:    "Hawk's QA findings for Spear",
+		SourceFile: "test.md",
+		Metadata:   &Metadata{AgentID: "hawk"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add facts for each agent
+	_, err = s.AddFact(ctx, &Fact{
+		MemoryID:   misterMemID,
+		Subject:    "QQQ",
+		Predicate:  "bias",
+		Object:     "bullish",
+		FactType:   "decision",
+		Confidence: 0.9,
+		AgentID:    "mister",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.AddFact(ctx, &Fact{
+		MemoryID:   hawkMemID,
+		Subject:    "Spear",
+		Predicate:  "status",
+		Object:     "bug found in login flow",
+		FactType:   "state",
+		Confidence: 0.8,
+		AgentID:    "hawk",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Query facts for "mister" — should NOT see hawk's facts
+	misterFacts, err := s.ListFacts(ctx, ListOpts{Agent: "mister", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range misterFacts {
+		if f.AgentID == "hawk" {
+			t.Errorf("agent isolation violated: mister query returned hawk's fact #%d", f.ID)
+		}
+	}
+	if len(misterFacts) == 0 {
+		t.Error("expected at least 1 mister fact, got 0")
+	}
+
+	// Query facts for "hawk" — should NOT see mister's facts
+	hawkFacts, err := s.ListFacts(ctx, ListOpts{Agent: "hawk", Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range hawkFacts {
+		if f.AgentID == "mister" {
+			t.Errorf("agent isolation violated: hawk query returned mister's fact #%d", f.ID)
+		}
+	}
+	if len(hawkFacts) == 0 {
+		t.Error("expected at least 1 hawk fact, got 0")
+	}
+
+	// Query ALL facts (no agent filter) — should see both
+	allFacts, err := s.ListFacts(ctx, ListOpts{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allFacts) < 2 {
+		t.Errorf("expected at least 2 total facts, got %d", len(allFacts))
+	}
+}

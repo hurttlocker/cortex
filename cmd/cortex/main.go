@@ -1576,9 +1576,15 @@ func runClassify(args []string) error {
 	limit := 0
 	dryRun := false
 	jsonOutput := false
+	agentFlag := ""
 
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentFlag = args[i]
+		case strings.HasPrefix(args[i], "--agent="):
+			agentFlag = strings.TrimPrefix(args[i], "--agent=")
 		case args[i] == "--llm" && i+1 < len(args):
 			i++
 			llmFlag = args[i]
@@ -1645,6 +1651,7 @@ func runClassify(args []string) error {
 	facts, err := s.ListFacts(ctx, store.ListOpts{
 		FactType: "kv",
 		Limit:    listLimit,
+		Agent:    agentFlag,
 	})
 	if err != nil {
 		return fmt.Errorf("listing facts: %w", err)
@@ -2974,15 +2981,22 @@ func runGraph(args []string) error {
 }
 
 func runGraphServe(args []string) error {
+	agentFilter := ""
 	port := 8090
 	for i := 0; i < len(args); i++ {
-		if (args[i] == "--port" || args[i] == "-p") && i+1 < len(args) {
+		switch {
+		case (args[i] == "--port" || args[i] == "-p") && i+1 < len(args):
 			i++
 			p, err := strconv.Atoi(args[i])
 			if err != nil {
 				return fmt.Errorf("invalid --port: %s", args[i])
 			}
 			port = p
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentFilter = args[i]
+		case strings.HasPrefix(args[i], "--agent="):
+			agentFilter = strings.TrimPrefix(args[i], "--agent=")
 		}
 	}
 
@@ -2998,8 +3012,9 @@ func runGraphServe(args []string) error {
 	}
 
 	return graph.Serve(graph.ServerConfig{
-		Store: sqlStore,
-		Port:  port,
+		Store:       sqlStore,
+		Port:        port,
+		AgentFilter: agentFilter,
 	})
 }
 
@@ -3736,17 +3751,23 @@ Notes:
 func runCleanup(args []string) error {
 	dryRun := false
 	purgeNoise := false
-	for _, arg := range args {
-		switch arg {
-		case "--dry-run", "-n":
+	agentFlag := ""
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--dry-run" || args[i] == "-n":
 			dryRun = true
-		case "--purge-noise":
+		case args[i] == "--purge-noise":
 			purgeNoise = true
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentFlag = args[i]
+		case strings.HasPrefix(args[i], "--agent="):
+			agentFlag = strings.TrimPrefix(args[i], "--agent=")
 		default:
-			if strings.HasPrefix(arg, "-") {
-				return fmt.Errorf("unknown flag: %s\nUsage: cortex cleanup [--dry-run] [--purge-noise]", arg)
+			if strings.HasPrefix(args[i], "-") {
+				return fmt.Errorf("unknown flag: %s\nUsage: cortex cleanup [--dry-run] [--purge-noise] [--agent <id>]", args[i])
 			}
-			return fmt.Errorf("unexpected argument: %s", arg)
+			return fmt.Errorf("unexpected argument: %s", args[i])
 		}
 	}
 
@@ -3764,12 +3785,26 @@ func runCleanup(args []string) error {
 		return fmt.Errorf("cleanup requires SQLiteStore backend")
 	}
 
+	// Build agent-scoped SQL fragments
+	memAgentWhere := ""
+	factAgentWhere := ""
+	var memAgentArgs, factAgentArgs []interface{}
+	if agentFlag != "" {
+		// Memories store agent in JSON metadata; facts have agent_id column
+		memAgentWhere = ` AND json_extract(metadata, '$.agent_id') = ?`
+		memAgentArgs = append(memAgentArgs, agentFlag)
+		factAgentWhere = ` AND agent_id = ?`
+		factAgentArgs = append(factAgentArgs, agentFlag)
+	}
+	_ = memAgentArgs // used below in queries
+	_ = factAgentArgs
+
 	if dryRun && !purgeNoise {
 		// Count what would be cleaned without deleting (#57)
 		var shortCount, numericCount, factsCount int
-		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories WHERE LENGTH(content) < 20 AND deleted_at IS NULL`).Scan(&shortCount)
-		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories WHERE content GLOB '[0-9]*' AND content NOT GLOB '*[^0-9]*' AND deleted_at IS NULL`).Scan(&numericCount)
-		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM facts WHERE subject IS NULL OR subject = ''`).Scan(&factsCount)
+		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories WHERE LENGTH(content) < 20 AND deleted_at IS NULL`+memAgentWhere, memAgentArgs...).Scan(&shortCount)
+		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories WHERE content GLOB '[0-9]*' AND content NOT GLOB '*[^0-9]*' AND deleted_at IS NULL`+memAgentWhere, memAgentArgs...).Scan(&numericCount)
+		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM facts WHERE (subject IS NULL OR subject = '')`+factAgentWhere, factAgentArgs...).Scan(&factsCount)
 
 		fmt.Printf("Cleanup dry run (no changes made):\n")
 		fmt.Printf("  Short memories to delete:   %d\n", shortCount)
@@ -3781,21 +3816,21 @@ func runCleanup(args []string) error {
 	// Base cleanup (skip in dry-run + purge-noise mode)
 	if !dryRun {
 		// 1. Delete short memories (likely garbage chunks).
-		res, err := ss.ExecContext(ctx, `DELETE FROM memories WHERE LENGTH(content) < 20`)
+		res, err := ss.ExecContext(ctx, `DELETE FROM memories WHERE LENGTH(content) < 20`+memAgentWhere, memAgentArgs...)
 		if err != nil {
 			return fmt.Errorf("deleting short memories: %w", err)
 		}
 		shortDeleted, _ := res.RowsAffected()
 
 		// 2. Delete purely numeric memories.
-		res, err = ss.ExecContext(ctx, `DELETE FROM memories WHERE content GLOB '[0-9]*' AND content NOT GLOB '*[^0-9]*'`)
+		res, err = ss.ExecContext(ctx, `DELETE FROM memories WHERE content GLOB '[0-9]*' AND content NOT GLOB '*[^0-9]*'`+memAgentWhere, memAgentArgs...)
 		if err != nil {
 			return fmt.Errorf("deleting numeric memories: %w", err)
 		}
 		numericDeleted, _ := res.RowsAffected()
 
 		// 3. Delete headless facts (subject is null or empty).
-		res, err = ss.ExecContext(ctx, `DELETE FROM facts WHERE subject IS NULL OR subject = ''`)
+		res, err = ss.ExecContext(ctx, `DELETE FROM facts WHERE (subject IS NULL OR subject = '')`+factAgentWhere, factAgentArgs...)
 		if err != nil {
 			return fmt.Errorf("deleting headless facts: %w", err)
 		}
@@ -4099,6 +4134,7 @@ func purgeExcessFacts(ctx context.Context, ss *store.SQLiteStore, maxPerMemory i
 func runMCP(args []string) error {
 	var port int
 	var embedModel string
+	var agentID string
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -4115,6 +4151,11 @@ func runMCP(args []string) error {
 				return fmt.Errorf("invalid port: %s", strings.TrimPrefix(args[i], "--port="))
 			}
 			port = p
+		case args[i] == "--agent" && i+1 < len(args):
+			agentID = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--agent="):
+			agentID = strings.TrimPrefix(args[i], "--agent=")
 		case args[i] == "--embed" && i+1 < len(args):
 			embedModel = args[i+1]
 			i++
@@ -4130,6 +4171,7 @@ Usage:
 Flags:
   --port <N>                         HTTP+SSE port (default: stdio)
   --embed <provider/model>           Enable semantic/hybrid/rrf search
+  --agent <id>                       Scope all operations to this agent
   -h, --help                         Show this help
 
 Tools exposed:
@@ -4160,6 +4202,7 @@ Resources:
 		Store:   s,
 		DBPath:  getDBPath(),
 		Version: version,
+		AgentID: agentID,
 	}
 
 	// Wire up embedder if requested
@@ -6787,6 +6830,7 @@ func runConnectSync(args []string) error {
 	noEnrich := fs.Bool("no-enrich", false, "Skip LLM enrichment (rule-only extraction)")
 	noInfer := fs.Bool("no-infer", false, "Skip edge inference after extraction")
 	llmFlag := fs.String("llm", "", "LLM provider/model for extraction (e.g., ollama/llama3)")
+	agentFlag := fs.String("agent", "", "Tag imported records with agent identity")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -6825,6 +6869,7 @@ func runConnectSync(args []string) error {
 		Enrich:  enrichEffective,
 		NoInfer: *noInfer,
 		LLM:     *llmFlag,
+		AgentID: *agentFlag,
 	}
 
 	ctx := context.Background()
