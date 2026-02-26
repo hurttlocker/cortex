@@ -83,7 +83,7 @@ type graphNodeView struct {
 
 func registerGraphExploreTool(s *server.MCPServer, st store.Store) {
 	tool := mcp.NewTool("graph_explore",
-		mcp.WithDescription("Explore the knowledge graph around a starting subject or fact_id. Returns connected facts and edges within the requested depth."),
+		mcp.WithDescription("Explore the knowledge graph around a topic. Pass a subject name (e.g., 'Q', 'Spear', 'trading') or fact_id to see all related facts and connections within N hops. Use when you want to understand everything known about a topic and its relationships. Returns facts, edges, and connection paths. For free-text queries, use cortex_search instead."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("subject",
@@ -178,7 +178,7 @@ func registerGraphExploreTool(s *server.MCPServer, st store.Store) {
 
 func registerGraphImpactTool(s *server.MCPServer, st store.Store) {
 	tool := mcp.NewTool("graph_impact",
-		mcp.WithDescription("Analyze blast radius for a subject. Returns grouped related facts with confidence statistics."),
+		mcp.WithDescription("Analyze what would be affected if knowledge about a subject changed. Returns all connected facts grouped by relationship type with confidence statistics. Use for impact analysis before updating or deleting facts about an entity. NOT for general exploration (use cortex_graph_explore)."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("subject", mcp.Required(),
@@ -241,7 +241,7 @@ func registerGraphImpactTool(s *server.MCPServer, st store.Store) {
 
 func registerListClustersTool(s *server.MCPServer, st store.Store) {
 	tool := mcp.NewTool("list_clusters",
-		mcp.WithDescription("List topic clusters with cohesion scores and fact counts when clustering is available."),
+		mcp.WithDescription("List detected topic clusters — groups of closely related facts that form natural knowledge domains. Returns cluster names, fact counts, and cohesion scores. Use to understand the high-level structure of stored knowledge and find related topics."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithNumber("limit",

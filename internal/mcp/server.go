@@ -108,7 +108,7 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 
 func registerSearchTool(s *server.MCPServer, engine *search.Engine, defaultAgent string) {
 	tool := mcp.NewTool("cortex_search",
-		mcp.WithDescription("Search Cortex memory using BM25 keyword, semantic, hybrid, or RRF search. Returns scored results with source provenance. Optionally scope by project."),
+		mcp.WithDescription("Search your memory for information. Use when you need to recall past decisions, facts, preferences, or context. Returns ranked results with confidence scores and source provenance. Default mode is hybrid (keyword + semantic); use 'bm25' for exact keyword matching. NOT for exploring relationships between topics (use cortex_graph_explore) or synthesizing answers (use cortex_reason)."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("query",
@@ -190,7 +190,7 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine, defaultAgent
 
 func registerImportTool(s *server.MCPServer, st store.Store, defaultAgent string) {
 	tool := mcp.NewTool("cortex_import",
-		mcp.WithDescription("Import a new memory into Cortex. Large content is automatically chunked (max 1500 chars per chunk). Optionally extracts facts using rule-based extraction."),
+		mcp.WithDescription("Save new information to memory. Use when the user shares important facts, decisions, preferences, or context worth remembering. Content is chunked automatically. Set extract=true to pull out structured facts (people, dates, configs, decisions). Returns the IDs of created memories."),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("content",
@@ -303,7 +303,7 @@ func registerImportTool(s *server.MCPServer, st store.Store, defaultAgent string
 
 func registerStatsTool(s *server.MCPServer, engine *observe.Engine) {
 	tool := mcp.NewTool("cortex_stats",
-		mcp.WithDescription("Get comprehensive Cortex memory statistics: total memories, facts, sources, storage size, confidence distribution, and freshness."),
+		mcp.WithDescription("Get memory health overview: total memories, facts, sources, storage size, confidence distribution, and freshness breakdown. Use to understand what the agent knows and how fresh the knowledge is. Returns JSON with counts and breakdowns."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 	)
@@ -324,7 +324,7 @@ func registerStatsTool(s *server.MCPServer, engine *observe.Engine) {
 
 func registerFactsTool(s *server.MCPServer, st store.Store, defaultAgent string) {
 	tool := mcp.NewTool("cortex_facts",
-		mcp.WithDescription("Query extracted facts from Cortex memory. Facts are subject-predicate-object triples with confidence scores and provenance."),
+		mcp.WithDescription("List structured facts extracted from memories. Facts are subject-predicate-object triples (e.g., 'Q → lives in → Philadelphia'). Filter by subject name or fact type. Use when you need specific factual data rather than full-text search results. NOT for free-text queries (use cortex_search)."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("subject",
@@ -396,7 +396,7 @@ func registerFactsTool(s *server.MCPServer, st store.Store, defaultAgent string)
 
 func registerStaleTool(s *server.MCPServer, engine *observe.Engine) {
 	tool := mcp.NewTool("cortex_stale",
-		mcp.WithDescription("Find stale facts — facts whose confidence has decayed below threshold due to not being reinforced. Uses Ebbinghaus exponential decay."),
+		mcp.WithDescription("Find facts that are fading from memory due to time-based confidence decay. Facts not reinforced within the threshold period are returned. Use to identify knowledge that may be outdated or needs verification. Pair with cortex_reinforce to keep important facts fresh."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithNumber("max_confidence",
@@ -446,7 +446,7 @@ func registerStaleTool(s *server.MCPServer, engine *observe.Engine) {
 
 func registerReinforceTool(s *server.MCPServer, st store.Store) {
 	tool := mcp.NewTool("cortex_reinforce",
-		mcp.WithDescription("Reinforce one or more facts by ID, resetting their Ebbinghaus decay timer. Use after cortex_stale to keep important facts fresh."),
+		mcp.WithDescription("Reset the decay timer on important facts to keep them fresh. Pass fact IDs (from cortex_stale or cortex_facts) as comma-separated values. Use when a fact has been confirmed as still accurate and relevant. Returns count of reinforced facts."),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("fact_ids",
@@ -506,7 +506,7 @@ func registerReinforceTool(s *server.MCPServer, st store.Store) {
 
 func registerReasonTool(s *server.MCPServer, searchEngine *search.Engine, st store.Store) {
 	tool := mcp.NewTool("cortex_reason",
-		mcp.WithDescription("Run LLM-powered reasoning over Cortex memories. Searches for context, builds a confidence-aware prompt, and sends to an LLM for analysis. Requires OPENROUTER_API_KEY env var for cloud models."),
+		mcp.WithDescription("Synthesize an answer by reasoning over multiple memories. Searches for relevant context, weighs by confidence, and produces a narrative answer. Use for complex questions that need multiple facts combined, not simple lookups (use cortex_search for those). Requires an LLM API key. Returns a reasoned analysis with citations."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("query",
@@ -607,7 +607,7 @@ func registerReasonTool(s *server.MCPServer, searchEngine *search.Engine, st sto
 
 func registerEdgeAddTool(s *server.MCPServer, st store.Store) {
 	tool := mcp.NewTool("cortex_edge_add",
-		mcp.WithDescription("Create a typed relationship between two facts (supports, contradicts, relates_to, supersedes, derived_from)."),
+		mcp.WithDescription("Create an explicit relationship edge between two facts in the knowledge graph. Edge types: supports, contradicts, relates_to, supersedes, derived_from. Use when you discover a connection between existing facts. Returns the created edge ID."),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithNumber("source_fact_id", mcp.Required(),
@@ -685,7 +685,7 @@ func registerEdgeAddTool(s *server.MCPServer, st store.Store) {
 
 func registerGraphTool(s *server.MCPServer, st store.Store) {
 	tool := mcp.NewTool("cortex_graph",
-		mcp.WithDescription("Traverse the knowledge graph from a starting fact, following typed edges up to N hops deep."),
+		mcp.WithDescription("Traverse the knowledge graph from a starting fact ID, following typed edges (supports, contradicts, relates_to, etc.) up to N hops deep. Returns connected facts with edge metadata. Use for understanding how a specific fact connects to other knowledge. NOT for exploring by topic name (use cortex_graph_explore)."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithNumber("fact_id", mcp.Required(),
@@ -777,7 +777,7 @@ type GraphExportResult struct {
 
 func registerGraphExportTool(s *server.MCPServer, st store.Store) {
 	tool := mcp.NewTool("cortex_graph_export",
-		mcp.WithDescription("Export a subgraph in visualization-ready JSON format. Returns nodes (facts), edges, and co-occurrence data. Use for building graph visualizations."),
+		mcp.WithDescription("Export a subgraph as structured JSON with nodes, edges, and co-occurrence data. Use for building visualizations or analyzing graph structure programmatically. Start from a fact_id and expand to the requested depth. NOT for browsing — use cortex_graph_explore for interactive exploration."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithNumber("fact_id", mcp.Required(),
@@ -1166,7 +1166,7 @@ func contains(s, substr string) bool {
 
 func registerConnectListTool(s *server.MCPServer, connStore *connect.ConnectorStore) {
 	tool := mcp.NewTool("cortex_connect_list",
-		mcp.WithDescription("List configured connectors and their sync status."),
+		mcp.WithDescription("List all configured external source connectors (GitHub, Gmail, Slack, etc.) with their sync status, last sync time, and record counts. Use to check what data sources are connected and whether syncs are healthy."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithBoolean("enabled_only",
@@ -1223,7 +1223,7 @@ func registerConnectAddTool(s *server.MCPServer, connStore *connect.ConnectorSto
 	providerNames := connect.DefaultRegistry.List()
 
 	tool := mcp.NewTool("cortex_connect_add",
-		mcp.WithDescription(fmt.Sprintf("Add a new connector. Available providers: %s. Pass provider-specific config as JSON.", strings.Join(providerNames, ", "))),
+		mcp.WithDescription(fmt.Sprintf("Add a new external data source connector. Available providers: %s. Pass provider-specific config as JSON (tokens, repos, channels, etc.). After adding, use cortex_connect_sync to fetch data.", strings.Join(providerNames, ", "))),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("provider", mcp.Required(),
@@ -1278,7 +1278,7 @@ func registerConnectAddTool(s *server.MCPServer, connStore *connect.ConnectorSto
 
 func registerConnectSyncTool(s *server.MCPServer, connStore *connect.ConnectorStore, memStore store.Store) {
 	tool := mcp.NewTool("cortex_connect_sync",
-		mcp.WithDescription("Sync a connector (or all connectors if no provider specified). Fetches new data from the source and imports into Cortex. Use extract=true to run fact extraction and edge inference on imported records."),
+		mcp.WithDescription("Fetch new data from an external source and import into memory. Specify a provider name to sync one connector, or omit to sync all. Set extract=true to automatically extract facts from imported records. Returns count of new records imported."),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("provider",
@@ -1338,7 +1338,7 @@ func registerConnectSyncTool(s *server.MCPServer, connStore *connect.ConnectorSt
 
 func registerConnectStatusTool(s *server.MCPServer, connStore *connect.ConnectorStore) {
 	tool := mcp.NewTool("cortex_connect_status",
-		mcp.WithDescription("Get detailed status of a specific connector, including config (redacted), sync history, and error state."),
+		mcp.WithDescription("Get detailed health status for a specific connector: config (tokens redacted), last sync time, sync history, error state, and record counts. Use to diagnose sync failures or check connector configuration."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithString("provider", mcp.Required(),
