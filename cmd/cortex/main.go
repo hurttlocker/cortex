@@ -4176,16 +4176,30 @@ Flags:
   --agent <id>                       Scope all operations to this agent
   -h, --help                         Show this help
 
-Tools exposed:
-  cortex_search    Search across memories (bm25, semantic, hybrid, rrf)
-  cortex_import    Add new memories from text
-  cortex_stats     Get memory statistics
-  cortex_facts     Query extracted facts
-  cortex_stale     Get stale facts
+Tools (17):
+  cortex_search         Search memories (bm25, semantic, hybrid, rrf)
+  cortex_import         Save new memories (with optional fact extraction)
+  cortex_stats          Memory health overview
+  cortex_facts          Query structured facts by subject or type
+  cortex_stale          Find fading facts (confidence decay)
+  cortex_reinforce      Reset decay timer on important facts
+  cortex_reason         Synthesize answers from multiple memories (LLM)
+  cortex_edge_add       Create relationship edges between facts
+  cortex_graph          Traverse knowledge graph from a fact ID
+  cortex_graph_export   Export subgraph as structured JSON
+  cortex_graph_explore  Explore graph around a topic/subject
+  cortex_graph_impact   Analyze blast radius for a subject
+  cortex_clusters       List detected topic clusters
+  cortex_connect_list   List configured connectors
+  cortex_connect_add    Add a new external source connector
+  cortex_connect_sync   Sync data from external sources
+  cortex_connect_status Detailed connector health
 
-Resources:
-  cortex://stats   Memory statistics
-  cortex://recent  Recently imported memories`)
+Resources (4):
+  cortex://stats             Memory statistics
+  cortex://recent            Recently imported memories
+  cortex://graph/subjects    All known graph subjects
+  cortex://graph/clusters    Detected fact clusters`)
 			return nil
 		default:
 			return fmt.Errorf("unknown argument: %s", args[i])

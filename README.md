@@ -63,7 +63,7 @@ cortex search "what did I decide about the API design"
 claude mcp add cortex -- cortex mcp
 ```
 
-That's it. Your agent now has persistent memory with 19 MCP tools.
+That's it. Your agent now has persistent memory with 17 MCP tools.
 
 ### Next steps
 
@@ -107,7 +107,7 @@ Your files ──→ Import ──→ Fact extraction ──→ SQLite + FTS5
                               ┌─────────┬──────────┼──────────┐
                               ▼         ▼          ▼          ▼
                            Search    Observe    Graph      MCP Server
-                          (hybrid)  (stats,    (2D         (19 tools,
+                          (hybrid)  (stats,    (2D         (17 tools,
                                     stale,     explorer)    any agent)
                                     conflicts)
 ```
