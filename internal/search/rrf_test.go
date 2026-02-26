@@ -267,9 +267,10 @@ func TestSearchModeRRF_FallbackWithoutEmbedder(t *testing.T) {
 	if len(results) == 0 {
 		t.Fatal("expected at least one fallback result in rrf mode")
 	}
+	// When embedder is nil, RRF gracefully degrades to BM25 keyword search
 	for _, r := range results {
-		if r.MatchType != "rrf" {
-			t.Fatalf("expected match_type rrf in fallback path, got %q", r.MatchType)
+		if r.MatchType != "bm25" {
+			t.Fatalf("expected match_type bm25 in nil-embedder fallback, got %q", r.MatchType)
 		}
 	}
 }

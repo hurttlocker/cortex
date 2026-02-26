@@ -1622,7 +1622,10 @@ func (e *Engine) searchSemanticHNSW(ctx context.Context, queryVec []float32, opt
 // to give the fusion algorithm more signal to work with.
 func (e *Engine) searchHybrid(ctx context.Context, query string, opts Options) ([]Result, error) {
 	if e.embedder == nil {
-		return nil, fmt.Errorf("semantic search requires an embedder. Use --embed <provider/model> flag")
+		// Graceful degradation: fall back to BM25 when no embedder is configured.
+		fmt.Fprintf(os.Stderr, "Note: hybrid mode requires an embedder; falling back to BM25 keyword search.\n")
+		fmt.Fprintf(os.Stderr, "  Use --embed <provider/model> for hybrid results.\n")
+		return e.searchBM25(ctx, query, opts)
 	}
 
 	// Fetch more candidates than requested so fusion has a wider pool.
@@ -1682,6 +1685,13 @@ func (e *Engine) searchHybrid(ctx context.Context, query string, opts Options) (
 // searchRRF performs both BM25 and semantic search, merging results with
 // Reciprocal Rank Fusion (RRF).
 func (e *Engine) searchRRF(ctx context.Context, query string, opts Options) ([]Result, error) {
+	if e.embedder == nil {
+		// Graceful degradation: fall back to BM25 when no embedder is configured.
+		fmt.Fprintf(os.Stderr, "Note: RRF mode requires an embedder; falling back to BM25 keyword search.\n")
+		fmt.Fprintf(os.Stderr, "  Use --embed <provider/model> for RRF results.\n")
+		return e.searchBM25(ctx, query, opts)
+	}
+
 	candidateOpts := opts
 	candidateOpts.Limit = opts.Limit * 3
 	if candidateOpts.Limit < 15 {

@@ -167,6 +167,8 @@ func remediationHint(err error) string {
 		strings.Contains(msg, "database disk image is malformed"),
 		strings.Contains(msg, "no such table"):
 		return "Database appears corrupted or stale. Restore from backup or run `cortex reimport <path>`."
+	case strings.Contains(msg, "no such file or directory"):
+		return "The file or database does not exist. Run `cortex import <path>` first to create the database."
 	case strings.Contains(msg, "opening store"),
 		strings.Contains(msg, "unable to open database file"),
 		strings.Contains(msg, "not a directory"):
@@ -177,6 +179,8 @@ func remediationHint(err error) string {
 		return fmt.Sprintf("Verify the DB path is valid and writable: %s", dbPath)
 	case strings.Contains(msg, "permission denied"):
 		return "Check file permissions for the database path and source files, then retry."
+	case strings.Contains(msg, "read-only"):
+		return "Database is in read-only mode. Remove --read-only flag for write operations."
 	default:
 		return ""
 	}
@@ -5140,6 +5144,7 @@ func outputTTY(query string, results []search.Result) error {
 func outputTTYSearch(query string, results []search.Result, showMetadata bool, explain bool, mode search.Mode) error {
 	if len(results) == 0 {
 		fmt.Printf("No results for %q\n", query)
+		fmt.Println("  Try different keywords, or check `cortex stats` to verify your database has memories.")
 		return nil
 	}
 

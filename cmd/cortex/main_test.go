@@ -1278,6 +1278,30 @@ func TestRemediationHint_UnknownErrorReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestRemediationHint_NoSuchFileOrDirectory(t *testing.T) {
+	got := remediationHint(errors.New("opening store: no such file or directory"))
+	if !strings.Contains(got, "does not exist") {
+		t.Fatalf("expected 'does not exist' hint, got: %q", got)
+	}
+	if !strings.Contains(got, "cortex import") {
+		t.Fatalf("expected import suggestion, got: %q", got)
+	}
+}
+
+func TestRemediationHint_ReadOnly(t *testing.T) {
+	got := remediationHint(errors.New("database is read-only"))
+	if !strings.Contains(got, "read-only") {
+		t.Fatalf("expected read-only hint, got: %q", got)
+	}
+}
+
+func TestRemediationHint_Nil(t *testing.T) {
+	got := remediationHint(nil)
+	if got != "" {
+		t.Fatalf("expected empty hint for nil error, got: %q", got)
+	}
+}
+
 // ==================== main exit codes ====================
 
 func TestMain_ExitCodeUnknownCommand(t *testing.T) {
