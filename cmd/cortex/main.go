@@ -549,7 +549,7 @@ func runImport(args []string) error {
 			}
 			// Pre-check: can we create the provider?
 			if _, err := tryCreateProvider(enrichLLM); err != nil {
-				fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key). Pass --no-enrich to silence this.\n")
+				fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key configured). Rule-based extraction will still run.\n")
 				llmAvailable = false
 			} else {
 				fmt.Println("\nRunning LLM enrichment...")
@@ -1054,11 +1054,17 @@ func runStale(args []string) error {
 			if err != nil {
 				return fmt.Errorf("invalid --days value: %s", args[i])
 			}
+			if days < 0 {
+				return fmt.Errorf("--days must be positive (got %d)", days)
+			}
 			opts.MaxDays = days
 		case strings.HasPrefix(args[i], "--days="):
 			days, err := strconv.Atoi(strings.TrimPrefix(args[i], "--days="))
 			if err != nil {
 				return fmt.Errorf("invalid --days value: %s", args[i])
+			}
+			if days < 0 {
+				return fmt.Errorf("--days must be positive (got %d)", days)
 			}
 			opts.MaxDays = days
 		case args[i] == "--min-confidence" && i+1 < len(args):
@@ -5191,6 +5197,18 @@ func outputJSON(results []search.Result) error {
 	if results == nil {
 		results = []search.Result{}
 	}
+	// Strip HTML highlight tags from FTS5 snippets for clean JSON output
+	for i := range results {
+		if results[i].Snippet != "" {
+			results[i].Snippet = strings.ReplaceAll(results[i].Snippet, "<b>", "")
+			results[i].Snippet = strings.ReplaceAll(results[i].Snippet, "</b>", "")
+		}
+	}
+	if len(results) == 0 {
+		fmt.Println("[]")
+		fmt.Fprintln(os.Stderr, "No results found. Try different keywords or check `cortex stats`.")
+		return nil
+	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(results)
@@ -5485,6 +5503,11 @@ func printGrowthBuckets(title string, buckets []observe.GrowthBucket) {
 
 // Stale facts output functions
 func outputStaleJSON(staleFacts []observe.StaleFact) error {
+	if len(staleFacts) == 0 {
+		fmt.Println("[]")
+		fmt.Fprintln(os.Stderr, "No stale facts found.")
+		return nil
+	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(staleFacts)
@@ -7734,6 +7757,7 @@ LLM:
   bench                 Benchmark LLM models for reasoning quality/speed
 
 Maintenance:
+  doctor                Health check (DB, embeddings, connectors, LLM keys)
   cleanup               Remove garbage memories and headless facts
   optimize              DB maintenance (integrity check, VACUUM, ANALYZE)
   embed <provider/model> Generate or refresh embeddings
