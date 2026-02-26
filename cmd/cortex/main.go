@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -52,150 +53,67 @@ func main() {
 
 	switch args[0] {
 	case "import":
-		if err := runImport(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runImport(args[1:]))
 	case "extract":
-		if err := runExtract(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runExtract(args[1:]))
 	case "classify":
-		if err := runClassify(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runClassify(args[1:]))
 	case "summarize":
-		if err := runSummarize(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runSummarize(args[1:]))
 	case "embed":
-		if err := runEmbed(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runEmbed(args[1:]))
 	case "index":
-		if err := runIndex(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runIndex(args[1:]))
 	case "search":
-		if err := runSearch(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runSearch(args[1:]))
 	case "stats":
-		if err := runStats(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runStats(args[1:]))
 	case "list":
-		if err := runList(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runList(args[1:]))
 	case "export":
-		if err := runExport(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runExport(args[1:]))
 	case "stale":
-		if err := runStale(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runStale(args[1:]))
 	case "conflicts":
-		if err := runConflicts(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runConflicts(args[1:]))
 	case "reinforce":
-		if err := runReinforce(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runReinforce(args[1:]))
 	case "supersede":
-		if err := runSupersede(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runSupersede(args[1:]))
 	case "fact-history":
-		if err := runFactHistory(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runFactHistory(args[1:]))
 	case "edge":
-		if err := runEdge(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runEdge(args[1:]))
 	case "graph":
-		if err := runGraph(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runGraph(args[1:]))
 	case "cluster":
-		if err := runCluster(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runCluster(args[1:]))
 	case "infer":
-		if err := runInfer(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runInfer(args[1:]))
 	case "update":
-		if err := runUpdate(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runUpdate(args[1:]))
 	case "reimport":
-		if err := runReimport(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runReimport(args[1:]))
 	case "cleanup":
-		if err := runCleanup(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runCleanup(args[1:]))
 	case "optimize":
-		if err := runOptimize(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runOptimize(args[1:]))
 	case "projects":
-		if err := runProjects(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runProjects(args[1:]))
+	case "agents":
+		exitWithError(runAgents(args[1:]))
 	case "tag":
-		if err := runTag(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runTag(args[1:]))
 	case "reason":
-		if err := runReason(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runReason(args[1:]))
 	case "bench":
-		if err := runBench(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runBench(args[1:]))
 	case "connect":
-		if err := runConnect(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runConnect(args[1:]))
+	case "doctor":
+		exitWithError(runDoctor(args[1:]))
 	case "mcp":
-		if err := runMCP(args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
+		exitWithError(runMCP(args[1:]))
 	case "version":
 		fmt.Printf("cortex %s\n", version)
 	case "--version", "-v":
@@ -204,8 +122,63 @@ func main() {
 		printUsage()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\n", args[0])
+		fmt.Fprintln(os.Stderr, "Run `cortex help` to see available commands.")
+		fmt.Fprintln(os.Stderr)
 		printUsage()
 		os.Exit(1)
+	}
+}
+
+func exitWithError(err error) {
+	if err == nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	if hint := remediationHint(err); hint != "" {
+		fmt.Fprintf(os.Stderr, "Hint: %s\n", hint)
+	}
+	os.Exit(1)
+}
+
+func remediationHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+
+	switch {
+	case strings.Contains(msg, "usage:"),
+		strings.Contains(msg, "unknown flag"),
+		strings.Contains(msg, "unknown argument"),
+		strings.Contains(msg, "unknown connect subcommand"),
+		strings.Contains(msg, "unknown edge subcommand"),
+		strings.Contains(msg, "unexpected argument"):
+		return "Run `cortex help` for command usage and examples."
+	case strings.Contains(msg, "openrouter_api_key"):
+		return "Set OPENROUTER_API_KEY, or disable LLM features for this command."
+	case strings.Contains(msg, "google_api_key"),
+		strings.Contains(msg, "gemini_api_key"):
+		return "Set GOOGLE_API_KEY (or GEMINI_API_KEY), or disable query expansion/LLM features."
+	case strings.Contains(msg, "openai_api_key"):
+		return "Set OPENAI_API_KEY before using OpenAI-backed features."
+	case strings.Contains(msg, "database is locked"):
+		return "Another process is using this DB. Close the other process, then retry."
+	case strings.Contains(msg, "file is not a database"),
+		strings.Contains(msg, "database disk image is malformed"),
+		strings.Contains(msg, "no such table"):
+		return "Database appears corrupted or stale. Restore from backup or run `cortex reimport <path>`."
+	case strings.Contains(msg, "opening store"),
+		strings.Contains(msg, "unable to open database file"),
+		strings.Contains(msg, "not a directory"):
+		dbPath := getDBPath()
+		if dbPath == "" {
+			return "Set --db <path> (or CORTEX_DB) to a writable SQLite file path."
+		}
+		return fmt.Sprintf("Verify the DB path is valid and writable: %s", dbPath)
+	case strings.Contains(msg, "permission denied"):
+		return "Check file permissions for the database path and source files, then retry."
+	default:
+		return ""
 	}
 }
 
@@ -6308,6 +6281,143 @@ func getConfigDir() string {
 	return home + "/.cortex"
 }
 
+type agentSummary struct {
+	AgentID         string `json:"agent_id"`
+	MemoryCount     int    `json:"memory_count"`
+	FactCount       int    `json:"fact_count"`
+	ActiveFactCount int    `json:"active_fact_count"`
+	LastSeen        string `json:"last_seen,omitempty"`
+}
+
+type agentsReport struct {
+	Agents      []agentSummary `json:"agents"`
+	TotalAgents int            `json:"total_agents"`
+}
+
+func runAgents(args []string) error {
+	jsonOutput := false
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		default:
+			return fmt.Errorf("unknown argument: %s\nUsage: cortex agents [--json]", arg)
+		}
+	}
+
+	cfg := getStoreConfig()
+	cfg.ReadOnly = true
+	s, err := store.NewStore(cfg)
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("agents requires SQLiteStore")
+	}
+
+	rows, err := sqlStore.QueryContext(context.Background(), `
+		WITH memory_agents AS (
+		  SELECT TRIM(COALESCE(json_extract(metadata, '$.agent_id'), '')) AS agent_id,
+		         COUNT(*) AS memory_count,
+		         MAX(updated_at) AS last_memory_at
+		  FROM memories
+		  WHERE deleted_at IS NULL
+		    AND TRIM(COALESCE(json_extract(metadata, '$.agent_id'), '')) != ''
+		  GROUP BY TRIM(COALESCE(json_extract(metadata, '$.agent_id'), ''))
+		),
+		fact_agents AS (
+		  SELECT TRIM(COALESCE(agent_id, '')) AS agent_id,
+		         COUNT(*) AS fact_count,
+		         SUM(CASE WHEN superseded_by IS NULL OR superseded_by = 0 THEN 1 ELSE 0 END) AS active_fact_count,
+		         MAX(created_at) AS last_fact_at
+		  FROM facts
+		  WHERE TRIM(COALESCE(agent_id, '')) != ''
+		  GROUP BY TRIM(COALESCE(agent_id, ''))
+		),
+		all_agents AS (
+		  SELECT agent_id FROM memory_agents
+		  UNION
+		  SELECT agent_id FROM fact_agents
+		)
+		SELECT a.agent_id,
+		       COALESCE(m.memory_count, 0) AS memory_count,
+		       COALESCE(f.fact_count, 0) AS fact_count,
+		       COALESCE(f.active_fact_count, 0) AS active_fact_count,
+		       CASE
+		         WHEN m.last_memory_at IS NULL THEN f.last_fact_at
+		         WHEN f.last_fact_at IS NULL THEN m.last_memory_at
+		         WHEN m.last_memory_at > f.last_fact_at THEN m.last_memory_at
+		         ELSE f.last_fact_at
+		       END AS last_seen
+		FROM all_agents a
+		LEFT JOIN memory_agents m ON m.agent_id = a.agent_id
+		LEFT JOIN fact_agents f ON f.agent_id = a.agent_id
+		ORDER BY (COALESCE(m.memory_count, 0) + COALESCE(f.fact_count, 0)) DESC, a.agent_id ASC`)
+	if err != nil {
+		return fmt.Errorf("listing agents: %w", err)
+	}
+	defer rows.Close()
+
+	agents := make([]agentSummary, 0, 16)
+	for rows.Next() {
+		var (
+			agentID         string
+			memoryCount     int
+			factCount       int
+			activeFactCount int
+			lastSeen        sql.NullString
+		)
+		if err := rows.Scan(&agentID, &memoryCount, &factCount, &activeFactCount, &lastSeen); err != nil {
+			return fmt.Errorf("scanning agent row: %w", err)
+		}
+
+		entry := agentSummary{
+			AgentID:         agentID,
+			MemoryCount:     memoryCount,
+			FactCount:       factCount,
+			ActiveFactCount: activeFactCount,
+		}
+		if lastSeen.Valid && strings.TrimSpace(lastSeen.String) != "" {
+			entry.LastSeen = lastSeen.String
+		}
+		agents = append(agents, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("reading agents: %w", err)
+	}
+
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(agentsReport{
+			Agents:      agents,
+			TotalAgents: len(agents),
+		})
+	}
+
+	if len(agents) == 0 {
+		fmt.Println("No agents found. Agent-specific data appears when using --agent or metadata.agent_id.")
+		return nil
+	}
+
+	fmt.Printf("%-16s  %8s  %8s  %8s  %s\n", "AGENT", "MEMORIES", "FACTS", "ACTIVE", "LAST_SEEN")
+	fmt.Println(strings.Repeat("─", 72))
+	for _, a := range agents {
+		lastSeen := a.LastSeen
+		if lastSeen == "" {
+			lastSeen = "-"
+		}
+		fmt.Printf("%-16s  %8d  %8d  %8d  %s\n",
+			a.AgentID, a.MemoryCount, a.FactCount, a.ActiveFactCount, lastSeen)
+	}
+	fmt.Println()
+	fmt.Println("Global (agent_id='') facts are shared and not listed here.")
+	return nil
+}
+
 func runProjects(args []string) error {
 	jsonOutput := false
 	for _, arg := range args {
@@ -6824,6 +6934,308 @@ func setConnectorEnabled(provider string, enabled bool) error {
 	return nil
 }
 
+type doctorCheck struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Details string `json:"details,omitempty"`
+	Hint    string `json:"hint,omitempty"`
+}
+
+type doctorSummary struct {
+	Pass int `json:"pass"`
+	Warn int `json:"warn"`
+	Fail int `json:"fail"`
+}
+
+type doctorReport struct {
+	GeneratedAt string        `json:"generated_at"`
+	DBPath      string        `json:"db_path"`
+	Summary     doctorSummary `json:"summary"`
+	Checks      []doctorCheck `json:"checks"`
+}
+
+func runDoctor(args []string) error {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "Output report as JSON")
+	quiet := fs.Bool("quiet", false, "Only show warnings/failures in text output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument: %s\nUsage: cortex doctor [--json] [--quiet]", fs.Arg(0))
+	}
+
+	report := runDoctorChecks()
+
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			return fmt.Errorf("encoding doctor report: %w", err)
+		}
+	} else {
+		printDoctorTTY(report, *quiet)
+	}
+
+	if report.Summary.Fail > 0 {
+		return fmt.Errorf("doctor found %d failing check(s)", report.Summary.Fail)
+	}
+	return nil
+}
+
+func runDoctorChecks() doctorReport {
+	dbPath := getDBPath()
+	if dbPath == "" {
+		dbPath = expandUserPath(store.DefaultDBPath)
+	}
+	dbPath = expandUserPath(dbPath)
+
+	report := doctorReport{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		DBPath:      dbPath,
+		Checks:      make([]doctorCheck, 0, 8),
+	}
+
+	ctx := context.Background()
+	canOpenDB := true
+
+	switch {
+	case dbPath == ":memory:":
+		addDoctorCheck(&report, doctorCheck{
+			Name:    "database_path",
+			Status:  "fail",
+			Details: "doctor does not support in-memory databases",
+			Hint:    "Set --db <path> to a persistent SQLite file.",
+		})
+		canOpenDB = false
+	default:
+		info, err := os.Stat(dbPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				addDoctorCheck(&report, doctorCheck{
+					Name:    "database_path",
+					Status:  "fail",
+					Details: "database file does not exist",
+					Hint:    fmt.Sprintf("Run `cortex import <path>` to create %s", dbPath),
+				})
+			} else {
+				addDoctorCheck(&report, doctorCheck{
+					Name:    "database_path",
+					Status:  "fail",
+					Details: fmt.Sprintf("cannot access database path: %v", err),
+					Hint:    "Verify file permissions and parent directory access.",
+				})
+			}
+			canOpenDB = false
+		} else if info.IsDir() {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "database_path",
+				Status:  "fail",
+				Details: "database path points to a directory",
+				Hint:    "Set --db to a file path (for example ~/.cortex/cortex.db).",
+			})
+			canOpenDB = false
+		} else {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "database_path",
+				Status:  "pass",
+				Details: fmt.Sprintf("found %s (%s)", dbPath, formatBytes(info.Size())),
+			})
+		}
+	}
+
+	var stats *store.StoreStats
+	if canOpenDB {
+		st, err := store.NewStore(store.StoreConfig{DBPath: dbPath, ReadOnly: true})
+		if err != nil {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "database_open",
+				Status:  "fail",
+				Details: fmt.Sprintf("open failed: %v", err),
+				Hint:    "Verify DB path and permissions; if corrupt, restore or run `cortex reimport <path>`.",
+			})
+		} else {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "database_open",
+				Status:  "pass",
+				Details: "opened database in read-only mode",
+			})
+
+			stats, err = st.Stats(ctx)
+			if err != nil {
+				addDoctorCheck(&report, doctorCheck{
+					Name:    "database_stats",
+					Status:  "fail",
+					Details: fmt.Sprintf("stats query failed: %v", err),
+					Hint:    "Run `cortex optimize --check-only` and repair the DB if needed.",
+				})
+			} else {
+				addDoctorCheck(&report, doctorCheck{
+					Name:    "database_stats",
+					Status:  "pass",
+					Details: fmt.Sprintf("%d memories, %d facts, %d embeddings", stats.MemoryCount, stats.FactCount, stats.EmbeddingCount),
+				})
+			}
+
+			switch {
+			case stats == nil:
+				// stats check already reported failure
+			case stats.MemoryCount == 0:
+				addDoctorCheck(&report, doctorCheck{
+					Name:    "embeddings",
+					Status:  "warn",
+					Details: "no memories imported yet",
+					Hint:    "Run `cortex import <path>` first, then `cortex embed <provider/model>`.",
+				})
+			case stats.EmbeddingCount == 0:
+				addDoctorCheck(&report, doctorCheck{
+					Name:    "embeddings",
+					Status:  "warn",
+					Details: "no embeddings found",
+					Hint:    "Run `cortex embed ollama/nomic-embed-text` for semantic/hybrid search.",
+				})
+			default:
+				detail := fmt.Sprintf("%d embedding vectors available", stats.EmbeddingCount)
+				if sqlStore, ok := st.(*store.SQLiteStore); ok {
+					if dims, err := sqlStore.GetEmbeddingDimensions(ctx); err == nil && dims > 0 {
+						detail = fmt.Sprintf("%d embedding vectors (%d dimensions)", stats.EmbeddingCount, dims)
+					}
+				}
+				addDoctorCheck(&report, doctorCheck{
+					Name:    "embeddings",
+					Status:  "pass",
+					Details: detail,
+				})
+			}
+
+			hnswPath := getHNSWPath()
+			if _, err := os.Stat(hnswPath); err == nil {
+				addDoctorCheck(&report, doctorCheck{
+					Name:    "hnsw_index",
+					Status:  "pass",
+					Details: fmt.Sprintf("found %s", hnswPath),
+				})
+			} else {
+				addDoctorCheck(&report, doctorCheck{
+					Name:    "hnsw_index",
+					Status:  "warn",
+					Details: "HNSW index file not found",
+					Hint:    "Run `cortex index` to build an ANN index for faster semantic search.",
+				})
+			}
+
+			if sqlStore, ok := st.(*store.SQLiteStore); ok {
+				cs := connect.NewConnectorStore(sqlStore.GetDB())
+				connectors, err := cs.List(ctx, false)
+				if err != nil {
+					addDoctorCheck(&report, doctorCheck{
+						Name:    "connectors",
+						Status:  "fail",
+						Details: fmt.Sprintf("listing connectors failed: %v", err),
+						Hint:    "Run `cortex connect init` and retry.",
+					})
+				} else {
+					enabled := 0
+					for _, c := range connectors {
+						if c.Enabled {
+							enabled++
+						}
+					}
+					switch {
+					case len(connectors) == 0:
+						addDoctorCheck(&report, doctorCheck{
+							Name:    "connectors",
+							Status:  "warn",
+							Details: "no connectors configured",
+							Hint:    "Run `cortex connect providers` then `cortex connect add <provider>`.",
+						})
+					case enabled == 0:
+						addDoctorCheck(&report, doctorCheck{
+							Name:    "connectors",
+							Status:  "warn",
+							Details: fmt.Sprintf("%d connectors configured, 0 enabled", len(connectors)),
+							Hint:    "Enable one with `cortex connect enable <provider>`.",
+						})
+					default:
+						addDoctorCheck(&report, doctorCheck{
+							Name:    "connectors",
+							Status:  "pass",
+							Details: fmt.Sprintf("%d configured, %d enabled", len(connectors), enabled),
+						})
+					}
+				}
+			}
+
+			_ = st.Close()
+		}
+	}
+
+	llmProviders := make([]string, 0, 3)
+	if strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "" {
+		llmProviders = append(llmProviders, "openrouter")
+	}
+	if strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")) != "" || strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) != "" {
+		llmProviders = append(llmProviders, "google")
+	}
+	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "" {
+		llmProviders = append(llmProviders, "openai")
+	}
+	if len(llmProviders) == 0 {
+		addDoctorCheck(&report, doctorCheck{
+			Name:    "llm_keys",
+			Status:  "warn",
+			Details: "no LLM API keys configured",
+			Hint:    "Set OPENROUTER_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY, or OPENAI_API_KEY.",
+		})
+	} else {
+		addDoctorCheck(&report, doctorCheck{
+			Name:    "llm_keys",
+			Status:  "pass",
+			Details: "configured: " + strings.Join(llmProviders, ", "),
+		})
+	}
+
+	return report
+}
+
+func addDoctorCheck(report *doctorReport, check doctorCheck) {
+	report.Checks = append(report.Checks, check)
+	switch check.Status {
+	case "pass":
+		report.Summary.Pass++
+	case "warn":
+		report.Summary.Warn++
+	default:
+		report.Summary.Fail++
+	}
+}
+
+func printDoctorTTY(report doctorReport, quiet bool) {
+	fmt.Println("Cortex Doctor")
+	fmt.Printf("Database: %s\n", report.DBPath)
+	fmt.Println()
+
+	for _, check := range report.Checks {
+		if quiet && check.Status == "pass" {
+			continue
+		}
+		icon := "✓"
+		switch check.Status {
+		case "warn":
+			icon = "!"
+		case "fail":
+			icon = "✗"
+		}
+		fmt.Printf("  %s %-14s %s\n", icon, check.Name, check.Details)
+		if check.Hint != "" && check.Status != "pass" {
+			fmt.Printf("      hint: %s\n", check.Hint)
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("Summary: %d pass, %d warn, %d fail\n", report.Summary.Pass, report.Summary.Warn, report.Summary.Fail)
+}
+
 func runConnectProviders() error {
 	names := connect.DefaultRegistry.List()
 	if len(names) == 0 {
@@ -7127,8 +7539,10 @@ Commands:
   reason <query>      LLM reasoning over memories (search → prompt → analyze)
   bench               Benchmark LLM models for reason (speed, cost, quality)
   projects            List all project tags with memory/fact counts
+  agents              List known agents with memory/fact coverage
   tag                 Tag memories by project (--project, --source, --id, --auto)
   connect             Manage external service connectors (init, add, sync, status)
+  doctor              Validate local Cortex setup (DB, embeddings, LLM keys, connectors)
   mcp                 Start MCP (Model Context Protocol) server
   version             Print version
 
@@ -7168,6 +7582,7 @@ Import Flags:
 
 Projects/Tag Flags:
   cortex projects [--json]                    List all projects
+  cortex agents [--json]                      List known agents and per-agent stats
   cortex tag --project <name> --source <pat>  Tag memories by source file pattern
   cortex tag --project <name> --id <id>       Tag specific memories by ID
   cortex tag --auto                           Auto-tag untagged memories using path rules
@@ -7252,6 +7667,10 @@ MCP Flags:
   --port <N>          Start HTTP+SSE transport on port (default: stdio)
   --embed <provider/model> Enable semantic/hybrid/rrf search via embeddings
 
+Doctor Flags:
+  --json              Output report as JSON
+  --quiet             Show only warnings/failures in text output
+
 Cluster Flags:
   cortex cluster                       List topic clusters
   cortex cluster --rebuild             Recompute clusters from all active facts
@@ -7276,11 +7695,14 @@ Examples:
   cortex search "deployment rule" --explain --json
   cortex bench --compare google/gemini-2.5-flash,deepseek/deepseek-v3.2 --recursive
   cortex bench --models openai/gpt-5.1-codex-mini,google/gemini-3-flash-preview --output bench.md
+  cortex agents --json
   cortex cluster --rebuild
   cortex cluster --name trading
   cortex cluster --export json
   cortex mcp                          # Start MCP server (stdio, for Claude Desktop/Cursor)
   cortex mcp --port 8080              # Start MCP server (HTTP+SSE)
+  cortex doctor                       # Validate local setup and dependencies
+  cortex doctor --json                # JSON report for CI/scripts
 
 Connect:
   cortex connect init                 # Initialize connector system

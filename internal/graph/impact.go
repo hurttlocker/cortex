@@ -14,6 +14,10 @@ import (
 )
 
 const defaultImpactDepth = 3
+const (
+	defaultImpactLimit = 160
+	maxImpactLimit     = 500
+)
 
 var errImpactNotFound = errors.New("impact subject not found")
 
@@ -29,6 +33,8 @@ type ImpactFact struct {
 	Predicate      string  `json:"predicate"`
 	Object         string  `json:"object"`
 	Confidence     float64 `json:"confidence"`
+	Relevance      float64 `json:"relevance,omitempty"`
+	Rank           int     `json:"rank,omitempty"`
 	Source         string  `json:"source,omitempty"`
 	LastUpdated    string  `json:"last_updated,omitempty"`
 	ConnectedCount int     `json:"connected_count"`
@@ -74,6 +80,8 @@ func handleImpactAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSto
 	}
 
 	depth := parseBoundedInt(r.URL.Query().Get("depth"), defaultImpactDepth, 1, maxGraphDepth)
+	limit := parseBoundedInt(r.URL.Query().Get("limit"), defaultImpactLimit, 1, maxImpactLimit)
+	offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, maxGraphOffset)
 	minConf := 0.0
 	if raw := strings.TrimSpace(r.URL.Query().Get("min_confidence")); raw != "" {
 		v, err := strconv.ParseFloat(raw, 64)
@@ -100,6 +108,7 @@ func handleImpactAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSto
 		return
 	}
 
+	result = paginateImpactResult(result, limit, offset)
 	writeJSON(w, 200, result)
 }
 
@@ -327,6 +336,190 @@ func buildImpactResult(ctx context.Context, st *store.SQLiteStore, subject strin
 			"total_edges": len(edges),
 		},
 	}, nil
+}
+
+func paginateImpactResult(result ImpactResult, limit, offset int) ImpactResult {
+	type groupedFact struct {
+		relationship string
+		fact         ImpactFact
+	}
+
+	allFacts := make([]groupedFact, 0, result.TotalFacts)
+	maxConnected := 0
+	for _, g := range result.Groups {
+		for _, f := range g.Facts {
+			if f.ConnectedCount > maxConnected {
+				maxConnected = f.ConnectedCount
+			}
+			allFacts = append(allFacts, groupedFact{
+				relationship: g.Relationship,
+				fact:         f,
+			})
+		}
+	}
+
+	for i := range allFacts {
+		allFacts[i].fact.Relevance = impactRelevanceScore(
+			allFacts[i].fact.Confidence,
+			allFacts[i].fact.ConnectedCount,
+			allFacts[i].fact.Depth,
+			maxConnected,
+		)
+	}
+
+	sort.Slice(allFacts, func(i, j int) bool {
+		if allFacts[i].fact.Relevance == allFacts[j].fact.Relevance {
+			if allFacts[i].fact.Confidence == allFacts[j].fact.Confidence {
+				if allFacts[i].fact.ConnectedCount == allFacts[j].fact.ConnectedCount {
+					return allFacts[i].fact.ID < allFacts[j].fact.ID
+				}
+				return allFacts[i].fact.ConnectedCount > allFacts[j].fact.ConnectedCount
+			}
+			return allFacts[i].fact.Confidence > allFacts[j].fact.Confidence
+		}
+		return allFacts[i].fact.Relevance > allFacts[j].fact.Relevance
+	})
+	for i := range allFacts {
+		allFacts[i].fact.Rank = i + 1
+	}
+
+	total := len(allFacts)
+	start := offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	page := allFacts[start:end]
+
+	groupMap := make(map[string]*ImpactGroup)
+	connectedSubjectsSet := make(map[string]struct{})
+	confDist := ImpactConfidenceDistribution{}
+	allowedFactIDs := make(map[int64]struct{}, len(page))
+	for _, item := range page {
+		f := item.fact
+		allowedFactIDs[f.ID] = struct{}{}
+		group, ok := groupMap[item.relationship]
+		if !ok {
+			group = &ImpactGroup{Relationship: item.relationship}
+			groupMap[item.relationship] = group
+		}
+		group.Facts = append(group.Facts, f)
+		group.FactCount++
+		group.AvgConfidence += f.Confidence
+
+		if subj := strings.TrimSpace(f.Subject); subj != "" && !strings.EqualFold(subj, result.Subject) {
+			connectedSubjectsSet[subj] = struct{}{}
+		}
+
+		switch {
+		case f.Confidence >= 0.8:
+			confDist.High++
+		case f.Confidence >= 0.5:
+			confDist.Medium++
+		default:
+			confDist.Low++
+		}
+	}
+
+	groups := make([]ImpactGroup, 0, len(groupMap))
+	for _, g := range groupMap {
+		if g.FactCount > 0 {
+			g.AvgConfidence /= float64(g.FactCount)
+		}
+		sort.Slice(g.Facts, func(i, j int) bool {
+			if g.Facts[i].Rank == g.Facts[j].Rank {
+				return g.Facts[i].ID < g.Facts[j].ID
+			}
+			return g.Facts[i].Rank < g.Facts[j].Rank
+		})
+		groups = append(groups, *g)
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].FactCount == groups[j].FactCount {
+			if groups[i].AvgConfidence == groups[j].AvgConfidence {
+				return groups[i].Relationship < groups[j].Relationship
+			}
+			return groups[i].AvgConfidence > groups[j].AvgConfidence
+		}
+		return groups[i].FactCount > groups[j].FactCount
+	})
+
+	nodeByID := make(map[int64]ExportNode, len(result.Nodes))
+	for _, node := range result.Nodes {
+		nodeByID[node.ID] = node
+	}
+	nodes := make([]ExportNode, 0, len(page))
+	for _, item := range page {
+		if node, ok := nodeByID[item.fact.ID]; ok {
+			node.Relevance = item.fact.Relevance
+			node.Rank = item.fact.Rank
+			nodes = append(nodes, node)
+		}
+	}
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].Rank == nodes[j].Rank {
+			return nodes[i].ID < nodes[j].ID
+		}
+		return nodes[i].Rank < nodes[j].Rank
+	})
+
+	edges := make([]ExportEdge, 0, len(result.Edges))
+	for _, edge := range result.Edges {
+		_, okSource := allowedFactIDs[edge.Source]
+		_, okTarget := allowedFactIDs[edge.Target]
+		if okSource && okTarget {
+			edges = append(edges, edge)
+		}
+	}
+
+	connectedSubjects := make([]string, 0, len(connectedSubjectsSet))
+	for s := range connectedSubjectsSet {
+		connectedSubjects = append(connectedSubjects, s)
+	}
+	sort.Strings(connectedSubjects)
+
+	if result.Meta == nil {
+		result.Meta = map[string]interface{}{}
+	}
+	result.Meta["ordering"] = "relevance_desc(confidence,connectivity,depth,id)"
+	addPaginationMeta(result.Meta, limit, offset, total, len(page))
+	result.Meta["returned_nodes"] = len(nodes)
+	result.Meta["returned_edges"] = len(edges)
+	result.Meta["total_facts"] = total
+
+	result.Groups = groups
+	result.Nodes = nodes
+	result.Edges = edges
+	result.ConnectedSubjects = connectedSubjects
+	result.ConfidenceDistribution = confDist
+	result.TotalFacts = total
+	return result
+}
+
+func impactRelevanceScore(confidence float64, connectedCount, depth, maxConnected int) float64 {
+	conf := confidence
+	if conf < 0 {
+		conf = 0
+	}
+	if conf > 1 {
+		conf = 1
+	}
+	connectedNorm := 0.0
+	if maxConnected > 0 {
+		connectedNorm = float64(connectedCount) / float64(maxConnected)
+	}
+	depthPenalty := float64(depth)
+	score := (0.78 * conf) + (0.28 * connectedNorm) - (0.06 * depthPenalty)
+	if score < 0 {
+		return 0
+	}
+	if score > 1 {
+		return 1
+	}
+	return score
 }
 
 func loadImpactRootFactIDs(ctx context.Context, db *sql.DB, subject string, minConf float64) ([]int64, error) {

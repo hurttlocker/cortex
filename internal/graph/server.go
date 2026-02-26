@@ -35,6 +35,8 @@ type ExportNode struct {
 	Predicate    string   `json:"predicate"`
 	Object       string   `json:"object"`
 	Confidence   float64  `json:"confidence"`
+	Relevance    float64  `json:"relevance,omitempty"`
+	Rank         int      `json:"rank,omitempty"`
 	AgentID      string   `json:"agent_id,omitempty"`
 	FactType     string   `json:"type"`
 	ClusterID    int64    `json:"cluster_id,omitempty"`
@@ -80,11 +82,11 @@ const (
 	clusterSubjectMinFacts  = 3
 	clusterSubjectMaxFacts  = 200
 	clusterFactsPerSubject  = 6
-	clusterMinSubjectGroups = 12
 	clusterMaxSubjectGroups = 90
 
 	defaultSubjectGraphLimit = 120
 	maxSubjectGraphLimit     = 300
+	maxGraphOffset           = 100000
 )
 
 // Serve starts the graph visualization web server.
@@ -180,7 +182,8 @@ func handleGraphAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteStor
 
 	if subject != "" {
 		limit := parseBoundedInt(r.URL.Query().Get("limit"), defaultSubjectGraphLimit, 1, maxSubjectGraphLimit)
-		result, err := buildSubjectGraphResult(ctx, st.GetDB(), subject, limit, minConf, agentFilter)
+		offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, maxGraphOffset)
+		result, err := buildSubjectGraphResult(ctx, st.GetDB(), subject, limit, offset, minConf, agentFilter)
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
@@ -316,6 +319,8 @@ type SearchFact struct {
 	Predicate  string  `json:"predicate"`
 	Object     string  `json:"object"`
 	Confidence float64 `json:"confidence"`
+	Relevance  float64 `json:"relevance,omitempty"`
+	Rank       int     `json:"rank,omitempty"`
 	FactType   string  `json:"type"`
 	AgentID    string  `json:"agent_id,omitempty"`
 	Source     string  `json:"source,omitempty"`
@@ -559,6 +564,7 @@ func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSt
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	limit := parseBoundedInt(r.URL.Query().Get("limit"), defaultClusterLimit, 1, maxClusterLimit)
+	offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, maxGraphOffset)
 
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
@@ -569,22 +575,57 @@ func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSt
 	var rows *sql.Rows
 	var err error
 
+	total := 0
 	if query != "" {
 		q := "%" + query + "%"
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*)
+			 FROM facts
+			 WHERE (subject LIKE ? OR predicate LIKE ? OR object LIKE ?)
+			   AND (superseded_by IS NULL OR superseded_by = 0)`,
+			q, q, q,
+		).Scan(&total); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
 		rows, err = db.QueryContext(ctx,
 			`SELECT id, subject, predicate, object, confidence, fact_type, COALESCE(agent_id, '')
 			 FROM facts
 			 WHERE (subject LIKE ? OR predicate LIKE ? OR object LIKE ?)
 			   AND (superseded_by IS NULL OR superseded_by = 0)
-			 ORDER BY confidence DESC
-			 LIMIT ?`, q, q, q, limit)
+			 ORDER BY confidence DESC, id DESC
+			 LIMIT ? OFFSET ?`, q, q, q, limit, offset)
 	} else {
-		subjectLimit := limit / clusterFactsPerSubject
-		if subjectLimit < clusterMinSubjectGroups {
-			subjectLimit = clusterMinSubjectGroups
-		}
-		if subjectLimit > clusterMaxSubjectGroups {
-			subjectLimit = clusterMaxSubjectGroups
+		subjectLimit := clusterMaxSubjectGroups
+
+		if err := db.QueryRowContext(ctx,
+			`WITH top_subjects AS (
+			   SELECT subject, COUNT(*) as cnt
+			   FROM facts
+			   WHERE (superseded_by IS NULL OR superseded_by = 0)
+			     AND subject IS NOT NULL
+			     AND TRIM(subject) != ''
+			   GROUP BY subject
+			   HAVING cnt BETWEEN ? AND ?
+			   ORDER BY cnt DESC
+			   LIMIT ?
+			 ), ranked AS (
+			   SELECT f.id,
+			          ROW_NUMBER() OVER (PARTITION BY f.subject ORDER BY f.confidence DESC, f.id DESC) as rn
+			   FROM facts f
+			   INNER JOIN top_subjects s ON s.subject = f.subject
+			   WHERE (f.superseded_by IS NULL OR f.superseded_by = 0)
+			 )
+			 SELECT COUNT(*)
+			 FROM ranked
+			 WHERE rn <= ?`,
+			clusterSubjectMinFacts,
+			clusterSubjectMaxFacts,
+			subjectLimit,
+			clusterFactsPerSubject,
+		).Scan(&total); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
 		}
 
 		// Sample facts across diverse subjects using widened quality bounds now that
@@ -612,12 +653,13 @@ func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSt
 			 FROM ranked
 			 WHERE rn <= ?
 			 ORDER BY confidence DESC, id DESC
-			 LIMIT ?`,
+			 LIMIT ? OFFSET ?`,
 			clusterSubjectMinFacts,
 			clusterSubjectMaxFacts,
 			subjectLimit,
 			clusterFactsPerSubject,
 			limit,
+			offset,
 		)
 	}
 	if err != nil {
@@ -635,6 +677,8 @@ func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSt
 		if err := rows.Scan(&n.ID, &n.Subject, &n.Predicate, &n.Object, &n.Confidence, &n.FactType, &n.AgentID); err != nil {
 			continue
 		}
+		n.Relevance = n.Confidence
+		n.Rank = offset + len(nodes) + 1
 		nodes = append(nodes, n)
 		nodeIDs = append(nodeIDs, n.ID)
 		subjectGroups[n.Subject] = append(subjectGroups[n.Subject], n.ID)
@@ -674,28 +718,47 @@ func handleClusterAPI(w http.ResponseWriter, r *http.Request, st *store.SQLiteSt
 		cooccurrences = nil
 	}
 
+	meta := map[string]interface{}{
+		"mode":                "cluster",
+		"query":               query,
+		"total_nodes":         len(nodes),
+		"total_edges":         len(edges),
+		"total_cooccurrences": len(cooccurrences),
+		"subjects":            len(subjectGroups),
+		"edge_mode":           edgeMode,
+		"fallback_edges":      fallbackEdges,
+		"subject_min_facts":   clusterSubjectMinFacts,
+		"subject_max_facts":   clusterSubjectMaxFacts,
+		"ordering":            "relevance_desc(confidence,id)",
+	}
+	addPaginationMeta(meta, limit, offset, total, len(nodes))
+
 	result := ExportResult{
 		Nodes:         nodes,
 		Edges:         edges,
 		Cooccurrences: cooccurrences,
-		Meta: map[string]interface{}{
-			"mode":                "cluster",
-			"query":               query,
-			"total_nodes":         len(nodes),
-			"total_edges":         len(edges),
-			"total_cooccurrences": len(cooccurrences),
-			"subjects":            len(subjectGroups),
-			"edge_mode":           edgeMode,
-			"fallback_edges":      fallbackEdges,
-			"subject_min_facts":   clusterSubjectMinFacts,
-			"subject_max_facts":   clusterSubjectMaxFacts,
-		},
+		Meta:          meta,
 	}
 
 	writeJSON(w, 200, result)
 }
 
-func buildSubjectGraphResult(ctx context.Context, db *sql.DB, subject string, limit int, minConf float64, agentFilter string) (ExportResult, error) {
+func buildSubjectGraphResult(ctx context.Context, db *sql.DB, subject string, limit, offset int, minConf float64, agentFilter string) (ExportResult, error) {
+	countQuery := `SELECT COUNT(*)
+	               FROM facts
+	               WHERE LOWER(subject) = LOWER(?)
+	                 AND (superseded_by IS NULL OR superseded_by = 0)
+	                 AND confidence >= ?`
+	countArgs := []interface{}{subject, minConf}
+	if agentFilter != "" {
+		countQuery += " AND (agent_id = ? OR agent_id = '')"
+		countArgs = append(countArgs, agentFilter)
+	}
+	var total int
+	if err := db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&total); err != nil {
+		return ExportResult{}, err
+	}
+
 	query := `SELECT id, subject, predicate, object, confidence, fact_type, COALESCE(agent_id, '')
 	          FROM facts
 	          WHERE LOWER(subject) = LOWER(?)
@@ -706,8 +769,8 @@ func buildSubjectGraphResult(ctx context.Context, db *sql.DB, subject string, li
 		query += " AND (agent_id = ? OR agent_id = '')"
 		args = append(args, agentFilter)
 	}
-	query += " ORDER BY confidence DESC, id DESC LIMIT ?"
-	args = append(args, limit)
+	query += " ORDER BY confidence DESC, id DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -723,6 +786,8 @@ func buildSubjectGraphResult(ctx context.Context, db *sql.DB, subject string, li
 		if err := rows.Scan(&n.ID, &n.Subject, &n.Predicate, &n.Object, &n.Confidence, &n.FactType, &n.AgentID); err != nil {
 			continue
 		}
+		n.Relevance = n.Confidence
+		n.Rank = offset + len(nodes) + 1
 		nodes = append(nodes, n)
 		nodeIDs = append(nodeIDs, n.ID)
 		subjectGroups[n.Subject] = append(subjectGroups[n.Subject], n.ID)
@@ -760,20 +825,24 @@ func buildSubjectGraphResult(ctx context.Context, db *sql.DB, subject string, li
 		cooccurrences = nil
 	}
 
+	meta := map[string]interface{}{
+		"mode":                "subject",
+		"subject":             subject,
+		"limit":               limit,
+		"total_nodes":         len(nodes),
+		"total_edges":         len(edges),
+		"total_cooccurrences": len(cooccurrences),
+		"edge_mode":           edgeMode,
+		"fallback_edges":      fallbackEdges,
+		"ordering":            "relevance_desc(confidence,id)",
+	}
+	addPaginationMeta(meta, limit, offset, total, len(nodes))
+
 	return ExportResult{
 		Nodes:         nodes,
 		Edges:         edges,
 		Cooccurrences: cooccurrences,
-		Meta: map[string]interface{}{
-			"mode":                "subject",
-			"subject":             subject,
-			"limit":               limit,
-			"total_nodes":         len(nodes),
-			"total_edges":         len(edges),
-			"total_cooccurrences": len(cooccurrences),
-			"edge_mode":           edgeMode,
-			"fallback_edges":      fallbackEdges,
-		},
+		Meta:          meta,
 	}, nil
 }
 
@@ -903,6 +972,17 @@ func parseBoundedInt(raw string, fallback, min, max int) int {
 		return max
 	}
 	return v
+}
+
+func addPaginationMeta(meta map[string]interface{}, limit, offset, total, returned int) {
+	if meta == nil {
+		return
+	}
+	meta["limit"] = limit
+	meta["offset"] = offset
+	meta["returned"] = returned
+	meta["total"] = total
+	meta["has_more"] = offset+returned < total
 }
 
 func loadEdgesForNodeIDs(ctx context.Context, db *sql.DB, ids []int64, minConf float64) ([]ExportEdge, error) {

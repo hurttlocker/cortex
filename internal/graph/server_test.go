@@ -580,6 +580,81 @@ func TestGraphAPIBySubject(t *testing.T) {
 	}
 }
 
+func TestGraphAPIBySubjectPaginationMetadata(t *testing.T) {
+	st := newTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	memID, err := st.AddMemory(ctx, &store.Memory{
+		Content:       "subject graph pagination seed",
+		SourceFile:    "subject-pagination.md",
+		SourceLine:    1,
+		SourceSection: "subject",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+
+	for i := 0; i < 4; i++ {
+		_, err := st.AddFact(ctx, &store.Fact{
+			MemoryID:   memID,
+			Subject:    "Cortex",
+			Predicate:  fmt.Sprintf("p%d", i),
+			Object:     fmt.Sprintf("o%d", i),
+			Confidence: 0.9 - float64(i)*0.05,
+			FactType:   "kv",
+		})
+		if err != nil {
+			t.Fatalf("add fact %d: %v", i, err)
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/graph", func(w http.ResponseWriter, r *http.Request) {
+		handleGraphAPI(w, r, st)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/graph?subject=cortex&limit=2&offset=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var out ExportResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if len(out.Nodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(out.Nodes))
+	}
+	if out.Nodes[0].Rank != 2 {
+		t.Fatalf("expected first node rank=2, got %d", out.Nodes[0].Rank)
+	}
+	if out.Nodes[0].Relevance != out.Nodes[0].Confidence {
+		t.Fatalf("expected relevance to follow confidence, got relevance=%.3f confidence=%.3f", out.Nodes[0].Relevance, out.Nodes[0].Confidence)
+	}
+	if requireMetaInt(t, out.Meta, "limit") != 2 {
+		t.Fatalf("expected meta limit=2, got %v", out.Meta["limit"])
+	}
+	if requireMetaInt(t, out.Meta, "offset") != 1 {
+		t.Fatalf("expected meta offset=1, got %v", out.Meta["offset"])
+	}
+	if requireMetaInt(t, out.Meta, "total") != 4 {
+		t.Fatalf("expected meta total=4, got %v", out.Meta["total"])
+	}
+	if requireMetaInt(t, out.Meta, "returned") != 2 {
+		t.Fatalf("expected meta returned=2, got %v", out.Meta["returned"])
+	}
+	if !requireMetaBool(t, out.Meta, "has_more") {
+		t.Fatal("expected has_more=true")
+	}
+}
+
 func TestClusterAPILimitRespected(t *testing.T) {
 	st := newTestStore(t)
 	defer st.Close()
@@ -644,6 +719,72 @@ func TestClusterAPILimitRespected(t *testing.T) {
 	}
 }
 
+func TestClusterAPIPaginationMetadata(t *testing.T) {
+	st := newTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	memID, err := st.AddMemory(ctx, &store.Memory{
+		Content:       "cluster pagination seed",
+		SourceFile:    "cluster-page.md",
+		SourceLine:    1,
+		SourceSection: "cluster",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+
+	subjects := []string{"alpha", "beta", "gamma"}
+	for _, subject := range subjects {
+		for i := 0; i < 4; i++ {
+			_, err := st.AddFact(ctx, &store.Fact{
+				MemoryID:   memID,
+				Subject:    subject,
+				Predicate:  "mode",
+				Object:     fmt.Sprintf("%s-%d", subject, i),
+				Confidence: 0.95 - float64(i)*0.08,
+				FactType:   "kv",
+			})
+			if err != nil {
+				t.Fatalf("add fact %s/%d: %v", subject, i, err)
+			}
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/cluster", func(w http.ResponseWriter, r *http.Request) {
+		handleClusterAPI(w, r, st)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/cluster?limit=2&offset=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var out ExportResult
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if len(out.Nodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(out.Nodes))
+	}
+	if out.Nodes[0].Rank != 2 {
+		t.Fatalf("expected first node rank=2, got %d", out.Nodes[0].Rank)
+	}
+	if requireMetaInt(t, out.Meta, "limit") != 2 || requireMetaInt(t, out.Meta, "offset") != 1 {
+		t.Fatalf("unexpected pagination meta: %#v", out.Meta)
+	}
+	if requireMetaInt(t, out.Meta, "total") < 3 {
+		t.Fatalf("expected total >= 3, got %v", out.Meta["total"])
+	}
+}
+
 func TestClustersListAPI(t *testing.T) {
 	st := newTestStore(t)
 	defer st.Close()
@@ -685,6 +826,50 @@ func TestClustersListAPI(t *testing.T) {
 	}
 	if out.Clusters[0].Color == "" {
 		t.Fatal("expected cluster color")
+	}
+}
+
+func TestClustersListPaginationMetadata(t *testing.T) {
+	st := newTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	seedClustersForGraphAPI(t, ctx, st)
+	if _, err := st.RebuildClusters(ctx); err != nil {
+		t.Fatalf("rebuild clusters: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/clusters", func(w http.ResponseWriter, r *http.Request) {
+		handleClustersListAPI(w, r, st)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/clusters?limit=1&offset=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var out ClustersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode clusters response: %v", err)
+	}
+	if len(out.Clusters) != 1 {
+		t.Fatalf("expected 1 cluster due limit, got %d", len(out.Clusters))
+	}
+	if out.Clusters[0].Rank != 2 {
+		t.Fatalf("expected cluster rank=2, got %d", out.Clusters[0].Rank)
+	}
+	if out.Clusters[0].Relevance <= 0 {
+		t.Fatalf("expected positive cluster relevance, got %.3f", out.Clusters[0].Relevance)
+	}
+	if requireMetaInt(t, out.Meta, "limit") != 1 || requireMetaInt(t, out.Meta, "offset") != 1 {
+		t.Fatalf("unexpected pagination meta: %#v", out.Meta)
 	}
 }
 
@@ -747,6 +932,59 @@ func TestClusterDetailAPI(t *testing.T) {
 	defer missing.Body.Close()
 	if missing.StatusCode != 404 {
 		t.Fatalf("expected 404 for missing cluster, got %d", missing.StatusCode)
+	}
+}
+
+func TestClusterDetailPaginationMetadata(t *testing.T) {
+	st := newTestStore(t)
+	defer st.Close()
+
+	ctx := context.Background()
+	seedClustersForGraphAPI(t, ctx, st)
+	if _, err := st.RebuildClusters(ctx); err != nil {
+		t.Fatalf("rebuild clusters: %v", err)
+	}
+
+	clusters, err := st.ListClusters(ctx)
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	if len(clusters) == 0 {
+		t.Fatal("expected clusters")
+	}
+	clusterID := clusters[0].ID
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/clusters/", func(w http.ResponseWriter, r *http.Request) {
+		handleClusterDetailAPI(w, r, st)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + fmt.Sprintf("/api/clusters/%d?limit=2&offset=1", clusterID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var out ClusterDetailResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(out.Nodes) == 0 {
+		t.Fatal("expected paged cluster nodes")
+	}
+	if out.Nodes[0].Rank != 2 {
+		t.Fatalf("expected first node rank=2, got %d", out.Nodes[0].Rank)
+	}
+	if requireMetaInt(t, out.Meta, "limit") != 2 || requireMetaInt(t, out.Meta, "offset") != 1 {
+		t.Fatalf("unexpected pagination meta: %#v", out.Meta)
+	}
+	if requireMetaInt(t, out.Meta, "total") <= len(out.Nodes) {
+		t.Fatalf("expected total to exceed returned nodes, meta=%#v", out.Meta)
 	}
 }
 

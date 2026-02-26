@@ -712,10 +712,18 @@ let lastNodeClick = { id: null, at: 0 };
 let currentViewMode = 'cluster';
 let activeSearchNodeIDs = new Set();
 let clusterCatalog = [];
-let clusterSummary = { total_facts: 0, unclustered_count: 0 };
+let clusterSummary = { total_facts: 0, unclustered_count: 0, total_clusters: 0, returned_clusters: 0, offset: 0, limit: CLUSTER_LIMIT };
 let activeClusterId = null;
 let impactData = null;
 let timelineRenderedNodes = [];
+const requestSeq = {
+  graph: 0,
+  subject: 0,
+  impact: 0,
+  timeline: 0,
+  clusterList: 0,
+  clusterDetail: 0
+};
 const HELP_2D = `
   <kbd>Drag node</kbd> Reposition &nbsp; <kbd>Drag canvas</kbd> Pan &nbsp; <kbd>Scroll</kbd> Zoom<br>
   <kbd>Click</kbd> Select node &nbsp; <kbd>Double-click</kbd> Focus subject &nbsp; <kbd>Hover</kbd> Tooltip
@@ -733,6 +741,24 @@ function esc(s) {
   const d = document.createElement('div');
   d.textContent = s || '';
   return d.innerHTML;
+}
+
+function nextRequestToken(key) {
+  requestSeq[key] = (requestSeq[key] || 0) + 1;
+  return requestSeq[key];
+}
+
+function isStaleRequest(key, token) {
+  return requestSeq[key] !== token;
+}
+
+async function readAPIError(resp) {
+  let msg = `HTTP ${resp.status}`;
+  try {
+    const body = await resp.json();
+    if (body && body.error) msg = body.error;
+  } catch (_) {}
+  return msg;
 }
 
 function dimColor(color, alpha) {
@@ -820,14 +846,26 @@ function renderClusterSidebar() {
   const summaryEl = document.getElementById('clusterSummary');
   const listEl = document.getElementById('clusterList');
   const clusterCount = clusterCatalog.length;
+  const totalClusters = Number(clusterSummary.total_clusters || 0);
+  const returnedClusters = Number(clusterSummary.returned_clusters || clusterCount);
+  const pageOffset = Number(clusterSummary.offset || 0);
 
   if (!clusterCount) {
-    summaryEl.textContent = `No clusters detected. Unclustered: ${clusterSummary.unclustered_count || 0} / ${clusterSummary.total_facts || 0} facts.`;
+    if (totalClusters > 0 && returnedClusters === 0) {
+      summaryEl.textContent = `No clusters in this page window. Total clusters: ${totalClusters.toLocaleString()}.`;
+    } else {
+      summaryEl.textContent = `No clusters detected. Unclustered: ${clusterSummary.unclustered_count || 0} / ${clusterSummary.total_facts || 0} facts.`;
+    }
     listEl.innerHTML = '<div class=\"cluster-empty\">Run extraction/import and rebuild clusters to populate this view.</div>';
     return;
   }
 
-  summaryEl.textContent = `${clusterCount} clusters • ${(clusterSummary.unclustered_count || 0).toLocaleString()} unclustered / ${(clusterSummary.total_facts || 0).toLocaleString()} facts`;
+  const pageStart = pageOffset + 1;
+  const pageEnd = pageOffset + clusterCount;
+  const pageText = totalClusters > 0
+    ? `showing ${pageStart.toLocaleString()}-${pageEnd.toLocaleString()} of ${totalClusters.toLocaleString()}`
+    : `${clusterCount.toLocaleString()} clusters`;
+  summaryEl.textContent = `${pageText} • ${(clusterSummary.unclustered_count || 0).toLocaleString()} unclustered / ${(clusterSummary.total_facts || 0).toLocaleString()} facts`;
   listEl.innerHTML = clusterCatalog.map(c => {
     const active = Number(activeClusterId) === Number(c.id) ? 'active' : '';
     const cohesion = Number(c.cohesion || 0);
@@ -1280,6 +1318,7 @@ function initGraph() {
 async function loadGraph() {
   const factId = document.getElementById('factIdInput').value.trim();
   if (!factId) return;
+  const token = nextRequestToken('graph');
 
   setViewMode('fact');
   impactData = null;
@@ -1288,8 +1327,9 @@ async function loadGraph() {
 
   try {
     const resp = await fetch(`/api/graph?fact_id=${encodeURIComponent(factId)}&depth=${depth}`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(await readAPIError(resp));
     graphData = await resp.json();
+    if (isStaleRequest('graph', token)) return;
     selectedNode = null;
     autoFitPending = true;
 
@@ -1303,6 +1343,7 @@ async function loadGraph() {
 
     renderGraph();
   } catch (err) {
+    if (isStaleRequest('graph', token)) return;
     showEmpty('Error', err.message);
   }
 }
@@ -1310,6 +1351,7 @@ async function loadGraph() {
 async function loadSubject(subject) {
   const value = (subject || '').trim();
   if (!value) return;
+  const token = nextRequestToken('subject');
 
   setViewMode('subject');
   impactData = null;
@@ -1320,8 +1362,9 @@ async function loadSubject(subject) {
   try {
     const minConf = parseInt(document.getElementById('confSlider').value, 10) / 100;
     const resp = await fetch(`/api/graph?subject=${encodeURIComponent(value)}&limit=${SUBJECT_DRILL_LIMIT}&min_confidence=${minConf}`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(await readAPIError(resp));
     graphData = await resp.json();
+    if (isStaleRequest('subject', token)) return;
     selectedNode = null;
     autoFitPending = true;
 
@@ -1332,6 +1375,7 @@ async function loadSubject(subject) {
 
     renderGraph();
   } catch (err) {
+    if (isStaleRequest('subject', token)) return;
     showEmpty('Error', err.message);
   }
 }
@@ -1447,6 +1491,7 @@ function applyImpactConcentricLayout() {
 async function loadImpact(subject) {
   const value = (subject || '').trim();
   if (!value) return;
+  const token = nextRequestToken('impact');
 
   setViewMode('impact');
   showLoading(`Running impact analysis: ${value}`);
@@ -1457,9 +1502,10 @@ async function loadImpact(subject) {
     const depth = document.getElementById('depthSlider').value || '3';
     const minConf = parseInt(document.getElementById('confSlider').value, 10) / 100;
     const resp = await fetch(`/api/impact?subject=${encodeURIComponent(value)}&depth=${encodeURIComponent(depth)}&min_confidence=${minConf}`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(await readAPIError(resp));
 
     impactData = await resp.json();
+    if (isStaleRequest('impact', token)) return;
     selectedNode = null;
     autoFitPending = true;
     renderImpactPanel(impactData);
@@ -1478,6 +1524,7 @@ async function loadImpact(subject) {
 
     renderGraph();
   } catch (err) {
+    if (isStaleRequest('impact', token)) return;
     showEmpty('Error', err.message);
   }
 }
@@ -1530,6 +1577,7 @@ async function loadTimeline(subject) {
     setModeNoteTemporary('Enter a timeline subject first.');
     return;
   }
+  const token = nextRequestToken('timeline');
 
   setTimelineDefaults();
   const from = document.getElementById('timelineFrom').value;
@@ -1555,19 +1603,14 @@ async function loadTimeline(subject) {
 
   try {
     const resp = await fetch(`/api/timeline?${qs.toString()}`);
-    if (!resp.ok) {
-      let msg = `HTTP ${resp.status}`;
-      try {
-        const body = await resp.json();
-        if (body?.error) msg = body.error;
-      } catch (_) {}
-      throw new Error(msg);
-    }
+    if (!resp.ok) throw new Error(await readAPIError(resp));
     timelineData = await resp.json();
+    if (isStaleRequest('timeline', token)) return;
     graphData = null;
     selectedNode = null;
     renderTimeline();
   } catch (err) {
+    if (isStaleRequest('timeline', token)) return;
     showEmpty('Timeline Error', err.message || 'Failed to load timeline');
   }
 }
@@ -1896,6 +1939,13 @@ function renderGraph() {
   const nodeIds = new Set(nodes.map(n => n.id));
   const nodeById = new Map(nodes.map(n => [n.id, n]));
   if (selectedNode && !nodeIds.has(selectedNode.id)) selectedNode = null;
+  if (nodes.length === 0) {
+    showEmpty('No visible nodes', 'Current filters hide all nodes. Lower confidence or widen the time window.');
+    if (Graph2D) {
+      Graph2D.graphData({ nodes: [], links: [] });
+    }
+    return;
+  }
 
   const links = [];
   (graphData.edges || [])
@@ -2108,6 +2158,7 @@ function selectSearchResult(factId) {
 }
 
 async function loadCluster(query) {
+  const token = nextRequestToken('clusterList');
   setViewMode('cluster');
   impactData = null;
   showLoading('Loading clusters...');
@@ -2118,12 +2169,18 @@ async function loadCluster(query) {
       : `/api/clusters?limit=${CLUSTER_LIMIT}`;
 
     const resp = await fetch(url);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(await readAPIError(resp));
     const payload = await resp.json();
+    if (isStaleRequest('clusterList', token)) return;
     clusterCatalog = payload.clusters || [];
+    const meta = payload.meta || {};
     clusterSummary = {
       total_facts: payload.total_facts || 0,
-      unclustered_count: payload.unclustered_count || 0
+      unclustered_count: payload.unclustered_count || 0,
+      total_clusters: Number(meta.total || clusterCatalog.length || 0),
+      returned_clusters: Number(meta.returned || clusterCatalog.length || 0),
+      offset: Number(meta.offset || 0),
+      limit: Number(meta.limit || CLUSTER_LIMIT)
     };
     renderClusterSidebar();
 
@@ -2143,6 +2200,7 @@ async function loadCluster(query) {
 
     await loadClusterDetail(target.id, true);
   } catch (err) {
+    if (isStaleRequest('clusterList', token)) return;
     clusterCatalog = [];
     renderClusterSidebar();
     showEmpty('Error', err.message);
@@ -2152,6 +2210,7 @@ async function loadCluster(query) {
 async function loadClusterDetail(clusterId, fromListLoad) {
   const id = Number(clusterId);
   if (!id || Number.isNaN(id)) return;
+  const token = nextRequestToken('clusterDetail');
 
   activeClusterId = id;
   renderClusterSidebar();
@@ -2162,8 +2221,9 @@ async function loadClusterDetail(clusterId, fromListLoad) {
 
   try {
     const resp = await fetch(`/api/clusters/${id}?limit=${CLUSTER_DETAIL_LIMIT}`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (!resp.ok) throw new Error(await readAPIError(resp));
     graphData = await resp.json();
+    if (isStaleRequest('clusterDetail', token)) return;
     selectedNode = null;
     autoFitPending = true;
 
@@ -2178,6 +2238,7 @@ async function loadClusterDetail(clusterId, fromListLoad) {
 
     renderGraph();
   } catch (err) {
+    if (isStaleRequest('clusterDetail', token)) return;
     showEmpty('Error', err.message);
   }
 }

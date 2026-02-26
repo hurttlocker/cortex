@@ -9,11 +9,13 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/hurttlocker/cortex/internal/connect"
 	"github.com/hurttlocker/cortex/internal/observe"
 	"github.com/hurttlocker/cortex/internal/store"
 )
@@ -965,4 +967,923 @@ func TestRunStats_GrowthReportTopSourceFilesLimit(t *testing.T) {
 	if len(payload.Windows[0].TopMemorySources) > 2 {
 		t.Fatalf("expected top_memory_sources <= 2, got %d", len(payload.Windows[0].TopMemorySources))
 	}
+}
+
+// ==================== extract arg parsing ====================
+
+func TestRunExtract_NoArgsUsage(t *testing.T) {
+	err := runExtract([]string{})
+	if err == nil {
+		t.Fatal("expected usage error")
+	}
+	if !strings.Contains(err.Error(), "usage: cortex extract") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunExtract_UnknownFlag(t *testing.T) {
+	err := runExtract([]string{"--nope"})
+	if err == nil {
+		t.Fatal("expected unknown flag error")
+	}
+	if !strings.Contains(err.Error(), "unknown flag: --nope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunExtract_TooManyPaths(t *testing.T) {
+	err := runExtract([]string{"a.md", "b.md"})
+	if err == nil {
+		t.Fatal("expected multiple path error")
+	}
+	if !strings.Contains(err.Error(), "only one file path allowed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunExtract_MissingFilePath(t *testing.T) {
+	err := runExtract([]string{"--json"})
+	if err == nil {
+		t.Fatal("expected missing file path error")
+	}
+	if !strings.Contains(err.Error(), "no file path specified") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// ==================== classify arg parsing ====================
+
+func TestRunClassify_InvalidBatchSize(t *testing.T) {
+	err := runClassify([]string{"--batch-size", "abc"})
+	if err == nil {
+		t.Fatal("expected invalid batch-size error")
+	}
+	if !strings.Contains(err.Error(), "invalid --batch-size: abc") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunClassify_InvalidConcurrency(t *testing.T) {
+	err := runClassify([]string{"--concurrency", "abc"})
+	if err == nil {
+		t.Fatal("expected invalid concurrency error")
+	}
+	if !strings.Contains(err.Error(), "invalid --concurrency: abc") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunClassify_InvalidLimit(t *testing.T) {
+	err := runClassify([]string{"--limit", "abc"})
+	if err == nil {
+		t.Fatal("expected invalid limit error")
+	}
+	if !strings.Contains(err.Error(), "invalid --limit: abc") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunClassify_UnknownFlag(t *testing.T) {
+	err := runClassify([]string{"--nope"})
+	if err == nil {
+		t.Fatal("expected unknown flag error")
+	}
+	if !strings.Contains(err.Error(), "unknown flag: --nope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// ==================== summarize arg parsing ====================
+
+func TestRunSummarize_MissingLLMUsage(t *testing.T) {
+	err := runSummarize([]string{})
+	if err == nil {
+		t.Fatal("expected usage error")
+	}
+	if !strings.Contains(err.Error(), "usage: cortex summarize --llm") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunSummarize_InvalidCluster(t *testing.T) {
+	err := runSummarize([]string{"--llm", "openrouter/x", "--cluster", "abc"})
+	if err == nil {
+		t.Fatal("expected invalid cluster error")
+	}
+	if !strings.Contains(err.Error(), "invalid --cluster: abc") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunSummarize_InvalidMinClusterSize(t *testing.T) {
+	err := runSummarize([]string{"--llm", "openrouter/x", "--min-cluster-size", "abc"})
+	if err == nil {
+		t.Fatal("expected invalid min-cluster-size error")
+	}
+	if !strings.Contains(err.Error(), "invalid --min-cluster-size: abc") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// ==================== list arg parsing ====================
+
+func TestRunList_InvalidLimit(t *testing.T) {
+	err := runList([]string{"--limit", "abc"})
+	if err == nil {
+		t.Fatal("expected invalid --limit error")
+	}
+	if !strings.Contains(err.Error(), "invalid --limit value: abc") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunList_UnknownFlag(t *testing.T) {
+	err := runList([]string{"--nope"})
+	if err == nil {
+		t.Fatal("expected unknown flag error")
+	}
+	if !strings.Contains(err.Error(), "unknown flag: --nope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunList_UnexpectedArgument(t *testing.T) {
+	err := runList([]string{"extra"})
+	if err == nil {
+		t.Fatal("expected unexpected argument error")
+	}
+	if !strings.Contains(err.Error(), "unexpected argument: extra") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// ==================== export arg parsing ====================
+
+func TestRunExport_InvalidFormat(t *testing.T) {
+	err := runExport([]string{"--format", "xml"})
+	if err == nil {
+		t.Fatal("expected unsupported format error")
+	}
+	if !strings.Contains(err.Error(), "unsupported format: xml") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunExport_UnknownFlag(t *testing.T) {
+	err := runExport([]string{"--nope"})
+	if err == nil {
+		t.Fatal("expected unknown flag error")
+	}
+	if !strings.Contains(err.Error(), "unknown flag: --nope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunExport_UnexpectedArgument(t *testing.T) {
+	err := runExport([]string{"extra"})
+	if err == nil {
+		t.Fatal("expected unexpected argument error")
+	}
+	if !strings.Contains(err.Error(), "unexpected argument: extra") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// ==================== remediation hints ====================
+
+func TestRemediationHint_UsageAndFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		err  string
+		want string
+	}{
+		{
+			name: "usage",
+			err:  "usage: cortex list [--json]",
+			want: "Run `cortex help`",
+		},
+		{
+			name: "unknown flag",
+			err:  "unknown flag: --bad",
+			want: "Run `cortex help`",
+		},
+		{
+			name: "unknown argument",
+			err:  "unknown argument: --bad",
+			want: "Run `cortex help`",
+		},
+		{
+			name: "unexpected argument",
+			err:  "unexpected argument: nope",
+			want: "Run `cortex help`",
+		},
+		{
+			name: "unknown connect subcommand",
+			err:  "unknown connect subcommand: nope",
+			want: "Run `cortex help`",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := remediationHint(errors.New(tt.err))
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("remediationHint(%q) = %q, want substring %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRemediationHint_APIKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		err  string
+		want string
+	}{
+		{
+			name: "openrouter",
+			err:  "openrouter provider requires OPENROUTER_API_KEY env var",
+			want: "OPENROUTER_API_KEY",
+		},
+		{
+			name: "google",
+			err:  "google provider requires GEMINI_API_KEY or GOOGLE_API_KEY env var",
+			want: "GOOGLE_API_KEY",
+		},
+		{
+			name: "openai",
+			err:  "openai provider requires OPENAI_API_KEY env var",
+			want: "OPENAI_API_KEY",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := remediationHint(errors.New(tt.err))
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("remediationHint(%q) = %q, want substring %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRemediationHint_DatabaseCases(t *testing.T) {
+	t.Run("locked", func(t *testing.T) {
+		got := remediationHint(errors.New("database is locked"))
+		if !strings.Contains(got, "Another process is using this DB") {
+			t.Fatalf("unexpected hint: %q", got)
+		}
+	})
+
+	t.Run("corrupt", func(t *testing.T) {
+		got := remediationHint(errors.New("file is not a database"))
+		if !strings.Contains(got, "Database appears corrupted or stale") {
+			t.Fatalf("unexpected hint: %q", got)
+		}
+		if !strings.Contains(got, "cortex reimport") {
+			t.Fatalf("expected reimport recommendation, got: %q", got)
+		}
+	})
+
+	t.Run("open-store-with-path", func(t *testing.T) {
+		oldDBPath := globalDBPath
+		globalDBPath = "/tmp/test.db"
+		t.Cleanup(func() { globalDBPath = oldDBPath })
+
+		got := remediationHint(errors.New("opening store: unable to open database file"))
+		if !strings.Contains(got, "Verify the DB path is valid and writable") {
+			t.Fatalf("unexpected hint: %q", got)
+		}
+		if !strings.Contains(got, "/tmp/test.db") {
+			t.Fatalf("expected db path in hint, got: %q", got)
+		}
+	})
+
+	t.Run("open-store-no-path", func(t *testing.T) {
+		oldDBPath := globalDBPath
+		globalDBPath = ""
+		t.Cleanup(func() { globalDBPath = oldDBPath })
+
+		got := remediationHint(errors.New("opening store: permission denied"))
+		if !strings.Contains(got, "Set --db <path>") && !strings.Contains(got, "Check file permissions") {
+			t.Fatalf("unexpected hint: %q", got)
+		}
+	})
+}
+
+func TestRemediationHint_UnknownErrorReturnsEmpty(t *testing.T) {
+	got := remediationHint(errors.New("some unrelated failure"))
+	if got != "" {
+		t.Fatalf("expected empty hint, got %q", got)
+	}
+}
+
+// ==================== main exit codes ====================
+
+func TestMain_ExitCodeUnknownCommand(t *testing.T) {
+	exitCode, out := runMainSubprocess(t, "not-a-command")
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "Unknown command: not-a-command") {
+		t.Fatalf("expected unknown command output, got: %q", out)
+	}
+	if !strings.Contains(out, "cortex help") {
+		t.Fatalf("expected help remediation hint, got: %q", out)
+	}
+}
+
+func TestMain_ExitCodeNoCommand(t *testing.T) {
+	exitCode, out := runMainSubprocess(t)
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "Usage:") {
+		t.Fatalf("expected usage output, got: %q", out)
+	}
+}
+
+func TestMain_UnknownFlagIncludesHint(t *testing.T) {
+	exitCode, out := runMainSubprocess(t, "list", "--nope")
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "unknown flag") {
+		t.Fatalf("expected unknown flag output, got: %q", out)
+	}
+	if !strings.Contains(out, "Hint: Run `cortex help`") {
+		t.Fatalf("expected usage remediation hint, got: %q", out)
+	}
+}
+
+func TestMain_DBOpenFailureIncludesHint(t *testing.T) {
+	tmpDir := t.TempDir()
+	blockingPath := filepath.Join(tmpDir, "not-a-dir")
+	if err := os.WriteFile(blockingPath, []byte("x"), 0600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+	badDBPath := filepath.Join(blockingPath, "cortex.db")
+
+	exitCode, out := runMainSubprocessWithEnv(t, map[string]string{
+		"CORTEX_DB": badDBPath,
+	}, "list")
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "opening store") {
+		t.Fatalf("expected store-open error, got: %q", out)
+	}
+	if !strings.Contains(out, "Hint: Verify the DB path is valid and writable") {
+		t.Fatalf("expected DB path hint, got: %q", out)
+	}
+	if !strings.Contains(out, badDBPath) {
+		t.Fatalf("expected hinted DB path %q, got: %q", badDBPath, out)
+	}
+}
+
+func TestMain_CorruptDBIncludesRecoveryHint(t *testing.T) {
+	tmpDir := t.TempDir()
+	corruptDBPath := filepath.Join(tmpDir, "corrupt.db")
+	if err := os.WriteFile(corruptDBPath, []byte("this is not sqlite"), 0600); err != nil {
+		t.Fatalf("write corrupt db file: %v", err)
+	}
+
+	exitCode, out := runMainSubprocessWithEnv(t, map[string]string{
+		"CORTEX_DB": corruptDBPath,
+	}, "list")
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)
+	}
+	if !strings.Contains(strings.ToLower(out), "not a database") {
+		t.Fatalf("expected corruption message, got: %q", out)
+	}
+	if !strings.Contains(out, "Hint: Database appears corrupted or stale") {
+		t.Fatalf("expected corruption remediation hint, got: %q", out)
+	}
+	if !strings.Contains(out, "cortex reimport") {
+		t.Fatalf("expected reimport remediation, got: %q", out)
+	}
+}
+
+func TestMain_OpenRouterMissingKeyIncludesHint(t *testing.T) {
+	exitCode, out := runMainSubprocessWithEnv(t, map[string]string{
+		"OPENROUTER_API_KEY": "",
+	}, "classify", "--llm", "openrouter/deepseek/deepseek-v3.2", "--limit", "1")
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "OPENROUTER_API_KEY") {
+		t.Fatalf("expected missing-key message, got: %q", out)
+	}
+	if !strings.Contains(out, "Hint: Set OPENROUTER_API_KEY") {
+		t.Fatalf("expected API-key remediation hint, got: %q", out)
+	}
+}
+
+func TestMain_SearchDBOpenFailureIncludesHint(t *testing.T) {
+	tmpDir := t.TempDir()
+	blockingPath := filepath.Join(tmpDir, "db-blocker")
+	if err := os.WriteFile(blockingPath, []byte("x"), 0600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+	badDBPath := filepath.Join(blockingPath, "cortex.db")
+
+	exitCode, out := runMainSubprocessWithEnv(t, map[string]string{
+		"CORTEX_DB": badDBPath,
+	}, "search", "memory")
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "opening store") {
+		t.Fatalf("expected store-open error, got: %q", out)
+	}
+	if !strings.Contains(out, "Hint: Verify the DB path is valid and writable") {
+		t.Fatalf("expected DB path remediation hint, got: %q", out)
+	}
+}
+
+func TestMain_ReasonDBOpenFailureIncludesHint(t *testing.T) {
+	tmpDir := t.TempDir()
+	blockingPath := filepath.Join(tmpDir, "db-blocker")
+	if err := os.WriteFile(blockingPath, []byte("x"), 0600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+	badDBPath := filepath.Join(blockingPath, "cortex.db")
+
+	exitCode, out := runMainSubprocessWithEnv(t, map[string]string{
+		"CORTEX_DB":          badDBPath,
+		"OPENROUTER_API_KEY": "",
+	}, "reason", "what changed")
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "opening store") {
+		t.Fatalf("expected store-open error, got: %q", out)
+	}
+	if !strings.Contains(out, "Hint: Verify the DB path is valid and writable") {
+		t.Fatalf("expected DB path remediation hint, got: %q", out)
+	}
+}
+
+func TestMain_ConnectDBOpenFailureIncludesHint(t *testing.T) {
+	tmpDir := t.TempDir()
+	blockingPath := filepath.Join(tmpDir, "db-blocker")
+	if err := os.WriteFile(blockingPath, []byte("x"), 0600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+	badDBPath := filepath.Join(blockingPath, "cortex.db")
+
+	exitCode, out := runMainSubprocessWithEnv(t, map[string]string{
+		"CORTEX_DB": badDBPath,
+	}, "connect", "status")
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "opening store") {
+		t.Fatalf("expected store-open error, got: %q", out)
+	}
+	if !strings.Contains(out, "Hint: Verify the DB path is valid and writable") {
+		t.Fatalf("expected DB path remediation hint, got: %q", out)
+	}
+}
+
+func TestMain_MCPDBOpenFailureIncludesHint(t *testing.T) {
+	tmpDir := t.TempDir()
+	blockingPath := filepath.Join(tmpDir, "db-blocker")
+	if err := os.WriteFile(blockingPath, []byte("x"), 0600); err != nil {
+		t.Fatalf("write blocking file: %v", err)
+	}
+	badDBPath := filepath.Join(blockingPath, "cortex.db")
+
+	exitCode, out := runMainSubprocessWithEnv(t, map[string]string{
+		"CORTEX_DB": badDBPath,
+	}, "mcp")
+	if exitCode != 1 {
+		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)
+	}
+	if !strings.Contains(out, "opening store") {
+		t.Fatalf("expected store-open error, got: %q", out)
+	}
+	if !strings.Contains(out, "Hint: Verify the DB path is valid and writable") {
+		t.Fatalf("expected DB path remediation hint, got: %q", out)
+	}
+}
+
+func TestMainProcessHelper(t *testing.T) {
+	if os.Getenv("CORTEX_TEST_MAIN_HELPER") != "1" {
+		return
+	}
+
+	args := []string{"cortex"}
+	for i := 1; i < len(os.Args); i++ {
+		if os.Args[i] == "--" {
+			args = append(args, os.Args[i+1:]...)
+			break
+		}
+	}
+	os.Args = args
+	main()
+}
+
+func runMainSubprocess(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	return runMainSubprocessWithEnv(t, nil, args...)
+}
+
+func runMainSubprocessWithEnv(t *testing.T, env map[string]string, args ...string) (int, string) {
+	t.Helper()
+
+	cmdArgs := []string{"-test.run=^TestMainProcessHelper$", "--"}
+	cmdArgs = append(cmdArgs, args...)
+	cmd := exec.Command(os.Args[0], cmdArgs...)
+	cmd.Env = mergeEnv(os.Environ(), env)
+	cmd.Env = append(cmd.Env, "CORTEX_TEST_MAIN_HELPER=1")
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	err := cmd.Run()
+	if err == nil {
+		return 0, out.String()
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), out.String()
+	}
+
+	t.Fatalf("running subprocess main helper: %v", err)
+	return -1, out.String()
+}
+
+func mergeEnv(base []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return append([]string{}, base...)
+	}
+
+	skip := make(map[string]struct{}, len(overrides))
+	for k := range overrides {
+		skip[k] = struct{}{}
+	}
+
+	merged := make([]string, 0, len(base)+len(overrides))
+	for _, kv := range base {
+		key := kv
+		if idx := strings.IndexByte(kv, '='); idx >= 0 {
+			key = kv[:idx]
+		}
+		if _, shouldSkip := skip[key]; shouldSkip {
+			continue
+		}
+		merged = append(merged, kv)
+	}
+	for k, v := range overrides {
+		merged = append(merged, fmt.Sprintf("%s=%s", k, v))
+	}
+	return merged
+}
+
+// ==================== doctor command ====================
+
+func TestRunDoctor_UnexpectedArgument(t *testing.T) {
+	err := runDoctor([]string{"extra"})
+	if err == nil {
+		t.Fatal("expected usage error")
+	}
+	if !strings.Contains(err.Error(), "usage: cortex doctor") && !strings.Contains(err.Error(), "Usage: cortex doctor") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunDoctor_JSONMissingDBFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	missingDB := filepath.Join(tmpDir, "missing.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = missingDB
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runDoctor([]string{"--json"})
+	})
+	if runErr == nil {
+		t.Fatal("expected doctor failure when DB is missing")
+	}
+
+	var report doctorReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode doctor report: %v\nout=%q", err, out)
+	}
+	if report.Summary.Fail == 0 {
+		t.Fatalf("expected failing checks, got summary=%+v", report.Summary)
+	}
+	check, ok := findDoctorCheck(report, "database_path")
+	if !ok {
+		t.Fatalf("expected database_path check in report: %+v", report)
+	}
+	if check.Status != "fail" {
+		t.Fatalf("expected database_path status=fail, got %q", check.Status)
+	}
+}
+
+func TestRunDoctor_JSONHealthyDB(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	hnswPath := filepath.Join(tmpDir, "hnsw.idx")
+	if err := os.WriteFile(hnswPath, []byte("idx"), 0600); err != nil {
+		t.Fatalf("write hnsw index: %v", err)
+	}
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memID, err := s.AddMemory(ctx, &store.Memory{
+		Content:       "doctor command seed memory",
+		SourceFile:    "doctor.md",
+		SourceLine:    1,
+		SourceSection: "doctor",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "cortex",
+		Predicate:  "health",
+		Object:     "ok",
+		Confidence: 0.9,
+		FactType:   "state",
+	}); err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+	if err := s.AddEmbedding(ctx, memID, []float32{1, 0, 0}); err != nil {
+		t.Fatalf("AddEmbedding: %v", err)
+	}
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		t.Fatal("expected SQLiteStore")
+	}
+	cs := connect.NewConnectorStore(sqlStore.GetDB())
+	if _, err := cs.Add(ctx, "github", json.RawMessage(`{"token":"x"}`)); err != nil {
+		t.Fatalf("add connector: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runDoctor([]string{"--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runDoctor --json failed: %v\nout=%s", runErr, out)
+	}
+
+	var report doctorReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode doctor report: %v\nout=%q", err, out)
+	}
+	if report.Summary.Fail != 0 {
+		t.Fatalf("expected zero failing checks, got %+v", report.Summary)
+	}
+
+	embeddings, ok := findDoctorCheck(report, "embeddings")
+	if !ok || embeddings.Status != "pass" {
+		t.Fatalf("expected embeddings check to pass, got %+v", embeddings)
+	}
+	connectorsCheck, ok := findDoctorCheck(report, "connectors")
+	if !ok || connectorsCheck.Status != "pass" {
+		t.Fatalf("expected connectors check to pass, got %+v", connectorsCheck)
+	}
+	llm, ok := findDoctorCheck(report, "llm_keys")
+	if !ok || llm.Status != "pass" {
+		t.Fatalf("expected llm_keys check to pass, got %+v", llm)
+	}
+}
+
+func TestRunDoctor_QuietSuppressesPassingChecks(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	out := captureStdout(func() {
+		if err := runDoctor([]string{"--quiet"}); err != nil {
+			t.Fatalf("runDoctor --quiet: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "database_path") {
+		t.Fatalf("expected --quiet to hide passing checks, got output: %s", out)
+	}
+	if !strings.Contains(out, "Summary:") {
+		t.Fatalf("expected summary line in output, got: %s", out)
+	}
+}
+
+// ==================== agents command ====================
+
+func TestRunAgents_UnknownArgument(t *testing.T) {
+	err := runAgents([]string{"--bad"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "usage: cortex agents") && !strings.Contains(err.Error(), "Usage: cortex agents") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunAgents_JSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+
+	misterMemID, err := s.AddMemory(ctx, &store.Memory{
+		Content:       "mister memory",
+		SourceFile:    "mister.md",
+		SourceLine:    1,
+		SourceSection: "agent",
+		Metadata:      &store.Metadata{AgentID: "mister"},
+	})
+	if err != nil {
+		t.Fatalf("add mister memory: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:   misterMemID,
+		Subject:    "deploy",
+		Predicate:  "owner",
+		Object:     "mister",
+		Confidence: 0.95,
+		FactType:   "identity",
+		AgentID:    "mister",
+	}); err != nil {
+		t.Fatalf("add mister fact: %v", err)
+	}
+
+	hawkMemID, err := s.AddMemory(ctx, &store.Memory{
+		Content:       "hawk memory",
+		SourceFile:    "hawk.md",
+		SourceLine:    1,
+		SourceSection: "agent",
+		Metadata:      &store.Metadata{AgentID: "hawk"},
+	})
+	if err != nil {
+		t.Fatalf("add hawk memory: %v", err)
+	}
+	oldFactID, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:   hawkMemID,
+		Subject:    "build",
+		Predicate:  "status",
+		Object:     "red",
+		Confidence: 0.7,
+		FactType:   "state",
+		AgentID:    "hawk",
+	})
+	if err != nil {
+		t.Fatalf("add hawk old fact: %v", err)
+	}
+	newFactID, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:   hawkMemID,
+		Subject:    "build",
+		Predicate:  "status",
+		Object:     "green",
+		Confidence: 0.9,
+		FactType:   "state",
+		AgentID:    "hawk",
+	})
+	if err != nil {
+		t.Fatalf("add hawk new fact: %v", err)
+	}
+	if err := s.SupersedeFact(ctx, oldFactID, newFactID, "state updated"); err != nil {
+		t.Fatalf("supersede hawk fact: %v", err)
+	}
+
+	// Global fact should not appear in `cortex agents`.
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:   hawkMemID,
+		Subject:    "global",
+		Predicate:  "scope",
+		Object:     "shared",
+		Confidence: 0.8,
+		FactType:   "state",
+	}); err != nil {
+		t.Fatalf("add global fact: %v", err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runAgents([]string{"--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runAgents --json failed: %v\nout=%s", runErr, out)
+	}
+
+	var payload agentsReport
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode agents payload: %v\nout=%q", err, out)
+	}
+	if payload.TotalAgents != 2 {
+		t.Fatalf("expected 2 agents, got %d (%+v)", payload.TotalAgents, payload)
+	}
+
+	mister, ok := findAgentSummary(payload.Agents, "mister")
+	if !ok {
+		t.Fatalf("expected mister in payload: %+v", payload)
+	}
+	if mister.MemoryCount != 1 || mister.FactCount != 1 || mister.ActiveFactCount != 1 {
+		t.Fatalf("unexpected mister stats: %+v", mister)
+	}
+
+	hawk, ok := findAgentSummary(payload.Agents, "hawk")
+	if !ok {
+		t.Fatalf("expected hawk in payload: %+v", payload)
+	}
+	if hawk.MemoryCount != 1 || hawk.FactCount != 2 || hawk.ActiveFactCount != 1 {
+		t.Fatalf("unexpected hawk stats: %+v", hawk)
+	}
+}
+
+func TestRunAgents_NoAgents(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	out := captureStdout(func() {
+		if err := runAgents(nil); err != nil {
+			t.Fatalf("runAgents: %v", err)
+		}
+	})
+	if !strings.Contains(out, "No agents found") {
+		t.Fatalf("expected empty-state message, got: %s", out)
+	}
+}
+
+func findAgentSummary(agents []agentSummary, agentID string) (agentSummary, bool) {
+	for _, a := range agents {
+		if a.AgentID == agentID {
+			return a, true
+		}
+	}
+	return agentSummary{}, false
+}
+
+func findDoctorCheck(report doctorReport, name string) (doctorCheck, bool) {
+	for _, c := range report.Checks {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return doctorCheck{}, false
 }

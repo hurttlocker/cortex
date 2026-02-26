@@ -105,6 +105,49 @@ func TestImpactBasicSubject(t *testing.T) {
 	}
 }
 
+func TestImpactPaginationAndRankingMetadata(t *testing.T) {
+	st := newTestStore(t)
+	defer st.Close()
+	seedImpactTestData(t, st)
+
+	ts := newImpactTestServer(st)
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/api/impact?subject=trading&limit=2&offset=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	out := decodeImpactResponse(t, resp)
+	if out.TotalFacts < 3 {
+		t.Fatalf("expected unpaginated total facts >= 3, got %d", out.TotalFacts)
+	}
+	facts := make([]ImpactFact, 0)
+	for _, g := range out.Groups {
+		facts = append(facts, g.Facts...)
+	}
+	if len(facts) != 2 {
+		t.Fatalf("expected 2 paged facts, got %d", len(facts))
+	}
+	if facts[0].Rank != 2 {
+		t.Fatalf("expected first paged fact rank=2, got %d", facts[0].Rank)
+	}
+	if facts[0].Relevance <= 0 {
+		t.Fatalf("expected relevance score > 0, got %.3f", facts[0].Relevance)
+	}
+
+	if requireMetaInt(t, out.Meta, "limit") != 2 || requireMetaInt(t, out.Meta, "offset") != 1 {
+		t.Fatalf("unexpected impact pagination meta: %#v", out.Meta)
+	}
+	if requireMetaInt(t, out.Meta, "returned") != 2 {
+		t.Fatalf("expected returned=2, got %#v", out.Meta["returned"])
+	}
+}
+
 func TestImpactDepthLimiting(t *testing.T) {
 	st := newTestStore(t)
 	defer st.Close()

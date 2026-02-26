@@ -20,9 +20,16 @@ const (
 
 // ClustersResponse is the list payload for /api/clusters.
 type ClustersResponse struct {
-	Clusters         []store.Cluster `json:"clusters"`
-	UnclusteredCount int             `json:"unclustered_count"`
-	TotalFacts       int             `json:"total_facts"`
+	Clusters         []ClusterListItem      `json:"clusters"`
+	UnclusteredCount int                    `json:"unclustered_count"`
+	TotalFacts       int                    `json:"total_facts"`
+	Meta             map[string]interface{} `json:"meta,omitempty"`
+}
+
+type ClusterListItem struct {
+	store.Cluster
+	Rank      int     `json:"rank"`
+	Relevance float64 `json:"relevance"`
 }
 
 // ClusterDetailResponse is the detail payload for /api/clusters/:id.
@@ -41,6 +48,7 @@ func handleClustersListAPI(w http.ResponseWriter, r *http.Request, st *store.SQL
 
 	ctx := context.Background()
 	limit := parseBoundedInt(r.URL.Query().Get("limit"), defaultClustersListLimit, 1, maxClustersListLimit)
+	offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, maxGraphOffset)
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	clusters, err := st.ListClusters(ctx)
@@ -59,8 +67,31 @@ func handleClustersListAPI(w http.ResponseWriter, r *http.Request, st *store.SQL
 		}
 		clusters = filtered
 	}
-	if len(clusters) > limit {
-		clusters = clusters[:limit]
+	totalClusters := len(clusters)
+
+	start := offset
+	if start > len(clusters) {
+		start = len(clusters)
+	}
+	end := start + limit
+	if end > len(clusters) {
+		end = len(clusters)
+	}
+	pagedClusters := clusters[start:end]
+
+	maxCount := 0
+	for _, c := range clusters {
+		if c.FactCount > maxCount {
+			maxCount = c.FactCount
+		}
+	}
+	items := make([]ClusterListItem, 0, len(pagedClusters))
+	for i, c := range pagedClusters {
+		items = append(items, ClusterListItem{
+			Cluster:   c,
+			Rank:      offset + i + 1,
+			Relevance: clusterRelevanceScore(c, maxCount),
+		})
 	}
 
 	unclusteredCount, err := st.CountUnclusteredFacts(ctx)
@@ -74,10 +105,16 @@ func handleClustersListAPI(w http.ResponseWriter, r *http.Request, st *store.SQL
 		return
 	}
 
+	meta := map[string]interface{}{
+		"ordering": "fact_count_desc,cohesion_desc,name_asc",
+	}
+	addPaginationMeta(meta, limit, offset, totalClusters, len(items))
+
 	writeJSON(w, 200, ClustersResponse{
-		Clusters:         clusters,
+		Clusters:         items,
 		UnclusteredCount: unclusteredCount,
 		TotalFacts:       totalFacts,
+		Meta:             meta,
 	})
 }
 
@@ -93,8 +130,14 @@ func handleClusterDetailAPI(w http.ResponseWriter, r *http.Request, st *store.SQ
 
 	ctx := context.Background()
 	limit := parseBoundedInt(r.URL.Query().Get("limit"), defaultClusterFactsLimit, 1, maxClusterFactsLimit)
+	offset := parseBoundedInt(r.URL.Query().Get("offset"), 0, 0, maxGraphOffset)
 
-	detail, err := st.GetClusterDetail(ctx, clusterID, limit)
+	fetchLimit := limit + offset
+	if fetchLimit > maxClusterFactsLimit {
+		fetchLimit = maxClusterFactsLimit
+	}
+
+	detail, err := st.GetClusterDetail(ctx, clusterID, fetchLimit)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -104,21 +147,39 @@ func handleClusterDetailAPI(w http.ResponseWriter, r *http.Request, st *store.SQ
 		return
 	}
 
+	totalClusterFacts := detail.Cluster.FactCount
+	if totalClusterFacts < 0 {
+		totalClusterFacts = 0
+	}
+	pageStart := offset
+	if pageStart > len(detail.Facts) {
+		pageStart = len(detail.Facts)
+	}
+	pageEnd := pageStart + limit
+	if pageEnd > len(detail.Facts) {
+		pageEnd = len(detail.Facts)
+	}
+	pageFacts := detail.Facts[pageStart:pageEnd]
+
 	db := st.GetDB()
-	nodes := make([]ExportNode, 0, len(detail.Facts))
-	facts := make([]SearchFact, 0, len(detail.Facts))
-	nodeIDs := make([]int64, 0, len(detail.Facts))
+	nodes := make([]ExportNode, 0, len(pageFacts))
+	facts := make([]SearchFact, 0, len(pageFacts))
+	nodeIDs := make([]int64, 0, len(pageFacts))
 	subjectGroups := make(map[string][]int64)
 
-	sourceByMemory, _ := loadMemorySourcesForFacts(ctx, db, detail.Facts)
+	sourceByMemory, _ := loadMemorySourcesForFacts(ctx, db, pageFacts)
 
-	for _, fact := range detail.Facts {
+	for i, fact := range pageFacts {
+		relevance := fact.Confidence
+		rank := offset + i + 1
 		nodes = append(nodes, ExportNode{
 			ID:           fact.ID,
 			Subject:      fact.Subject,
 			Predicate:    fact.Predicate,
 			Object:       fact.Object,
 			Confidence:   fact.Confidence,
+			Relevance:    relevance,
+			Rank:         rank,
 			AgentID:      fact.AgentID,
 			FactType:     fact.FactType,
 			ClusterID:    detail.Cluster.ID,
@@ -131,6 +192,8 @@ func handleClusterDetailAPI(w http.ResponseWriter, r *http.Request, st *store.SQ
 			Predicate:  fact.Predicate,
 			Object:     fact.Object,
 			Confidence: fact.Confidence,
+			Relevance:  relevance,
+			Rank:       rank,
 			FactType:   fact.FactType,
 			AgentID:    fact.AgentID,
 			Source:     sourceByMemory[fact.MemoryID],
@@ -169,23 +232,27 @@ func handleClusterDetailAPI(w http.ResponseWriter, r *http.Request, st *store.SQ
 		cooccurrences = nil
 	}
 
+	meta := map[string]interface{}{
+		"mode":                "cluster_detail",
+		"cluster_id":          detail.Cluster.ID,
+		"cluster_name":        detail.Cluster.Name,
+		"cohesion":            detail.Cluster.Cohesion,
+		"total_nodes":         len(nodes),
+		"total_edges":         len(edges),
+		"total_cooccurrences": len(cooccurrences),
+		"edge_mode":           edgeMode,
+		"fallback_edges":      fallbackEdges,
+		"ordering":            "relevance_desc(confidence,id)",
+	}
+	addPaginationMeta(meta, limit, offset, totalClusterFacts, len(nodes))
+
 	resp := ClusterDetailResponse{
 		Cluster:       detail.Cluster,
 		Facts:         facts,
 		Nodes:         nodes,
 		Edges:         edges,
 		Cooccurrences: cooccurrences,
-		Meta: map[string]interface{}{
-			"mode":                "cluster_detail",
-			"cluster_id":          detail.Cluster.ID,
-			"cluster_name":        detail.Cluster.Name,
-			"cohesion":            detail.Cluster.Cohesion,
-			"total_nodes":         len(nodes),
-			"total_edges":         len(edges),
-			"total_cooccurrences": len(cooccurrences),
-			"edge_mode":           edgeMode,
-			"fallback_edges":      fallbackEdges,
-		},
+		Meta:          meta,
 	}
 
 	writeJSON(w, 200, resp)
@@ -222,6 +289,33 @@ func clusterMatchesQuery(c store.Cluster, q string) bool {
 		}
 	}
 	return false
+}
+
+func clusterRelevanceScore(c store.Cluster, maxFactCount int) float64 {
+	if maxFactCount <= 0 {
+		if c.Cohesion < 0 {
+			return 0
+		}
+		if c.Cohesion > 1 {
+			return 1
+		}
+		return c.Cohesion
+	}
+	factNorm := float64(c.FactCount) / float64(maxFactCount)
+	if factNorm < 0 {
+		factNorm = 0
+	}
+	if factNorm > 1 {
+		factNorm = 1
+	}
+	cohesion := c.Cohesion
+	if cohesion < 0 {
+		cohesion = 0
+	}
+	if cohesion > 1 {
+		cohesion = 1
+	}
+	return 0.65*factNorm + 0.35*cohesion
 }
 
 func loadMemorySourcesForFacts(ctx context.Context, db *sql.DB, facts []*store.Fact) (map[int64]string, error) {
