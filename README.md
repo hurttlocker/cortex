@@ -115,7 +115,7 @@ Your files ──→ Import ──→ Fact extraction ──→ SQLite + FTS5
 **Search:** BM25 keyword + optional semantic embeddings, fused with Weighted Score Fusion (default hybrid) or Reciprocal Rank Fusion (`--mode rrf`).
 **Facts:** Extracted as subject-predicate-object triples with type-aware decay rates.
 **Graph:** Interactive 2D knowledge graph explorer with cluster visualization.
-**Connect:** Sync from GitHub, Gmail, Calendar, Drive, Slack — extract facts on import.
+**Connect:** Sync from GitHub, Gmail, Calendar, Drive, Slack, Discord, Telegram, Notion — extract facts on import.
 
 ## Feature highlights
 
@@ -129,7 +129,7 @@ Your files ──→ Import ──→ Fact extraction ──→ SQLite + FTS5
 | **Auto-infer** | `--extract` on import runs fact extraction + edge inference automatically. |
 | **Knowledge graph** | `cortex graph --serve` — interactive 2D cluster explorer in your browser. |
 | **Recursive reasoning** | `cortex reason --recursive` — LLM loops: search → reason → search deeper. |
-| **Connectors** | GitHub, Gmail, Calendar, Drive, Slack. Import + extract facts in one step. |
+| **Connectors** | GitHub, Gmail, Calendar, Drive, Slack, Discord, Telegram, Notion. Import + extract facts in one step. |
 | **Provenance** | Every fact tracks source file, line, section, timestamp. Full audit trail. |
 | **Export** | JSON, Markdown, CSV. Your memory is yours. No lock-in. |
 | **MCP server** | `cortex mcp` — stdio or HTTP. Works with Claude Code, Cursor, any MCP client. |
@@ -277,19 +277,21 @@ Supports Ollama (free/local), OpenAI, DeepSeek, OpenRouter, or any OpenAI-compat
 - **Search:** BM25 keyword + optional HNSW ANN for semantic, plus hybrid (WSF) and RRF fusion modes
 - **Extraction:** Rule-based pipeline + optional LLM assist, auto-infer on import
 - **Graph:** Interactive 2D knowledge graph explorer with cluster visualization
-- **Connectors:** GitHub, Gmail, Calendar, Drive, Slack — with fact extraction
-- **MCP:** stdio + HTTP/SSE transport — 19 tools, 4 resources
-- **Tests:** 270+ across 15 packages
+- **Connectors:** GitHub, Gmail, Calendar, Drive, Slack, Discord, Telegram, Notion — with fact extraction
+- **MCP:** stdio + HTTP/SSE transport — 17 tools, 4 resources
+- **Tests:** 1,081 across 15 packages
 
 ## Documentation
 
 | Doc | What's in it |
 |-----|-------------|
-| [Full feature reference](docs/README-full.md) | Complete documentation (benchmarks, presets, chunking, etc.) |
-| [Architecture](docs/ARCHITECTURE.md) | System design and package structure |
-| [Connectors guide](docs/connectors.md) | GitHub, Gmail, Calendar, Drive, Slack setup |
+| [Getting started](docs/getting-started.md) | Zero to searching in 5 minutes |
+| [Deep dive](docs/CORTEX_DEEP_DIVE.md) | Full technical documentation |
+| [Architecture](docs/ARCHITECTURE.md) | Package structure and data flow |
+| [Connectors guide](docs/connectors.md) | All 8 provider setup guides |
+| [Migration guide](docs/migration.md) | Upgrading from any version to v1.0 |
 | [Release notes](docs/releases/) | Changelog for each version |
-| [Deep dive](docs/CORTEX_DEEP_DIVE.md) | Strategic analysis and roadmap |
+| [Full feature reference](docs/README-full.md) | Benchmarks, presets, chunking details |
 | [Local LLM guide](docs/LOCAL-LLM-PERFORMANCE.md) | Hardware recommendations for local reasoning |
 | [Ops runbook](docs/ops-db-growth-guardrails.md) | Database growth monitoring |
 | [Contributing](CONTRIBUTING.md) | How to contribute |

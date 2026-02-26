@@ -1,218 +1,234 @@
 # Architecture
 
-> This document describes the high-level architecture of Cortex.  
-> It will evolve as the implementation progresses.
+> Current as of v0.9.0 (62,300+ lines, 15 packages, 1,081 tests).
 
 ## Overview
 
-Cortex is organized as a pipeline:
+Cortex is a pipeline:
 
 ```
-Input Files → Importers → Fact Extraction → Storage → Search/Observe
+Files/Sources → Import → Chunk → Extract → [Enrich] → [Classify] → Store → Search
 ```
 
-Each stage is a clean interface that can be extended independently.
+Each stage is a clean interface. LLM stages (in brackets) are optional — the pipeline works without them.
 
 ## Directory Structure
 
 ```
 cortex/
-├── cmd/cortex/          # CLI entry point (cobra commands)
+├── cmd/cortex/           # CLI entry point + MCP server bootstrap
+│   ├── main.go           # All commands (7,756 lines)
+│   └── main_test.go      # CLI integration tests
 ├── internal/
-│   ├── store/           # SQLite + FTS5 storage layer
-│   ├── ingest/          # Import engine — format-specific parsers
-│   ├── extract/         # Fact extraction — NLP pipeline
-│   ├── search/          # Dual search — BM25 + semantic
-│   └── observe/         # Observability — stats, stale, conflicts
-├── docs/                # Documentation
-└── go.mod               # Go module definition
+│   ├── store/            # SQLite + FTS5 + WAL storage layer
+│   ├── ingest/           # Format-specific importers + chunking
+│   ├── extract/          # Rule-based fact extraction + governor
+│   ├── llm/              # LLM provider abstraction (multi-provider)
+│   ├── search/           # BM25, semantic, hybrid, RRF retrieval
+│   ├── embed/            # Embedding providers (ollama, OpenAI-compat)
+│   ├── ann/              # HNSW approximate nearest neighbor index
+│   ├── graph/            # Knowledge graph, clustering, 2D explorer
+│   ├── connect/          # 8 source connectors + sync engine
+│   ├── mcp/              # MCP server (17 tools, 4 resources)
+│   ├── observe/          # Stats, stale, conflicts, alerts, doctor
+│   └── reason/           # One-shot + recursive reasoning engine
+├── docs/                 # Documentation
+├── scripts/              # Benchmarks, utilities
+└── go.mod
 ```
 
-## Key Design Decisions
+## Package Details
 
-### Single SQLite Database
+### `store/` — Storage Layer (7,088 lines)
 
-All data lives in one SQLite file (`~/.cortex/cortex.db` by default):
-- Raw imported content
-- Extracted facts with provenance
-- FTS5 full-text index
-- Embedding vectors (stored as BLOBs)
+The foundation. Everything goes through the store.
 
-**Why:** Zero configuration, trivially portable (it's just a file), battle-tested concurrency with WAL mode.
+- **SQLite + FTS5**: Single file, WAL mode, no external database server
+- **Tables**: `memories`, `facts`, `fts_memories` (virtual), `connectors`, `sync_log`
+- **Migrations**: Automatic schema evolution on startup
+- **Dedup**: Content-hash (`SHA256(sourcePath + \0 + content)`) prevents duplicate memories
+- **Agent scoping**: `agent_id` column on facts, `json_extract(metadata, '$.agent_id')` on memories
+- **Interfaces**: `Store` interface with `ListMemories`, `ListFacts`, `GetMemory`, `SaveMemory`, `SaveFact`, `DeleteMemory`, `ListOpts` (agent filter, pagination, type filter)
 
-### Import-First Architecture
+### `ingest/` — Import Engine (1,985 lines)
 
-The import engine is the front door. Every memory enters through an importer that:
-1. Parses the source format
-2. Chunks content into memory units
-3. Preserves provenance (file, line, timestamp)
-4. Hands off to the extraction pipeline
+The front door. Every memory enters through an importer.
 
-Adding a new format means implementing one interface:
+- **Formats**: Markdown, JSON, YAML, CSV, plain text
+- **Chunking**: 500 char max, paragraph → line → word boundary splitting
+- **Provenance**: Every chunk tracks source file, line range, import timestamp
+- **Recursive**: `--recursive` imports entire directory trees
+- **Extension filter**: `--ext md,txt,yaml` to limit file types
+- **Interface**:
+  ```go
+  type Importer interface {
+      CanHandle(path string) bool
+      Import(ctx context.Context, path string) ([]RawMemory, error)
+  }
+  ```
 
-```go
-type Importer interface {
-    CanHandle(path string) bool
-    Import(ctx context.Context, path string) ([]RawMemory, error)
-}
+### `extract/` — Fact Extraction (3,782 lines)
+
+Turns unstructured text into structured facts.
+
+- **Rule-based pipeline**: Pattern matching, regex (dates, emails, URLs, amounts), NER via `prose`
+- **Governor**: Caps facts per memory. Default: 10 (auto-capture: 5). Filters headers, bold text, file paths, long objects, checkboxes. `MaxSubjectLength=50`.
+- **Fact types**: 9 valid types — `kv`, `relationship`, `preference`, `temporal`, `identity`, `location`, `decision`, `state`, `config`
+- **LLM enrichment** (v0.9.0): Optional second pass via `llm/` package. Additive only — never removes rule-extracted facts. Tagged `llm-enrich`.
+- **LLM classification** (v0.9.0): Optional reclassification of fact types. Batch: 20 facts/request, 5 concurrent.
+
+### `llm/` — LLM Provider Abstraction (391 lines)
+
+Thin wrapper over OpenAI-compatible APIs.
+
+- **Providers**: Any OpenAI-compatible endpoint (Grok, DeepSeek, Gemini, OpenRouter, local)
+- **Config**: `~/.cortex/config.yaml` or environment variables
+- **Used by**: Enrichment, classification, query expansion, conflict resolution, cluster summarization
+- **Not used by**: Search (no LLM in the hot path)
+
+### `search/` — Retrieval Engine (2,294 lines)
+
+Three search modes, composable.
+
+- **BM25**: FTS5 keyword matching with boolean operators
+- **Semantic**: Cosine similarity on embedding vectors (requires embedder)
+- **Hybrid**: BM25 + semantic with reciprocal rank fusion (RRF)
+- **Query expansion**: Pre-search LLM call to broaden query (Gemini free tier). Runs *before* retrieval — no LLM in the search path itself.
+- **Graceful degradation**: Hybrid without embedder → silent fallback to BM25. Semantic without embedder → hard error with remediation hint.
+- **Confidence decay**: Results weighted by Ebbinghaus decay factor per fact type
+- **Agent scoping**: `--agent` filters to single agent's memories
+
+### `embed/` — Embedding Providers (477 lines)
+
+Generates and stores vector embeddings for semantic search.
+
+- **Providers**: `ollama/<model>` (local, free), `openai/<model>`, any OpenAI-compatible endpoint
+- **Default**: `ollama/nomic-embed-text` (local, zero cost)
+- **Batch processing**: `cortex embed <provider/model> --batch-size 10`
+- **Storage**: Vectors stored as BLOBs in the memories table
+
+### `ann/` — Approximate Nearest Neighbor (647 lines)
+
+HNSW index for fast vector similarity search.
+
+- **In-memory**: Built from stored embeddings on search startup
+- **Parameters**: Configurable M, efConstruction, efSearch
+- **Used by**: Semantic and hybrid search modes
+
+### `graph/` — Knowledge Graph (3,069 lines)
+
+Builds and serves a knowledge graph from extracted facts.
+
+- **Graph construction**: Subject → predicate → object triples from facts table
+- **Cluster detection**: Groups related facts by subject proximity
+- **2D Explorer**: Interactive browser-based visualization (shadcn UI)
+  - Force-directed layout with zoom, pan, click-to-inspect
+  - 5 view modes: graph, table, subjects, clusters, search
+  - Stale state clearing, loading indicators, empty state handlers
+- **HTTP API**: `/api/graph`, `/api/subjects`, `/api/clusters`, `/api/facts`
+- **Pagination**: `offset` + `limit` on all endpoints, rank metadata in responses
+- **Agent filter**: Middleware injects `?agent=` for scoped views
+
+### `connect/` — Source Connectors (4,273 lines)
+
+Imports data from external services into the standard pipeline.
+
+- **8 providers**: GitHub, Gmail, Calendar, Drive, Slack, Discord, Telegram, Notion
+- **Sync engine**: Handles cursor tracking, incremental sync, error recovery
+- **Record model**: `Record{ID, Title, Content, Source, Timestamp, AgentID}`
+- **Auto-scheduling**: OS-native (launchd on macOS, systemd on Linux)
+- **Agent tagging**: `--agent` on `connect sync` tags all imported memories
+- **MCP integration**: 4 connector tools exposed via MCP server
+- **Interface**:
+  ```go
+  type Provider interface {
+      Name() string
+      Fetch(ctx context.Context, config json.RawMessage, since *time.Time) ([]Record, error)
+  }
+  ```
+
+### `mcp/` — MCP Server (2,284 lines)
+
+Model Context Protocol server for agent integration.
+
+- **Transport**: stdio (default) or HTTP+SSE (`--port`)
+- **17 tools**: Search, import, facts, stats, stale, reinforce, reason, edge-add, graph (4 tools), clusters, connect (4 tools)
+- **4 resources**: stats, recent memories, graph subjects, graph clusters
+- **Agent scoping**: `--agent` sets default agent for all tool invocations; per-request `agent_id` overrides
+- **Tested with**: Claude Code, Cursor, Windsurf
+
+### `observe/` — Observability (823 lines)
+
+Health monitoring and diagnostics.
+
+- **Stats**: Memory/fact counts, storage size, confidence distribution, freshness breakdown
+- **Stale**: Facts not reinforced within configurable window
+- **Conflicts**: Contradictory facts (same subject+predicate, different object)
+- **Alerts**: Proactive notifications (DB size, growth spikes, staleness)
+- **Doctor**: Diagnostic suite (DB health, WAL mode, FTS5, providers)
+
+### `reason/` — Reasoning Engine (2,304 lines)
+
+Synthesizes answers from memory.
+
+- **One-shot**: Search → gather context → generate answer
+- **Recursive**: Multi-hop reasoning with configurable depth
+- **Provider**: Any configured LLM via `llm/` package
+
+## Data Flow
+
+### Import Path
+```
+File → Ingest (parse + chunk) → Store (save memories)
+     → Extract (rule-based facts) → Store (save facts)
+     → [LLM Enrich (find missed facts)] → Store (save enriched facts)
+     → [LLM Classify (reclassify types)] → Store (update fact types)
 ```
 
-### Local-Only Processing
-
-No network calls in the critical path. Fact extraction uses rule-based NLP (dependency parsing, NER via the `prose` library). Embeddings use ONNX Runtime with a bundled model.
-
-This is a philosophical choice, not just a technical one: your memory should work without an internet connection.
-
-### Dual Search Strategy
-
-- **BM25 (FTS5):** For when users know what they're looking for. Exact keyword matching, boolean operators, fast.
-- **Semantic (ONNX):** For when users know the concept but not the words. Finds related memories even without keyword overlap.
-- **Hybrid (default):** Combines both with reciprocal rank fusion.
-
-### Two-Tier Extraction Pipeline
-
+### Search Path
 ```
-Input Document
-     │
-     ├─── Structured? (MD with headers, JSON, YAML, CSV)
-     │         │
-     │         └──▶ Tier 1: Rule-Based Extraction
-     │              • Pattern matching on structure
-     │              • Regex for dates, emails, URLs
-     │              • Basic NER via prose
-     │              • Zero dependencies
-     │
-     └─── Unstructured? (Raw text, conversation logs)
-               │
-               ├──▶ Tier 1: Best-effort local extraction
-               │    (may miss relationships, coreference)
-               │
-               └──▶ Tier 2: LLM-Assist (if configured)
-                    • Sends doc + extraction schema to LLM
-                    • Any OpenAI-compatible API
-                    • Returns typed JSON (validated by Cortex)
-                    • Never sends existing memory to LLM
+Query → [Query Expansion (LLM, pre-search)]
+      → BM25 (FTS5) ──┐
+      → Semantic (ANN) ─┤─→ RRF Fusion → Confidence Decay → Ranked Results
+                         │
+                    (or BM25-only fallback if no embedder)
 ```
 
-Both tiers produce the same output format: `[]ExtractedFact`. The storage layer doesn't know or care which tier produced the fact.
-
-## Data Model
-
-```sql
--- Core memory table
-CREATE TABLE memories (
-    id          INTEGER PRIMARY KEY,
-    content     TEXT NOT NULL,
-    source_file TEXT,
-    source_line INTEGER,
-    imported_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Full-text search index
-CREATE VIRTUAL TABLE memories_fts USING fts5(content, content=memories, content_rowid=id);
-
--- Extracted facts
-CREATE TABLE facts (
-    id        INTEGER PRIMARY KEY,
-    memory_id INTEGER REFERENCES memories(id),
-    key       TEXT,
-    value     TEXT,
-    fact_type TEXT,  -- 'kv', 'relationship', 'preference', 'temporal'
-    confidence REAL DEFAULT 1.0
-);
-
--- Embeddings for semantic search
-CREATE TABLE embeddings (
-    memory_id INTEGER PRIMARY KEY REFERENCES memories(id),
-    vector    BLOB NOT NULL  -- float32 array, 384 dimensions for MiniLM
-);
+### Connector Path
+```
+External API → Provider.Fetch() → []Record
+             → SyncEngine.importRecord() → Store (save memories)
+             → Extract → [Enrich] → [Classify] → Store (save facts)
+             → Update sync cursor
 ```
 
-## Future Architecture Notes
+## Configuration
 
-- **MCP Server (Phase 2):** Will wrap the search and import APIs as MCP tools
-- **Web Dashboard (Phase 2):** Read-only view of stats/search, served from the same binary
-- **Plugin System (Phase 3):** Custom importers and extractors as Go plugins or subprocess pipes
-
-## Extended Data Model (Novel Features)
-
-### Recall Logging (Provenance Chains)
-
-```sql
--- Track every time a fact is recalled
-CREATE TABLE recall_log (
-    id          INTEGER PRIMARY KEY,
-    fact_id     INTEGER REFERENCES facts(id),
-    recalled_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    context     TEXT,       -- query or conversation that triggered recall
-    session_id  TEXT,       -- which agent session used this fact
-    lens        TEXT        -- which lens was active during recall
-);
+```yaml
+# ~/.cortex/config.yaml
+db_path: ~/.cortex/cortex.db
+embed:
+  provider: ollama/nomic-embed-text
+llm:
+  provider: openrouter/grok-4.1-fast   # For enrichment
+  api_key: or-...
+  enrich_provider: xai/grok-4.1-fast   # Override for enrichment specifically
+  classify_provider: deepseek/v3.2     # Override for classification
+  expand_provider: google/gemini-2.0-flash  # Override for query expansion
 ```
 
-### Confidence Decay
+Environment variables work too: `CORTEX_DB_PATH`, `OPENROUTER_API_KEY`, `XAI_API_KEY`, etc.
 
-```sql
--- Extended facts table with decay fields
-ALTER TABLE facts ADD COLUMN decay_rate REAL DEFAULT 0.01;
-ALTER TABLE facts ADD COLUMN last_reinforced DATETIME DEFAULT CURRENT_TIMESTAMP;
--- confidence already exists, recalculated on query:
--- effective_confidence = confidence * exp(-decay_rate * days_since_reinforced)
+## Testing
+
+- **1,081 test functions** across 14 packages (+ 1 script package)
+- **No external dependencies in tests**: All tests use in-memory SQLite
+- **CI**: GitHub Actions, `go test ./...`, `go vet ./...`
+- **Benchmark suite**: `scripts/bench/` for search quality and performance
+
+```bash
+go test ./...                    # Run all tests
+go test ./internal/store/...     # Run one package
+go test -run TestSearch ./...    # Run matching tests
+go test -count=1 ./...           # Skip cache
 ```
-
-Decay rates by fact type:
-| Type | Decay/Day | Half-Life |
-|------|-----------|-----------|
-| identity | 0.001 | 693 days |
-| decision | 0.002 | 347 days |
-| relationship | 0.003 | 231 days |
-| location | 0.005 | 139 days |
-| preference | 0.01 | 69 days |
-| state | 0.05 | 14 days |
-| temporal | 0.1 | 7 days |
-
-### Memory Event Log (Differential Memory)
-
-```sql
--- Append-only event log for git-style history
-CREATE TABLE memory_events (
-    id         INTEGER PRIMARY KEY,
-    event_type TEXT NOT NULL,  -- 'add', 'update', 'merge', 'decay', 'delete', 'reinforce'
-    fact_id    INTEGER,
-    old_value  TEXT,
-    new_value  TEXT,
-    source     TEXT,           -- what triggered this event
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Named snapshots for point-in-time restore
-CREATE TABLE snapshots (
-    id         INTEGER PRIMARY KEY,
-    tag        TEXT UNIQUE NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    event_id   INTEGER REFERENCES memory_events(id)
-);
-```
-
-### Memory Lenses
-
-```sql
--- Lens definitions
-CREATE TABLE lenses (
-    id           INTEGER PRIMARY KEY,
-    name         TEXT UNIQUE NOT NULL,
-    include_tags TEXT,  -- JSON array of tags to include
-    exclude_tags TEXT,  -- JSON array of tags to exclude
-    boost_rules  TEXT,  -- JSON: boost/demote rules
-    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-## Architecture Principles
-
-1. **Every novel feature maps to SQL.** No magic. If you can query it, you can debug it.
-2. **All tables are additive.** New features add tables/columns, never break existing ones.
-3. **Single SQLite file.** Everything in `~/.cortex/cortex.db`. Trivially portable.
-4. **Interfaces first.** Every layer is an interface that can be swapped without touching others.
-5. **Local by default, cloud by choice.** Nothing phones home. Ever. Unless you ask it to.

@@ -29,6 +29,9 @@ cortex connect status
 | **Google Calendar** | Events | gog CLI (OAuth) |
 | **Google Drive** | Document content | gog CLI (OAuth) |
 | **Slack** | Channel messages + threads | Bot User Token |
+| **Discord** | Channel messages | Bot Token |
+| **Telegram** | Chat messages | Bot Token + Chat ID |
+| **Notion** | Page content | Integration Token |
 
 ---
 
@@ -258,6 +261,153 @@ Right-click a channel name in Slack → "Copy link" → the ID is the last segme
 
 Slack API Tier 3: ~50 requests/minute. The connector respects this automatically.
 A 10-page safety cap prevents runaway pagination.
+
+---
+
+## Discord
+
+Imports channel messages from Discord servers via the Discord Bot API.
+
+### Prerequisites
+
+1. Create a Discord Bot at [discord.com/developers/applications](https://discord.com/developers/applications)
+2. Enable **Message Content Intent** under Bot settings
+3. Add bot to your server with `Read Message History` permission
+4. Copy the **Bot Token**
+
+### Setup
+
+```bash
+cortex connect add discord --config '{
+  "token": "your-bot-token",
+  "channel_ids": ["1234567890123456789"],
+  "days_back": 30,
+  "project": "discord"
+}'
+```
+
+### Config Options
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `token` | ✅ | — | Discord Bot Token |
+| `channel_ids` | ✅ | — | List of channel IDs to sync |
+| `days_back` | — | `30` | How far back for initial sync |
+| `project` | — | `""` | Cortex project tag |
+
+### Finding Channel IDs
+
+Enable Developer Mode in Discord (Settings → Advanced → Developer Mode), then right-click a channel → "Copy Channel ID."
+
+### What Gets Synced
+
+- Channel messages (text content, author, timestamp)
+- Bot messages are filtered out by default
+- **Source format**: `discord:channel/CHANNEL_ID/msg/MESSAGE_ID`
+
+---
+
+## Telegram
+
+Imports chat messages from Telegram via the Bot API.
+
+### Prerequisites
+
+1. Create a bot via [@BotFather](https://t.me/BotFather)
+2. Get the bot token
+3. Add the bot to your group/channel
+4. Get the chat ID (send a message, then check `https://api.telegram.org/bot<TOKEN>/getUpdates`)
+
+### Setup
+
+```bash
+cortex connect add telegram --config '{
+  "token": "123456:ABC-DEF1234...",
+  "chat_ids": ["-1001234567890"],
+  "days_back": 30,
+  "project": "telegram"
+}'
+```
+
+### Config Options
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `token` | ✅ | — | Telegram Bot Token |
+| `chat_ids` | ✅ | — | List of chat IDs (negative for groups) |
+| `days_back` | — | `30` | How far back for initial sync |
+| `project` | — | `""` | Cortex project tag |
+
+### What Gets Synced
+
+- Text messages, captions on media messages
+- Author name and timestamp
+- **Source format**: `telegram:chat/CHAT_ID/msg/MESSAGE_ID`
+
+---
+
+## Notion
+
+Imports page content from Notion workspaces via the Notion API.
+
+### Prerequisites
+
+1. Create an integration at [notion.so/my-integrations](https://www.notion.so/my-integrations)
+2. Give it "Read content" capabilities
+3. Share the pages/databases you want synced with the integration (click "..." → "Connections" → add your integration)
+4. Copy the **Internal Integration Token** (`ntn_...` or `secret_...`)
+
+### Setup
+
+```bash
+cortex connect add notion --config '{
+  "token": "ntn_your_token_here",
+  "root_page_ids": [],
+  "include_databases": true,
+  "project": "notion"
+}'
+```
+
+### Config Options
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `token` | ✅ | — | Notion Integration Token |
+| `root_page_ids` | — | `[]` | Specific pages to sync (empty = all shared pages) |
+| `include_databases` | — | `true` | Include database entries |
+| `project` | — | `""` | Cortex project tag |
+
+### What Gets Synced
+
+- Page content (title, text blocks, headings, lists, quotes)
+- Database entries (as structured records)
+- Nested pages (if shared with the integration)
+- **Source format**: `notion:page/PAGE_ID`
+
+### Tips
+
+- Only pages explicitly shared with your integration are accessible
+- The integration sees child pages of shared parent pages automatically
+- Rich content (embeds, files, databases with relations) is simplified to text
+
+---
+
+## Auto-Scheduling
+
+Set up OS-native automatic syncing (launchd on macOS, systemd on Linux):
+
+```bash
+# Install auto-sync every 3 hours
+cortex connect schedule --every 3h --install
+
+# Check current schedule
+cortex connect schedule --show
+
+# Remove auto-sync
+cortex connect schedule --uninstall
+```
+
+The scheduler syncs all enabled connectors with `--extract` on each run.
 
 ---
 
