@@ -63,6 +63,13 @@ type Metadata struct {
 	TimestampEnd   string `json:"timestamp_end,omitempty"`
 }
 
+const (
+	FactStateActive     = "active"
+	FactStateCore       = "core"
+	FactStateRetired    = "retired"
+	FactStateSuperseded = "superseded"
+)
+
 // Fact represents an extracted fact from a memory.
 type Fact struct {
 	ID             int64
@@ -76,6 +83,7 @@ type Fact struct {
 	LastReinforced time.Time
 	SourceQuote    string
 	CreatedAt      time.Time
+	State          string // active|core|retired|superseded
 	SupersededBy   *int64 // Fact ID that superseded this fact (nil = active)
 	AgentID        string // Which agent created this fact (empty = global, visible to all)
 }
@@ -97,6 +105,7 @@ type ListOpts struct {
 	Offset            int
 	SortBy            string   // "date", "confidence", "recalls"
 	FactType          string   // filter by fact type
+	State             string   // filter by fact lifecycle state (active|core|retired|superseded)
 	SourceFile        string   // filter by source file
 	Project           string   // filter by project tag
 	MemoryClasses     []string // filter by memory class
@@ -212,6 +221,7 @@ type Store interface {
 	ListFactsByMemoryIDs(ctx context.Context, memoryIDs []int64, factType string, limit int) ([]*Fact, error)
 	UpdateFactConfidence(ctx context.Context, id int64, confidence float64) error
 	UpdateFactType(ctx context.Context, id int64, factType string) error
+	UpdateFactState(ctx context.Context, id int64, state string) error
 	ReinforceFact(ctx context.Context, id int64) error
 	SupersedeFact(ctx context.Context, oldFactID, newFactID int64, reason string) error
 	DedupFacts(ctx context.Context, opts DedupFactOptions) (*DedupFactReport, error)

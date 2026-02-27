@@ -335,7 +335,7 @@ func (s *SQLiteStore) ListClusterFacts(ctx context.Context, clusterID int64, lim
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type,
 		        f.confidence, f.decay_rate, f.last_reinforced, f.source_quote,
-		        f.created_at, f.superseded_by, COALESCE(f.agent_id, '')
+		        f.created_at, f.state, f.superseded_by, COALESCE(f.agent_id, '')
 		 FROM facts f
 		 JOIN fact_clusters fc ON fc.fact_id = f.id
 		 WHERE fc.cluster_id = ?
@@ -365,6 +365,7 @@ func (s *SQLiteStore) ListClusterFacts(ctx context.Context, clusterID int64, lim
 			&f.LastReinforced,
 			&f.SourceQuote,
 			&f.CreatedAt,
+			&f.State,
 			&supersededBy,
 			&f.AgentID,
 		); err != nil {

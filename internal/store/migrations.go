@@ -59,6 +59,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating superseded_by column: %w", err)
 	}
 
+	// Schema evolution: add lifecycle state column to facts (v1.2 — Issue #255)
+	if err := s.migrateFactStateColumn(); err != nil {
+		return fmt.Errorf("migrating fact state column: %w", err)
+	}
+
 	// Schema evolution: multi-column FTS5 with source context (v0.2.0 — Issue #26)
 	if err := s.migrateFTSMultiColumn(); err != nil {
 		return fmt.Errorf("migrating FTS multi-column: %w", err)
@@ -169,6 +174,7 @@ func (s *SQLiteStore) runBootstrapDDL() error {
 			last_reinforced DATETIME DEFAULT CURRENT_TIMESTAMP,
 			source_quote    TEXT,
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+			state           TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','core','retired','superseded')),
 			superseded_by   INTEGER REFERENCES facts(id)
 		)`,
 
@@ -178,6 +184,7 @@ func (s *SQLiteStore) runBootstrapDDL() error {
 		`CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate ON facts(subject, predicate)`,
 		// idx_facts_superseded_by is created by migrateFactSupersededColumn() for existing DBs,
 		// and here for new DBs only (column exists in CREATE TABLE above).
+		`CREATE INDEX IF NOT EXISTS idx_facts_state ON facts(state)`,
 
 		// Topic clusters
 		`CREATE TABLE IF NOT EXISTS clusters (
@@ -444,6 +451,56 @@ func (s *SQLiteStore) migrateFactSupersededColumn() error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing superseded_by migration: %w", err)
+	}
+	return nil
+}
+
+// migrateFactStateColumn adds state to facts lifecycle model (Issue #255).
+func (s *SQLiteStore) migrateFactStateColumn() error {
+	var count int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='state'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checking for state column: %w", err)
+	}
+	if count == 0 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning state migration: %w", err)
+		}
+		defer tx.Rollback()
+
+		stmts := []string{
+			`ALTER TABLE facts ADD COLUMN state TEXT NOT NULL DEFAULT 'active'`,
+			`CREATE INDEX IF NOT EXISTS idx_facts_state ON facts(state)`,
+			`UPDATE facts SET state = 'superseded' WHERE superseded_by IS NOT NULL`,
+			`UPDATE facts SET state = 'active' WHERE state IS NULL OR TRIM(state) = ''`,
+			`UPDATE facts SET state = 'active' WHERE LOWER(state) NOT IN ('active','core','retired','superseded')`,
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.Exec(stmt); err != nil {
+				if isDuplicateColumnError(err) {
+					continue
+				}
+				return fmt.Errorf("executing %q: %w", truncate(stmt, 60), err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing state migration: %w", err)
+		}
+		return nil
+	}
+
+	// Column already exists: ensure index and consistency backfills.
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_facts_state ON facts(state)`); err != nil {
+		return fmt.Errorf("creating state index: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE facts SET state = 'superseded' WHERE superseded_by IS NOT NULL AND LOWER(COALESCE(state,'')) != 'superseded'`); err != nil {
+		return fmt.Errorf("backfilling superseded state: %w", err)
+	}
+	if _, err := s.db.Exec(`UPDATE facts SET state = 'active' WHERE state IS NULL OR TRIM(state) = '' OR LOWER(state) NOT IN ('active','core','retired','superseded')`); err != nil {
+		return fmt.Errorf("backfilling active state: %w", err)
 	}
 	return nil
 }
