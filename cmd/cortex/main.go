@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hurttlocker/cortex/internal/answer"
 	cfgresolver "github.com/hurttlocker/cortex/internal/config"
 	"github.com/hurttlocker/cortex/internal/connect"
 	"github.com/hurttlocker/cortex/internal/embed"
@@ -67,6 +68,8 @@ func main() {
 		exitWithError(runIndex(args[1:]))
 	case "search":
 		exitWithError(runSearch(args[1:]))
+	case "answer":
+		exitWithError(runAnswer(args[1:]))
 	case "stats":
 		exitWithError(runStats(args[1:]))
 	case "list":
@@ -1038,6 +1041,188 @@ func searchSourceBoostForResult(sourceFile string, boosts []search.SourceBoost) 
 		}
 	}
 	return bestWeight, bestPrefix
+}
+
+func runAnswer(args []string) error {
+	var queryParts []string
+	mode := "hybrid"
+	limit := 5
+	modelFlag := ""
+	projectFlag := ""
+	agentFlag := ""
+	sourceFlag := ""
+	sourceBoostFlags := []string{}
+	jsonOutput := false
+	maxSentences := 6
+	maxContextChars := 5500
+	perResultChars := 1000
+	verbose := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--mode" && i+1 < len(args):
+			i++
+			mode = args[i]
+		case strings.HasPrefix(args[i], "--mode="):
+			mode = strings.TrimPrefix(args[i], "--mode=")
+		case args[i] == "--limit" && i+1 < len(args):
+			i++
+			v, err := strconv.Atoi(args[i])
+			if err != nil || v < 1 || v > 20 {
+				return fmt.Errorf("--limit must be between 1 and 20")
+			}
+			limit = v
+		case strings.HasPrefix(args[i], "--limit="):
+			v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--limit="))
+			if err != nil || v < 1 || v > 20 {
+				return fmt.Errorf("--limit must be between 1 and 20")
+			}
+			limit = v
+		case args[i] == "--model" && i+1 < len(args):
+			i++
+			modelFlag = args[i]
+		case strings.HasPrefix(args[i], "--model="):
+			modelFlag = strings.TrimPrefix(args[i], "--model=")
+		case args[i] == "--project" && i+1 < len(args):
+			i++
+			projectFlag = args[i]
+		case strings.HasPrefix(args[i], "--project="):
+			projectFlag = strings.TrimPrefix(args[i], "--project=")
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentFlag = args[i]
+		case strings.HasPrefix(args[i], "--agent="):
+			agentFlag = strings.TrimPrefix(args[i], "--agent=")
+		case args[i] == "--source" && i+1 < len(args):
+			i++
+			sourceFlag = args[i]
+		case strings.HasPrefix(args[i], "--source="):
+			sourceFlag = strings.TrimPrefix(args[i], "--source=")
+		case args[i] == "--source-boost" && i+1 < len(args):
+			i++
+			sourceBoostFlags = append(sourceBoostFlags, args[i])
+		case strings.HasPrefix(args[i], "--source-boost="):
+			sourceBoostFlags = append(sourceBoostFlags, strings.TrimPrefix(args[i], "--source-boost="))
+		case args[i] == "--max-sentences" && i+1 < len(args):
+			i++
+			v, err := strconv.Atoi(args[i])
+			if err != nil || v < 1 || v > 12 {
+				return fmt.Errorf("--max-sentences must be between 1 and 12")
+			}
+			maxSentences = v
+		case strings.HasPrefix(args[i], "--max-sentences="):
+			v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--max-sentences="))
+			if err != nil || v < 1 || v > 12 {
+				return fmt.Errorf("--max-sentences must be between 1 and 12")
+			}
+			maxSentences = v
+		case args[i] == "--max-context-chars" && i+1 < len(args):
+			i++
+			v, err := strconv.Atoi(args[i])
+			if err != nil || v < 500 {
+				return fmt.Errorf("--max-context-chars must be >= 500")
+			}
+			maxContextChars = v
+		case strings.HasPrefix(args[i], "--max-context-chars="):
+			v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--max-context-chars="))
+			if err != nil || v < 500 {
+				return fmt.Errorf("--max-context-chars must be >= 500")
+			}
+			maxContextChars = v
+		case args[i] == "--per-result-chars" && i+1 < len(args):
+			i++
+			v, err := strconv.Atoi(args[i])
+			if err != nil || v < 100 {
+				return fmt.Errorf("--per-result-chars must be >= 100")
+			}
+			perResultChars = v
+		case strings.HasPrefix(args[i], "--per-result-chars="):
+			v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--per-result-chars="))
+			if err != nil || v < 100 {
+				return fmt.Errorf("--per-result-chars must be >= 100")
+			}
+			perResultChars = v
+		case args[i] == "--json":
+			jsonOutput = true
+		case args[i] == "--verbose" || args[i] == "-v":
+			verbose = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s\nusage: cortex answer <query> [--mode hybrid] [--limit 5] [--model provider/model] [--max-sentences 6] [--json]", args[i])
+		default:
+			queryParts = append(queryParts, args[i])
+		}
+	}
+
+	query := strings.TrimSpace(strings.Join(queryParts, " "))
+	if query == "" {
+		return fmt.Errorf("usage: cortex answer <query> [--mode hybrid] [--limit 5] [--model provider/model] [--max-sentences 6] [--json]")
+	}
+
+	modeParsed, err := search.ParseMode(mode)
+	if err != nil {
+		return err
+	}
+
+	parsedSourceBoosts := make([]search.SourceBoost, 0, len(sourceBoostFlags))
+	for _, raw := range sourceBoostFlags {
+		boost, err := parseSourceBoostArg(raw)
+		if err != nil {
+			return err
+		}
+		parsedSourceBoosts = append(parsedSourceBoosts, boost)
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	searchEngine := search.NewEngine(s)
+	provider, resolvedModel, degradeReason, err := answer.ResolveProvider(modelFlag)
+	if err != nil {
+		return err
+	}
+	if degradeReason != "" && verbose {
+		fmt.Fprintf(os.Stderr, "[answer] LLM unavailable (%s), using degrade mode\n", degradeReason)
+	}
+
+	engine := answer.NewEngine(searchEngine, provider, resolvedModel)
+	res, err := engine.Answer(context.Background(), answer.Options{
+		Query: query,
+		Search: search.Options{
+			Mode:         modeParsed,
+			Limit:        limit,
+			Project:      projectFlag,
+			Agent:        agentFlag,
+			BoostAgent:   agentFlag,
+			Source:       sourceFlag,
+			SourceBoosts: parsedSourceBoosts,
+		},
+		MaxSentences:    maxSentences,
+		MaxContextChars: maxContextChars,
+		PerResultChars:  perResultChars,
+		Verbose:         verbose,
+	})
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput || !isTTY() {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
+	}
+
+	fmt.Println(res.Answer)
+	fmt.Println()
+	for _, c := range res.Citations {
+		fmt.Printf("[%d] %s (score %.2f)\n", c.Index, c.Source, c.Score)
+	}
+	if res.Degraded {
+		fmt.Printf("\n(degraded: %s)\n", res.Reason)
+	}
+	return nil
 }
 
 func runStats(args []string) error {
@@ -7849,7 +8034,7 @@ var cortexCommands = []string{
 	"stats", "stale", "conflicts", "agents", "projects",
 	"graph", "cluster",
 	"reason", "bench",
-	"cleanup", "optimize", "embed", "tag",
+	"cleanup", "optimize", "embed", "tag", "answer",
 	"connect",
 	"mcp", "doctor", "completion", "version", "help",
 }
@@ -7927,6 +8112,7 @@ Memory:
   import <path>         Import memories from files or directories
   reimport <path>       Wipe database and reimport from scratch
   search <query>        Search memories (keyword, semantic, hybrid, or rrf)
+  answer <query>        Search + synthesize short answer with citations
   list                  List memories or facts
   export                Export memory store (json, markdown, csv)
   update <id>           Update a memory's content

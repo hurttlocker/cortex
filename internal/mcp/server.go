@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hurttlocker/cortex/internal/answer"
 	"github.com/hurttlocker/cortex/internal/connect"
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/extract"
@@ -73,6 +74,7 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 
 	// Register tools
 	registerSearchTool(s, searchEngine, defaultAgent)
+	registerAnswerTool(s, searchEngine, defaultAgent)
 	registerImportTool(s, cfg.Store, defaultAgent)
 	registerStatsTool(s, observeEngine)
 	registerFactsTool(s, cfg.Store, defaultAgent)
@@ -243,6 +245,118 @@ func parseMCPSourceBoosts(req mcp.CallToolRequest) ([]search.SourceBoost, error)
 		out = append(out, search.SourceBoost{Prefix: prefix, Weight: weight})
 	}
 	return out, nil
+}
+
+func registerAnswerTool(s *server.MCPServer, searchEngine *search.Engine, defaultAgent string) {
+	tool := mcp.NewTool("cortex_answer",
+		mcp.WithDescription("Search memory, synthesize a short answer with citations, and return a single-pass result. No memory writes."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Question to answer")),
+		mcp.WithString("mode", mcp.Description("Search mode: bm25, semantic, hybrid, or rrf (default: hybrid)"), mcp.Enum("keyword", "bm25", "semantic", "hybrid", "rrf")),
+		mcp.WithNumber("limit", mcp.Description("Max search results to use (default 5, max 20)")),
+		mcp.WithString("project", mcp.Description("Project scope (optional)")),
+		mcp.WithString("agent_id", mcp.Description("Agent scope/filter (optional)")),
+		mcp.WithString("source", mcp.Description("Filter by source prefix (optional)")),
+		mcp.WithArray("source_boosts",
+			mcp.Description("Optional source-specific score boosts. Array of {prefix, weight}."),
+			mcp.Items(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"prefix": map[string]any{"type": "string"},
+					"weight": map[string]any{"type": "number", "minimum": 1.0, "maximum": 2.0},
+				},
+				"required":             []string{"prefix"},
+				"additionalProperties": false,
+			}),
+		),
+		mcp.WithString("model", mcp.Description("LLM model override provider/model (optional)")),
+		mcp.WithNumber("maxSentences", mcp.Description("Max sentences in answer (default 6, max 12)")),
+		mcp.WithNumber("maxContextChars", mcp.Description("Max context chars sent to LLM (default 5500)")),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		dbMu.Lock()
+		defer dbMu.Unlock()
+
+		query, err := req.RequireString("query")
+		if err != nil || strings.TrimSpace(query) == "" {
+			return mcp.NewToolResultError("query is required"), nil
+		}
+
+		sopts := search.Options{Mode: search.ModeHybrid, Limit: 5}
+		if modeStr, err := req.RequireString("mode"); err == nil && modeStr != "" {
+			mode, err := search.ParseMode(modeStr)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("invalid mode: %v", err)), nil
+			}
+			sopts.Mode = mode
+		}
+		if limitVal, err := req.RequireFloat("limit"); err == nil {
+			limit := int(limitVal)
+			if limit > 20 {
+				limit = 20
+			}
+			if limit > 0 {
+				sopts.Limit = limit
+			}
+		}
+		if project, err := req.RequireString("project"); err == nil && project != "" {
+			sopts.Project = project
+		}
+		if agentID, err := req.RequireString("agent_id"); err == nil && agentID != "" {
+			sopts.Agent = agentID
+			sopts.BoostAgent = agentID
+		} else if defaultAgent != "" {
+			sopts.Agent = defaultAgent
+			sopts.BoostAgent = defaultAgent
+		}
+		if source, err := req.RequireString("source"); err == nil && source != "" {
+			sopts.Source = source
+		}
+		if boosts, err := parseMCPSourceBoosts(req); err == nil {
+			sopts.SourceBoosts = boosts
+		} else {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid source_boosts: %v", err)), nil
+		}
+
+		model := ""
+		if v, err := req.RequireString("model"); err == nil {
+			model = v
+		}
+		maxSentences := 6
+		if v, err := req.RequireFloat("maxSentences"); err == nil && v > 0 {
+			if int(v) > 12 {
+				maxSentences = 12
+			} else {
+				maxSentences = int(v)
+			}
+		}
+		maxContextChars := 5500
+		if v, err := req.RequireFloat("maxContextChars"); err == nil && v >= 500 {
+			maxContextChars = int(v)
+		}
+
+		provider, resolvedModel, _, err := answer.ResolveProvider(model)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("model resolution error: %v", err)), nil
+		}
+
+		eng := answer.NewEngine(searchEngine, provider, resolvedModel)
+		result, err := eng.Answer(ctx, answer.Options{
+			Query:           query,
+			Search:          sopts,
+			MaxSentences:    maxSentences,
+			MaxContextChars: maxContextChars,
+			PerResultChars:  1000,
+		})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("answer error: %v", err)), nil
+		}
+
+		data, _ := json.MarshalIndent(result, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
+	})
 }
 
 func registerImportTool(s *server.MCPServer, st store.Store, defaultAgent string) {
