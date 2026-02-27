@@ -133,6 +133,10 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine, defaultAgent
 		mcp.WithString("source",
 			mcp.Description("Filter results by source prefix (e.g., 'github', 'gmail'). Matches connector-imported records by provider name."),
 		),
+		mcp.WithString("intent",
+			mcp.Description("Intent bucket filter before scoring: memory, import, connector, all (default all)."),
+			mcp.Enum("memory", "import", "connector", "all"),
+		),
 		mcp.WithArray("source_boosts",
 			mcp.Description("Optional source-specific score boosts. Array of {prefix, weight}. Weight defaults to 1.15 and is clamped to 1.0-2.0."),
 			mcp.Items(map[string]any{
@@ -190,6 +194,9 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine, defaultAgent
 
 		if source, err := req.RequireString("source"); err == nil && source != "" {
 			opts.Source = source
+		}
+		if intent, err := req.RequireString("intent"); err == nil && intent != "" {
+			opts.Intent = intent
 		}
 		if boosts, err := parseMCPSourceBoosts(req); err == nil {
 			opts.SourceBoosts = boosts
