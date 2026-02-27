@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	cfgresolver "github.com/hurttlocker/cortex/internal/config"
 	"github.com/hurttlocker/cortex/internal/connect"
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/extract"
@@ -216,12 +217,19 @@ func parseGlobalFlags(args []string) []string {
 }
 
 // getDBPath returns the database path using the resolution order:
-// --db flag > CORTEX_DB env var > default path
+// config.yaml < env vars < --db
 func getDBPath() string {
+	resolved, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{CLIDBPath: globalDBPath})
+	if err == nil && strings.TrimSpace(resolved.DBPath.Value) != "" {
+		return expandUserPath(resolved.DBPath.Value)
+	}
 	if globalDBPath != "" {
 		return expandUserPath(globalDBPath)
 	}
 	if envPath := os.Getenv("CORTEX_DB"); envPath != "" {
+		return expandUserPath(envPath)
+	}
+	if envPath := os.Getenv("CORTEX_DB_PATH"); envPath != "" {
 		return expandUserPath(envPath)
 	}
 	return "" // Let store.NewStore use its default
@@ -545,7 +553,12 @@ func runImport(args []string) error {
 		if enableEnrichment && extractionStats != nil {
 			enrichLLM := llmFlag
 			if enrichLLM == "" {
-				enrichLLM = extract.DefaultEnrichModel // grok-4.1-fast
+				if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+					enrichLLM = resolvedCfg.EffectiveLLMModel("enrich", extract.DefaultEnrichModel).Value
+				}
+				if enrichLLM == "" {
+					enrichLLM = extract.DefaultEnrichModel // grok-4.1-fast
+				}
 			}
 			// Pre-check: can we create the provider?
 			if _, err := tryCreateProvider(enrichLLM); err != nil {
@@ -569,7 +582,12 @@ func runImport(args []string) error {
 		if llmAvailable && !noClassify && !opts.DryRun {
 			classifyLLM := llmFlag
 			if classifyLLM == "" {
-				classifyLLM = extract.DefaultClassifyModel // deepseek-v3.2
+				if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+					classifyLLM = resolvedCfg.EffectiveLLMModel("classify", extract.DefaultClassifyModel).Value
+				}
+				if classifyLLM == "" {
+					classifyLLM = extract.DefaultClassifyModel // deepseek-v3.2
+				}
 			}
 			if _, err := tryCreateProvider(classifyLLM); err != nil {
 				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key). Pass --no-classify to silence this.\n")
@@ -843,6 +861,14 @@ func runSearch(args []string) error {
 	// Query expansion: use LLM to generate multiple search queries
 	var expandedQueries []string
 	if expandFlag {
+		if strings.TrimSpace(llmFlag) == "" {
+			if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+				llmFlag = resolvedCfg.EffectiveLLMModel("expand", "google/gemini-2.5-flash").Value
+			}
+			if strings.TrimSpace(llmFlag) == "" {
+				llmFlag = "google/gemini-2.5-flash"
+			}
+		}
 		llmCfg, err := llm.ParseLLMFlag(llmFlag)
 		if err != nil {
 			return fmt.Errorf("parsing --llm flag: %w", err)
@@ -1553,7 +1579,12 @@ func runExtract(args []string) error {
 	if enrichFlag {
 		enrichLLM := llmFlag
 		if enrichLLM == "" {
-			enrichLLM = extract.DefaultEnrichModel // grok-4.1-fast
+			if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+				enrichLLM = resolvedCfg.EffectiveLLMModel("enrich", extract.DefaultEnrichModel).Value
+			}
+			if enrichLLM == "" {
+				enrichLLM = extract.DefaultEnrichModel // grok-4.1-fast
+			}
 		}
 		if provider, err := tryCreateProvider(enrichLLM); err != nil {
 			fmt.Fprintf(os.Stderr, "  Skipping enrichment (no API key?): %v\n", err)
@@ -1629,7 +1660,12 @@ func runClassify(args []string) error {
 	}
 
 	if llmFlag == "" {
-		llmFlag = extract.DefaultClassifyModel // deepseek-v3.2
+		if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+			llmFlag = resolvedCfg.EffectiveLLMModel("classify", extract.DefaultClassifyModel).Value
+		}
+		if llmFlag == "" {
+			llmFlag = extract.DefaultClassifyModel // deepseek-v3.2
+		}
 	}
 
 	// Create LLM provider
@@ -3537,7 +3573,12 @@ func runReimport(args []string) error {
 		if !noEnrich {
 			enrichLLM := llmFlag
 			if enrichLLM == "" {
-				enrichLLM = extract.DefaultEnrichModel
+				if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+					enrichLLM = resolvedCfg.EffectiveLLMModel("enrich", extract.DefaultEnrichModel).Value
+				}
+				if enrichLLM == "" {
+					enrichLLM = extract.DefaultEnrichModel
+				}
 			}
 			if _, err := tryCreateProvider(enrichLLM); err != nil {
 				fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key). Set OPENROUTER_API_KEY for better facts.\n")
@@ -3556,7 +3597,12 @@ func runReimport(args []string) error {
 		if !noClassify && !noEnrich {
 			classifyLLM := llmFlag
 			if classifyLLM == "" {
-				classifyLLM = extract.DefaultClassifyModel
+				if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+					classifyLLM = resolvedCfg.EffectiveLLMModel("classify", extract.DefaultClassifyModel).Value
+				}
+				if classifyLLM == "" {
+					classifyLLM = extract.DefaultClassifyModel
+				}
 			}
 			if _, err := tryCreateProvider(classifyLLM); err != nil {
 				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key).\n")
@@ -7303,22 +7349,48 @@ func runDoctorChecks() doctorReport {
 		}
 	}
 
-	llmProviders := make([]string, 0, 3)
-	if strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")) != "" {
-		llmProviders = append(llmProviders, "openrouter")
+	resolvedCfg, resolveErr := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{CLIDBPath: globalDBPath})
+	if resolveErr != nil {
+		addDoctorCheck(&report, doctorCheck{
+			Name:    "resolved_config",
+			Status:  "warn",
+			Details: fmt.Sprintf("config resolver error: %v", resolveErr),
+			Hint:    "Validate ~/.cortex/config.yaml syntax.",
+		})
+	} else {
+		model := resolvedCfg.EffectiveLLMModel("default", "")
+		if strings.TrimSpace(model.Value) != "" {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "resolved_config",
+				Status:  "pass",
+				Details: fmt.Sprintf("llm_provider: %s (from: %s)", model.Value, model.From),
+			})
+		} else {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "resolved_config",
+				Status:  "warn",
+				Details: "llm_provider not resolved",
+				Hint:    "Set llm.provider in ~/.cortex/config.yaml, CORTEX_LLM, or --llm.",
+			})
+		}
 	}
-	if strings.TrimSpace(os.Getenv("GOOGLE_API_KEY")) != "" || strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) != "" {
-		llmProviders = append(llmProviders, "google")
-	}
-	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "" {
-		llmProviders = append(llmProviders, "openai")
+
+	llmProviders := make([]string, 0, 4)
+	if resolveErr == nil {
+		for provider, keyMeta := range resolvedCfg.LLMKeys {
+			if provider == "default" || strings.TrimSpace(keyMeta.Value) == "" {
+				continue
+			}
+			llmProviders = append(llmProviders, fmt.Sprintf("%s (from: %s)", provider, keyMeta.From))
+		}
+		sort.Strings(llmProviders)
 	}
 	if len(llmProviders) == 0 {
 		addDoctorCheck(&report, doctorCheck{
 			Name:    "llm_keys",
 			Status:  "warn",
 			Details: "no LLM API keys configured",
-			Hint:    "Set OPENROUTER_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY, or OPENAI_API_KEY.",
+			Hint:    "Set OPENROUTER_API_KEY, GOOGLE_API_KEY/GEMINI_API_KEY, OPENAI_API_KEY, or llm.api_key in ~/.cortex/config.yaml.",
 		})
 	} else {
 		addDoctorCheck(&report, doctorCheck{
