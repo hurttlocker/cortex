@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-02-27
+
+### 🧠 v1.2 — Belief Lifecycle
+
+Facts now have a lifecycle. They promote to core knowledge, retire when stale, and supersede each other on conflict — automatically.
+
+#### v1.1: Agent Cognition Runtime
+- **Config resolver** — Unified config.yaml < env < CLI merge with doctor provenance (#241)
+- **--source-boost** — Tune search relevance by source prefix (#242)
+- **cortex cleanup --dedup-facts** — Near-duplicate fact supersession (#245)
+- **cortex answer** — Question answering with citation integrity (#247)
+- **cortex conflicts --auto-resolve** — Deterministic-first + LLM fallback (#249)
+- **cortex search --intent** — Pre-filter by bucket: memory/import/connector (#251)
+
+#### v1.2: Belief Lifecycle
+- **Policy config** — 3 built-in policies: reinforce-promote, decay-retire, conflict-supersede (#254)
+- **Fact states** — New state column: active/core/retired/superseded with migration (#255)
+- **cortex lifecycle run** — Apply policies with --dry-run and --json (#256)
+
++4,507 lines, 9 PRs, 17 test packages green.
+
 ## [1.0.0] - 2026-02-26
 
 ### 🎉 v1.0 — Production Ready
