@@ -3876,6 +3876,8 @@ Notes:
 func runCleanup(args []string) error {
 	dryRun := false
 	purgeNoise := false
+	dedupFacts := false
+	dedupThreshold := 0.90
 	agentFlag := ""
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -3883,6 +3885,21 @@ func runCleanup(args []string) error {
 			dryRun = true
 		case args[i] == "--purge-noise":
 			purgeNoise = true
+		case args[i] == "--dedup-facts":
+			dedupFacts = true
+		case args[i] == "--dedup-threshold" && i+1 < len(args):
+			i++
+			v, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --dedup-threshold: %s", args[i])
+			}
+			dedupThreshold = v
+		case strings.HasPrefix(args[i], "--dedup-threshold="):
+			v, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--dedup-threshold="), 64)
+			if err != nil {
+				return fmt.Errorf("invalid --dedup-threshold: %s", args[i])
+			}
+			dedupThreshold = v
 		case args[i] == "--agent" && i+1 < len(args):
 			i++
 			agentFlag = args[i]
@@ -3890,7 +3907,7 @@ func runCleanup(args []string) error {
 			agentFlag = strings.TrimPrefix(args[i], "--agent=")
 		default:
 			if strings.HasPrefix(args[i], "-") {
-				return fmt.Errorf("unknown flag: %s\nUsage: cortex cleanup [--dry-run] [--purge-noise] [--agent <id>]", args[i])
+				return fmt.Errorf("unknown flag: %s\nUsage: cortex cleanup [--dry-run] [--purge-noise] [--dedup-facts] [--dedup-threshold 0.90] [--agent <id>]", args[i])
 			}
 			return fmt.Errorf("unexpected argument: %s", args[i])
 		}
@@ -3924,7 +3941,7 @@ func runCleanup(args []string) error {
 	_ = memAgentArgs // used below in queries
 	_ = factAgentArgs
 
-	if dryRun && !purgeNoise {
+	if dryRun && !purgeNoise && !dedupFacts {
 		// Count what would be cleaned without deleting (#57)
 		var shortCount, numericCount, factsCount int
 		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories WHERE LENGTH(content) < 20 AND deleted_at IS NULL`+memAgentWhere, memAgentArgs...).Scan(&shortCount)
@@ -3965,6 +3982,43 @@ func runCleanup(args []string) error {
 		fmt.Printf("  Short memories deleted:   %d\n", shortDeleted)
 		fmt.Printf("  Numeric memories deleted: %d\n", numericDeleted)
 		fmt.Printf("  Headless facts deleted:   %d\n", factsDeleted)
+	}
+
+	if dedupFacts {
+		report, err := ss.DedupFacts(ctx, store.DedupFactOptions{
+			Agent:      agentFlag,
+			Threshold:  dedupThreshold,
+			DryRun:     dryRun,
+			MaxPreview: 25,
+		})
+		if err != nil {
+			return fmt.Errorf("dedup-facts failed: %w", err)
+		}
+		if dryRun {
+			fmt.Printf("\nNear-duplicate fact dedup dry run:\n")
+			fmt.Printf("  Groups scanned: %d\n", report.GroupsScanned)
+			fmt.Printf("  Pairs compared: %d\n", report.PairsCompared)
+			fmt.Printf("  Merge candidates: %d\n", report.Merges)
+		} else {
+			fmt.Printf("\nNear-duplicate fact dedup complete:\n")
+			fmt.Printf("  Groups scanned: %d\n", report.GroupsScanned)
+			fmt.Printf("  Pairs compared: %d\n", report.PairsCompared)
+			fmt.Printf("  Merges applied: %d\n", report.Merges)
+		}
+		if len(report.Preview) > 0 {
+			fmt.Printf("  Preview pairs (winner -> loser):\n")
+			for _, pair := range report.Preview {
+				fmt.Printf("    - %s | %s | winner=\"%s\" (%.2f) -> loser=\"%s\" (%.2f) | sim=%.3f\n",
+					pair.Subject,
+					pair.Predicate,
+					pair.WinnerObject,
+					pair.WinnerConfidence,
+					pair.LoserObject,
+					pair.LoserConfidence,
+					pair.Similarity,
+				)
+			}
+		}
 	}
 
 	// Purge noise: run governor quality filters against all existing facts

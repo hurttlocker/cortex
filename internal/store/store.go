@@ -148,6 +148,35 @@ type Conflict struct {
 	CrossAgent   bool    `json:"cross_agent,omitempty"` // true if facts from different agents
 }
 
+// DedupFactOptions controls near-duplicate fact deduplication.
+type DedupFactOptions struct {
+	Agent      string  `json:"agent,omitempty"`
+	Threshold  float64 `json:"threshold"` // 0..1 similarity threshold
+	DryRun     bool    `json:"dry_run"`
+	MaxPreview int     `json:"max_preview"`
+}
+
+// DedupFactMerge describes one loser->winner supersession candidate.
+type DedupFactMerge struct {
+	Subject          string  `json:"subject"`
+	Predicate        string  `json:"predicate"`
+	WinnerID         int64   `json:"winner_id"`
+	WinnerObject     string  `json:"winner_object"`
+	WinnerConfidence float64 `json:"winner_confidence"`
+	LoserID          int64   `json:"loser_id"`
+	LoserObject      string  `json:"loser_object"`
+	LoserConfidence  float64 `json:"loser_confidence"`
+	Similarity       float64 `json:"similarity"`
+}
+
+// DedupFactReport summarizes dedup analysis/execution.
+type DedupFactReport struct {
+	GroupsScanned int              `json:"groups_scanned"`
+	PairsCompared int              `json:"pairs_compared"`
+	Merges        int              `json:"merges"`
+	Preview       []DedupFactMerge `json:"preview,omitempty"`
+}
+
 // ProjectInfo holds metadata about a project tag.
 type ProjectInfo struct {
 	Name        string `json:"name"`
@@ -185,6 +214,7 @@ type Store interface {
 	UpdateFactType(ctx context.Context, id int64, factType string) error
 	ReinforceFact(ctx context.Context, id int64) error
 	SupersedeFact(ctx context.Context, oldFactID, newFactID int64, reason string) error
+	DedupFacts(ctx context.Context, opts DedupFactOptions) (*DedupFactReport, error)
 	ReinforceFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) (int, error)
 	GetFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) ([]*Fact, error)
 	GetFactsByMemoryIDsIncludingSuperseded(ctx context.Context, memoryIDs []int64) ([]*Fact, error)
