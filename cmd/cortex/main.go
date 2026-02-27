@@ -1423,6 +1423,8 @@ func runConflicts(args []string) error {
 	keepFlag := int64(0)
 	dropFlag := int64(0)
 	includeSuperseded := false
+	autoResolve := false
+	autoThreshold := 0.85
 	agentFlag := ""
 
 	// Parse flags
@@ -1439,6 +1441,21 @@ func runConflicts(args []string) error {
 			verboseOutput = true
 		case args[i] == "--dry-run" || args[i] == "-n":
 			dryRun = true
+		case args[i] == "--auto-resolve":
+			autoResolve = true
+		case args[i] == "--threshold" && i+1 < len(args):
+			i++
+			v, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --threshold: %s", args[i])
+			}
+			autoThreshold = v
+		case strings.HasPrefix(args[i], "--threshold="):
+			v, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--threshold="), 64)
+			if err != nil {
+				return fmt.Errorf("invalid --threshold: %s", args[i])
+			}
+			autoThreshold = v
 		case args[i] == "--resolve" && i+1 < len(args):
 			i++
 			resolveStrategy = args[i]
@@ -1501,6 +1518,65 @@ func runConflicts(args []string) error {
 	}
 	engine := observe.NewEngine(s, dbPath)
 	resolver := observe.NewResolver(s, engine)
+
+	if autoThreshold < 0 || autoThreshold > 1 {
+		return fmt.Errorf("--threshold must be between 0.0 and 1.0")
+	}
+
+	if autoResolve {
+		conflicts, err := engine.GetConflictsLimitWithSuperseded(ctx, limitFlag, includeSuperseded)
+		if err != nil {
+			return fmt.Errorf("detecting conflicts: %w", err)
+		}
+		if agentFlag != "" {
+			filtered := make([]observe.Conflict, 0, len(conflicts))
+			for _, c := range conflicts {
+				if c.Fact1.AgentID == agentFlag || c.Fact2.AgentID == agentFlag {
+					filtered = append(filtered, c)
+				}
+			}
+			conflicts = filtered
+		}
+		if len(conflicts) == 0 {
+			if jsonOutput || !isTTY() {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(autoResolveBatch{Total: 0, Results: []autoResolveItem{}})
+			}
+			fmt.Println("No conflicts found.")
+			return nil
+		}
+
+		batch, err := runAutoResolveConflicts(ctx, s, conflicts, llmFlag, autoThreshold, dryRun)
+		if err != nil {
+			return err
+		}
+		if jsonOutput || !isTTY() {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(batch)
+		}
+
+		fmt.Printf("Auto-resolve results (threshold %.2f):\n", autoThreshold)
+		fmt.Printf("  Total conflicts: %d\n", batch.Total)
+		fmt.Printf("  Deterministic:  %d\n", batch.Deterministic)
+		fmt.Printf("  LLM path:       %d\n", batch.LLM)
+		fmt.Printf("  Resolved:       %d\n", batch.Resolved)
+		fmt.Printf("  Skipped:        %d\n", batch.Skipped)
+		fmt.Printf("  Errors:         %d\n", batch.Errors)
+		show := len(batch.Results)
+		if show > 12 && !verboseOutput {
+			show = 12
+		}
+		for i := 0; i < show; i++ {
+			r := batch.Results[i]
+			fmt.Printf("  [%d] %s winner=%d loser=%d applied=%t\n      %s\n", i+1, r.Method, r.Winner, r.Loser, r.Applied, r.Reason)
+		}
+		if show < len(batch.Results) {
+			fmt.Printf("  ... %d additional entries hidden (use --verbose)\n", len(batch.Results)-show)
+		}
+		return nil
+	}
 
 	// Manual resolution: --keep X --drop Y
 	if keepFlag > 0 && dropFlag > 0 {
@@ -1750,6 +1826,199 @@ func runConflicts(args []string) error {
 	}
 
 	return outputConflictsTTY(conflicts, verboseOutput)
+}
+
+type autoResolveItem struct {
+	Winner  int64  `json:"winner"`
+	Loser   int64  `json:"loser"`
+	Method  string `json:"method"`
+	Reason  string `json:"reason"`
+	Applied bool   `json:"applied"`
+}
+
+type autoResolveBatch struct {
+	Total         int               `json:"total"`
+	Deterministic int               `json:"deterministic"`
+	LLM           int               `json:"llm"`
+	Resolved      int               `json:"resolved"`
+	Skipped       int               `json:"skipped"`
+	Errors        int               `json:"errors"`
+	Results       []autoResolveItem `json:"results"`
+}
+
+func runAutoResolveConflicts(ctx context.Context, st store.Store, conflicts []observe.Conflict, llmFlag string, threshold float64, dryRun bool) (*autoResolveBatch, error) {
+	batch := &autoResolveBatch{Total: len(conflicts), Results: make([]autoResolveItem, 0, len(conflicts))}
+
+	type amb struct {
+		idx int
+		c   observe.Conflict
+	}
+	ambiguous := make([]amb, 0)
+
+	for i, c := range conflicts {
+		winner, loser, reason, ok := pickDeterministicWinner(c, threshold)
+		if !ok {
+			ambiguous = append(ambiguous, amb{idx: i, c: c})
+			continue
+		}
+		item := autoResolveItem{Winner: winner, Loser: loser, Method: "deterministic", Reason: reason}
+		if !dryRun {
+			if err := st.SupersedeFact(ctx, loser, winner, "auto-resolve deterministic: "+reason); err != nil {
+				batch.Errors++
+				item.Reason = item.Reason + " (apply error: " + err.Error() + ")"
+			} else {
+				_ = st.ReinforceFact(ctx, winner)
+				item.Applied = true
+				batch.Resolved++
+			}
+		} else {
+			batch.Resolved++
+		}
+		batch.Deterministic++
+		batch.Results = append(batch.Results, item)
+	}
+
+	if len(ambiguous) == 0 {
+		return batch, nil
+	}
+
+	// LLM fallback for ambiguous conflicts
+	if llmFlag == "" {
+		if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+			llmFlag = resolvedCfg.EffectiveLLMModel("classify", extract.DefaultResolveModel).Value
+		}
+		if llmFlag == "" {
+			llmFlag = extract.DefaultResolveModel
+		}
+	}
+
+	llmCfg, err := llm.ParseLLMFlag(llmFlag)
+	if err != nil {
+		// no LLM path: mark skipped
+		for range ambiguous {
+			batch.LLM++
+			batch.Skipped++
+			batch.Results = append(batch.Results, autoResolveItem{Method: "llm", Reason: "skipped: invalid --llm config"})
+		}
+		return batch, nil
+	}
+	provider, err := llm.NewProvider(llmCfg)
+	if err != nil {
+		for range ambiguous {
+			batch.LLM++
+			batch.Skipped++
+			batch.Results = append(batch.Results, autoResolveItem{Method: "llm", Reason: "skipped: no LLM provider available"})
+		}
+		return batch, nil
+	}
+
+	pairs := make([]extract.ConflictPair, len(ambiguous))
+	for i, entry := range ambiguous {
+		c := entry.c
+		pairs[i] = extract.ConflictPair{
+			Index: entry.idx,
+			Fact1: extract.ConflictFact{
+				ID:             c.Fact1.ID,
+				Subject:        c.Fact1.Subject,
+				Predicate:      c.Fact1.Predicate,
+				Object:         c.Fact1.Object,
+				FactType:       c.Fact1.FactType,
+				Confidence:     c.Fact1.Confidence,
+				DecayRate:      c.Fact1.DecayRate,
+				Source:         c.Fact1.SourceQuote,
+				CreatedAt:      c.Fact1.CreatedAt,
+				LastReinforced: c.Fact1.LastReinforced,
+			},
+			Fact2: extract.ConflictFact{
+				ID:             c.Fact2.ID,
+				Subject:        c.Fact2.Subject,
+				Predicate:      c.Fact2.Predicate,
+				Object:         c.Fact2.Object,
+				FactType:       c.Fact2.FactType,
+				Confidence:     c.Fact2.Confidence,
+				DecayRate:      c.Fact2.DecayRate,
+				Source:         c.Fact2.SourceQuote,
+				CreatedAt:      c.Fact2.CreatedAt,
+				LastReinforced: c.Fact2.LastReinforced,
+			},
+		}
+	}
+
+	llmResult, err := extract.ResolveConflictsLLM(ctx, provider, pairs, extract.ResolveOpts{
+		MinConfidence: threshold,
+		DryRun:        dryRun,
+		Concurrency:   extract.DefaultResolveConcurrency,
+		BatchSize:     5,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("LLM auto-resolve failed: %w", err)
+	}
+
+	batch.LLM += len(ambiguous)
+	seenPairs := map[int]bool{}
+	sqlStore, _ := st.(*store.SQLiteStore)
+	for _, r := range llmResult.Resolutions {
+		item := autoResolveItem{Method: "llm", Reason: r.Reason}
+		seenPairs[r.PairIndex] = true
+		switch r.Action {
+		case "supersede":
+			item.Winner = r.WinnerID
+			item.Loser = r.LoserID
+			if !dryRun {
+				if err := st.SupersedeFact(ctx, r.LoserID, r.WinnerID, "auto-resolve llm: "+r.Reason); err != nil {
+					batch.Errors++
+					item.Reason = item.Reason + " (apply error: " + err.Error() + ")"
+				} else {
+					_ = st.ReinforceFact(ctx, r.WinnerID)
+					item.Applied = true
+					batch.Resolved++
+				}
+			} else {
+				batch.Resolved++
+			}
+		case "merge":
+			batch.Skipped++
+			item.Reason = "merge suggested (manual follow-up): " + r.Reason
+			_ = sqlStore
+		case "flag-human":
+			batch.Skipped++
+			item.Reason = "flagged for manual review: " + r.Reason
+		default:
+			batch.Skipped++
+			item.Reason = "unhandled llm action: " + r.Action
+		}
+		batch.Results = append(batch.Results, item)
+	}
+	for _, entry := range ambiguous {
+		if seenPairs[entry.idx] {
+			continue
+		}
+		batch.Skipped++
+		batch.Results = append(batch.Results, autoResolveItem{
+			Method: "llm",
+			Reason: "no LLM resolution produced for this conflict",
+		})
+	}
+
+	return batch, nil
+}
+
+func pickDeterministicWinner(c observe.Conflict, threshold float64) (winner, loser int64, reason string, ok bool) {
+	s1 := strings.ToLower(strings.TrimSpace(c.Fact1.Subject))
+	s2 := strings.ToLower(strings.TrimSpace(c.Fact2.Subject))
+	p1 := strings.ToLower(strings.TrimSpace(c.Fact1.Predicate))
+	p2 := strings.ToLower(strings.TrimSpace(c.Fact2.Predicate))
+	if s1 == "" || p1 == "" || s1 != s2 || p1 != p2 {
+		return 0, 0, "", false
+	}
+
+	if c.Fact1.CreatedAt.After(c.Fact2.CreatedAt) && c.Fact1.Confidence > c.Fact2.Confidence && c.Fact1.Confidence >= threshold {
+		return c.Fact1.ID, c.Fact2.ID, fmt.Sprintf("fact %d is newer and higher confidence (%.2f > %.2f)", c.Fact1.ID, c.Fact1.Confidence, c.Fact2.Confidence), true
+	}
+	if c.Fact2.CreatedAt.After(c.Fact1.CreatedAt) && c.Fact2.Confidence > c.Fact1.Confidence && c.Fact2.Confidence >= threshold {
+		return c.Fact2.ID, c.Fact1.ID, fmt.Sprintf("fact %d is newer and higher confidence (%.2f > %.2f)", c.Fact2.ID, c.Fact2.Confidence, c.Fact1.Confidence), true
+	}
+	return 0, 0, "", false
 }
 
 func runExtract(args []string) error {
@@ -4062,6 +4331,8 @@ func runCleanup(args []string) error {
 	dryRun := false
 	purgeNoise := false
 	dedupFacts := false
+	resolveConflicts := false
+	conflictThreshold := 0.85
 	dedupThreshold := 0.90
 	agentFlag := ""
 	for i := 0; i < len(args); i++ {
@@ -4072,6 +4343,21 @@ func runCleanup(args []string) error {
 			purgeNoise = true
 		case args[i] == "--dedup-facts":
 			dedupFacts = true
+		case args[i] == "--resolve-conflicts":
+			resolveConflicts = true
+		case args[i] == "--threshold" && i+1 < len(args):
+			i++
+			v, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --threshold: %s", args[i])
+			}
+			conflictThreshold = v
+		case strings.HasPrefix(args[i], "--threshold="):
+			v, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--threshold="), 64)
+			if err != nil {
+				return fmt.Errorf("invalid --threshold: %s", args[i])
+			}
+			conflictThreshold = v
 		case args[i] == "--dedup-threshold" && i+1 < len(args):
 			i++
 			v, err := strconv.ParseFloat(args[i], 64)
@@ -4092,7 +4378,7 @@ func runCleanup(args []string) error {
 			agentFlag = strings.TrimPrefix(args[i], "--agent=")
 		default:
 			if strings.HasPrefix(args[i], "-") {
-				return fmt.Errorf("unknown flag: %s\nUsage: cortex cleanup [--dry-run] [--purge-noise] [--dedup-facts] [--dedup-threshold 0.90] [--agent <id>]", args[i])
+				return fmt.Errorf("unknown flag: %s\nUsage: cortex cleanup [--dry-run] [--purge-noise] [--dedup-facts] [--resolve-conflicts] [--threshold 0.85] [--dedup-threshold 0.90] [--agent <id>]", args[i])
 			}
 			return fmt.Errorf("unexpected argument: %s", args[i])
 		}
@@ -4126,7 +4412,7 @@ func runCleanup(args []string) error {
 	_ = memAgentArgs // used below in queries
 	_ = factAgentArgs
 
-	if dryRun && !purgeNoise && !dedupFacts {
+	if dryRun && !purgeNoise && !dedupFacts && !resolveConflicts {
 		// Count what would be cleaned without deleting (#57)
 		var shortCount, numericCount, factsCount int
 		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories WHERE LENGTH(content) < 20 AND deleted_at IS NULL`+memAgentWhere, memAgentArgs...).Scan(&shortCount)
@@ -4202,6 +4488,48 @@ func runCleanup(args []string) error {
 					pair.LoserConfidence,
 					pair.Similarity,
 				)
+			}
+		}
+	}
+
+	if resolveConflicts {
+		dbPath := getStoreConfig().DBPath
+		if dbPath == "" {
+			dbPath = store.DefaultDBPath
+		}
+		engine := observe.NewEngine(s, dbPath)
+		conflicts, err := engine.GetConflictsLimitWithSuperseded(ctx, 100, false)
+		if err != nil {
+			return fmt.Errorf("detecting conflicts: %w", err)
+		}
+		if agentFlag != "" {
+			filtered := make([]observe.Conflict, 0, len(conflicts))
+			for _, c := range conflicts {
+				if c.Fact1.AgentID == agentFlag || c.Fact2.AgentID == agentFlag {
+					filtered = append(filtered, c)
+				}
+			}
+			conflicts = filtered
+		}
+		if len(conflicts) == 0 {
+			fmt.Printf("\nAuto-resolve conflicts: no conflicts found\n")
+		} else {
+			batch, err := runAutoResolveConflicts(ctx, s, conflicts, "", conflictThreshold, dryRun)
+			if err != nil {
+				return fmt.Errorf("auto-resolving conflicts: %w", err)
+			}
+			fmt.Printf("\nAuto-resolve conflicts (%0.2f): total=%d deterministic=%d llm=%d resolved=%d skipped=%d errors=%d\n",
+				conflictThreshold, batch.Total, batch.Deterministic, batch.LLM, batch.Resolved, batch.Skipped, batch.Errors)
+			if len(batch.Results) > 0 {
+				fmt.Printf("  Plan sample (winner -> loser):\n")
+				show := len(batch.Results)
+				if show > 12 {
+					show = 12
+				}
+				for i := 0; i < show; i++ {
+					r := batch.Results[i]
+					fmt.Printf("    - %s winner=%d loser=%d applied=%t | %s\n", r.Method, r.Winner, r.Loser, r.Applied, r.Reason)
+				}
 			}
 		}
 	}
