@@ -9,6 +9,34 @@ import (
 	"time"
 )
 
+func normalizeFactStateForWrite(state string) (string, error) {
+	s := strings.ToLower(strings.TrimSpace(state))
+	if s == "" {
+		return FactStateActive, nil
+	}
+	switch s {
+	case FactStateActive, FactStateCore, FactStateRetired:
+		return s, nil
+	case FactStateSuperseded:
+		return "", fmt.Errorf("state %q is system-managed and cannot be set directly", FactStateSuperseded)
+	default:
+		return "", fmt.Errorf("invalid fact state %q (valid: active, core, retired)", state)
+	}
+}
+
+func normalizeFactStateFilter(state string) (string, error) {
+	s := strings.ToLower(strings.TrimSpace(state))
+	if s == "" {
+		return "", nil
+	}
+	switch s {
+	case FactStateActive, FactStateCore, FactStateRetired, FactStateSuperseded:
+		return s, nil
+	default:
+		return "", fmt.Errorf("invalid fact state filter %q (valid: active, core, retired, superseded)", state)
+	}
+}
+
 // AddFact inserts a new fact linked to a memory.
 func (s *SQLiteStore) AddFact(ctx context.Context, f *Fact) (int64, error) {
 	now := time.Now().UTC()
@@ -19,11 +47,16 @@ func (s *SQLiteStore) AddFact(ctx context.Context, f *Fact) (int64, error) {
 		f.DecayRate = 0.01
 	}
 
+	state, err := normalizeFactStateForWrite(f.State)
+	if err != nil {
+		return 0, err
+	}
+
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO facts (memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at, agent_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO facts (memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at, state, agent_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.MemoryID, f.Subject, f.Predicate, f.Object, f.FactType,
-		f.Confidence, f.DecayRate, now, f.SourceQuote, now, f.AgentID,
+		f.Confidence, f.DecayRate, now, f.SourceQuote, now, state, f.AgentID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting fact: %w", err)
@@ -37,6 +70,7 @@ func (s *SQLiteStore) AddFact(ctx context.Context, f *Fact) (int64, error) {
 	f.ID = id
 	f.CreatedAt = now
 	f.LastReinforced = now
+	f.State = state
 	return id, nil
 }
 
@@ -45,11 +79,11 @@ func (s *SQLiteStore) GetFact(ctx context.Context, id int64) (*Fact, error) {
 	f := &Fact{}
 	var supersededBy sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at, superseded_by, agent_id
+		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at, state, superseded_by, agent_id
 		 FROM facts WHERE id = ?`, id,
 	).Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 		&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-		&f.SourceQuote, &f.CreatedAt, &supersededBy, &f.AgentID)
+		&f.SourceQuote, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -70,8 +104,13 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 		opts.Limit = 100
 	}
 
+	stateFilter, err := normalizeFactStateFilter(opts.State)
+	if err != nil {
+		return nil, err
+	}
+
 	query := `SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type, 
-			         f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.superseded_by, f.agent_id
+			         f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.state, f.superseded_by, f.agent_id
 		      FROM facts f`
 	args := []interface{}{}
 
@@ -83,6 +122,10 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 	}
 	if !opts.IncludeSuperseded {
 		where = append(where, "f.superseded_by IS NULL")
+	}
+	if stateFilter != "" {
+		where = append(where, "LOWER(f.state) = ?")
+		args = append(args, stateFilter)
 	}
 	if opts.Agent != "" {
 		// Show agent-specific facts + global facts (empty agent_id)
@@ -121,7 +164,7 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 		var supersededBy sql.NullInt64
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt, &supersededBy, &f.AgentID); err != nil {
+			&f.SourceQuote, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
 			return nil, fmt.Errorf("scanning fact row: %w", err)
 		}
 		if supersededBy.Valid {
@@ -150,7 +193,7 @@ func (s *SQLiteStore) ListFactsByMemoryIDs(ctx context.Context, memoryIDs []int6
 	}
 
 	query := fmt.Sprintf(`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type,
-		f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.superseded_by, f.agent_id
+		f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.state, f.superseded_by, f.agent_id
 		FROM facts f
 		WHERE f.memory_id IN (%s) AND f.superseded_by IS NULL`,
 		strings.Join(placeholders, ","))
@@ -174,7 +217,7 @@ func (s *SQLiteStore) ListFactsByMemoryIDs(ctx context.Context, memoryIDs []int6
 		var supersededBy sql.NullInt64
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt, &supersededBy, &f.AgentID); err != nil {
+			&f.SourceQuote, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
 			return nil, fmt.Errorf("scanning fact row: %w", err)
 		}
 		if supersededBy.Valid {
@@ -212,6 +255,32 @@ func (s *SQLiteStore) UpdateFactType(ctx context.Context, id int64, factType str
 	)
 	if err != nil {
 		return fmt.Errorf("updating fact type: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("fact %d not found", id)
+	}
+	return nil
+}
+
+// UpdateFactState changes the lifecycle state of a fact.
+// Allowed explicit states: active, core, retired. superseded is system-managed.
+func (s *SQLiteStore) UpdateFactState(ctx context.Context, id int64, state string) error {
+	norm, err := normalizeFactStateForWrite(state)
+	if err != nil {
+		return err
+	}
+
+	result, err := s.db.ExecContext(ctx,
+		"UPDATE facts SET state = ? WHERE id = ?",
+		norm, id,
+	)
+	if err != nil {
+		return fmt.Errorf("updating fact state: %w", err)
 	}
 
 	rows, err := result.RowsAffected()
@@ -271,8 +340,8 @@ func (s *SQLiteStore) SupersedeFact(ctx context.Context, oldFactID, newFactID in
 
 	// Tombstone old fact: keep row, mark superseded_by, and lower confidence to avoid ranking leakage.
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE facts SET superseded_by = ?, confidence = 0.0 WHERE id = ?`,
-		newFactID, oldFactID,
+		`UPDATE facts SET superseded_by = ?, confidence = 0.0, state = ? WHERE id = ?`,
+		newFactID, FactStateSuperseded, oldFactID,
 	); err != nil {
 		return fmt.Errorf("marking fact %d as superseded by %d: %w", oldFactID, newFactID, err)
 	}
@@ -324,7 +393,7 @@ func (s *SQLiteStore) getFactsByMemoryIDs(ctx context.Context, memoryIDs []int64
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at, superseded_by, agent_id
+		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at, state, superseded_by, agent_id
 		 FROM facts WHERE memory_id IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
@@ -344,7 +413,7 @@ func (s *SQLiteStore) getFactsByMemoryIDs(ctx context.Context, memoryIDs []int64
 		var supersededBy sql.NullInt64
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt, &supersededBy, &f.AgentID); err != nil {
+			&f.SourceQuote, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
 			return nil, fmt.Errorf("scanning fact: %w", err)
 		}
 		if supersededBy.Valid {
@@ -448,7 +517,7 @@ func (s *SQLiteStore) StaleFacts(ctx context.Context, maxConfidence float64, day
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type,
-		        f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.superseded_by, f.agent_id
+		        f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.state, f.superseded_by, f.agent_id
 		 FROM facts f
 		 WHERE f.confidence <= ?
 		   AND f.last_reinforced < ?
@@ -467,7 +536,7 @@ func (s *SQLiteStore) StaleFacts(ctx context.Context, maxConfidence float64, day
 		var supersededBy sql.NullInt64
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt, &supersededBy, &f.AgentID); err != nil {
+			&f.SourceQuote, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
 			return nil, fmt.Errorf("scanning stale fact: %w", err)
 		}
 		if supersededBy.Valid {

@@ -79,6 +79,20 @@ func TestSupersededByColumnExists(t *testing.T) {
 	}
 }
 
+func TestFactStateColumnExists(t *testing.T) {
+	s := newTestStore(t)
+	ss := s.(*SQLiteStore)
+
+	var count int
+	err := ss.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='state'").Scan(&count)
+	if err != nil {
+		t.Fatalf("checking state column: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected state column to exist, count=%d", count)
+	}
+}
+
 func TestWALMode(t *testing.T) {
 	s := newTestStore(t)
 	ss := s.(*SQLiteStore)
@@ -1381,6 +1395,59 @@ func TestSupersedeFact(t *testing.T) {
 	}
 	if oldFact == nil || oldFact.SupersededBy == nil || *oldFact.SupersededBy != newID {
 		t.Fatalf("expected old fact %d superseded_by=%d", oldID, newID)
+	}
+}
+
+func TestFactStateTransitionsAndSupersede(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &Memory{Content: "state transitions"})
+	fid, _ := s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "Q", Predicate: "focus", Object: "cortex", FactType: "state", Confidence: 0.9})
+
+	f, err := s.GetFact(ctx, fid)
+	if err != nil {
+		t.Fatalf("GetFact: %v", err)
+	}
+	if f.State != FactStateActive {
+		t.Fatalf("expected default state active, got %q", f.State)
+	}
+
+	if err := s.UpdateFactState(ctx, fid, FactStateCore); err != nil {
+		t.Fatalf("UpdateFactState core: %v", err)
+	}
+	f, _ = s.GetFact(ctx, fid)
+	if f.State != FactStateCore {
+		t.Fatalf("expected state core, got %q", f.State)
+	}
+
+	if err := s.UpdateFactState(ctx, fid, FactStateSuperseded); err == nil {
+		t.Fatalf("expected error when setting superseded directly")
+	}
+
+	newID, _ := s.AddFact(ctx, &Fact{MemoryID: memID, Subject: "Q", Predicate: "focus", Object: "belief engine", FactType: "state", Confidence: 0.95})
+	if err := s.SupersedeFact(ctx, fid, newID, "newer evidence"); err != nil {
+		t.Fatalf("SupersedeFact: %v", err)
+	}
+	oldFact, _ := s.GetFact(ctx, fid)
+	if oldFact.State != FactStateSuperseded {
+		t.Fatalf("expected superseded state after supersede, got %q", oldFact.State)
+	}
+
+	coreFacts, err := s.ListFacts(ctx, ListOpts{Limit: 10, State: FactStateCore, IncludeSuperseded: true})
+	if err != nil {
+		t.Fatalf("ListFacts state=core: %v", err)
+	}
+	if len(coreFacts) != 0 {
+		t.Fatalf("expected no core facts after supersede, got %d", len(coreFacts))
+	}
+
+	supFacts, err := s.ListFacts(ctx, ListOpts{Limit: 10, State: FactStateSuperseded, IncludeSuperseded: true})
+	if err != nil {
+		t.Fatalf("ListFacts state=superseded: %v", err)
+	}
+	if len(supFacts) != 1 || supFacts[0].ID != fid {
+		t.Fatalf("expected superseded old fact in state filter, got %+v", supFacts)
 	}
 }
 

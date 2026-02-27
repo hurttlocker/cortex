@@ -198,3 +198,61 @@ func TestMigrateClustersTables_IdempotentNoDataLoss(t *testing.T) {
 		t.Fatalf("expected seed fact to survive migration, got %d", factCount)
 	}
 }
+
+func TestMigrateFactStateColumn_Backfill(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-fact-state.db")
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw sqlite: %v", err)
+	}
+
+	if _, err := rawDB.Exec(`
+		CREATE TABLE facts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			memory_id INTEGER NOT NULL,
+			subject TEXT,
+			predicate TEXT,
+			object TEXT,
+			fact_type TEXT NOT NULL,
+			confidence REAL DEFAULT 1.0,
+			decay_rate REAL DEFAULT 0.01,
+			last_reinforced DATETIME DEFAULT CURRENT_TIMESTAMP,
+			source_quote TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			superseded_by INTEGER,
+			agent_id TEXT NOT NULL DEFAULT ''
+		)
+	`); err != nil {
+		t.Fatalf("create legacy facts table: %v", err)
+	}
+	if _, err := rawDB.Exec(`INSERT INTO facts (memory_id, subject, predicate, object, fact_type, confidence) VALUES (1,'A','is','one','kv',0.9)`); err != nil {
+		t.Fatalf("insert active legacy fact: %v", err)
+	}
+	if _, err := rawDB.Exec(`INSERT INTO facts (memory_id, subject, predicate, object, fact_type, confidence, superseded_by) VALUES (1,'A','is','old','kv',0.1,1)`); err != nil {
+		t.Fatalf("insert superseded legacy fact: %v", err)
+	}
+
+	ss := &SQLiteStore{db: rawDB}
+	if err := ss.migrateFactStateColumn(); err != nil {
+		t.Fatalf("migrateFactStateColumn: %v", err)
+	}
+
+	var activeCount int
+	if err := rawDB.QueryRow(`SELECT COUNT(*) FROM facts WHERE state='active'`).Scan(&activeCount); err != nil {
+		t.Fatalf("count active state: %v", err)
+	}
+	if activeCount != 1 {
+		t.Fatalf("expected 1 active fact, got %d", activeCount)
+	}
+	var supersededCount int
+	if err := rawDB.QueryRow(`SELECT COUNT(*) FROM facts WHERE state='superseded'`).Scan(&supersededCount); err != nil {
+		t.Fatalf("count superseded state: %v", err)
+	}
+	if supersededCount != 1 {
+		t.Fatalf("expected 1 superseded fact, got %d", supersededCount)
+	}
+
+	if err := rawDB.Close(); err != nil {
+		t.Fatalf("close raw sqlite: %v", err)
+	}
+}

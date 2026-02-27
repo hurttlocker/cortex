@@ -230,7 +230,7 @@ func (s *SQLiteStore) CheckConflictsForFact(ctx context.Context, fact *Fact) ([]
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, memory_id, subject, predicate, object, fact_type,
-		        confidence, decay_rate, last_reinforced, source_quote, created_at, superseded_by, agent_id
+		        confidence, decay_rate, last_reinforced, source_quote, created_at, state, superseded_by, agent_id
 		 FROM facts
 		 WHERE LOWER(subject) = LOWER(?)
 		   AND LOWER(predicate) = LOWER(?)
@@ -252,7 +252,7 @@ func (s *SQLiteStore) CheckConflictsForFact(ctx context.Context, fact *Fact) ([]
 		if err := rows.Scan(
 			&existing.ID, &existing.MemoryID, &existing.Subject, &existing.Predicate,
 			&existing.Object, &existing.FactType, &existing.Confidence, &existing.DecayRate,
-			&existing.LastReinforced, &existing.SourceQuote, &existing.CreatedAt, &supersededBy,
+			&existing.LastReinforced, &existing.SourceQuote, &existing.CreatedAt, &existing.State, &supersededBy,
 			&existing.AgentID,
 		); err != nil {
 			return nil, fmt.Errorf("scanning existing fact: %w", err)
@@ -325,7 +325,7 @@ func (s *SQLiteStore) CheckDecayAlerts(ctx context.Context, thresholds DecayThre
 	// Get all active facts with their decay parameters
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, memory_id, subject, predicate, object, fact_type,
-		        confidence, decay_rate, last_reinforced, source_quote, created_at, agent_id
+		        confidence, decay_rate, last_reinforced, source_quote, created_at, state, agent_id
 		 FROM facts
 		 WHERE superseded_by IS NULL
 		   AND confidence > 0`)
@@ -351,7 +351,7 @@ func (s *SQLiteStore) CheckDecayAlerts(ctx context.Context, thresholds DecayThre
 		var f Fact
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt, &f.AgentID); err != nil {
+			&f.SourceQuote, &f.CreatedAt, &f.State, &f.AgentID); err != nil {
 			return nil, fmt.Errorf("scanning fact: %w", err)
 		}
 		result.FactsScanned++

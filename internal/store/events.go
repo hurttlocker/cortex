@@ -419,7 +419,7 @@ func (s *SQLiteStore) GetAttributeConflictsLimitWithSuperseded(ctx context.Conte
 	var conflicts []Conflict
 	for _, p := range pairs {
 		factQuery := fmt.Sprintf(`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type,
-			        f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.superseded_by, f.agent_id
+			        f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.state, f.superseded_by, f.agent_id
 			 FROM facts f
 			 JOIN memories m ON f.memory_id = m.id AND m.deleted_at IS NULL
 			 WHERE LOWER(f.subject) = ? AND LOWER(f.predicate) = ?
@@ -439,7 +439,7 @@ func (s *SQLiteStore) GetAttributeConflictsLimitWithSuperseded(ctx context.Conte
 			var supersededBy sql.NullInt64
 			if err := factRows.Scan(
 				&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object, &f.FactType,
-				&f.Confidence, &f.DecayRate, &f.LastReinforced, &f.SourceQuote, &f.CreatedAt, &supersededBy, &f.AgentID,
+				&f.Confidence, &f.DecayRate, &f.LastReinforced, &f.SourceQuote, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID,
 			); err != nil {
 				factRows.Close()
 				return nil, fmt.Errorf("scanning fact: %w", err)
