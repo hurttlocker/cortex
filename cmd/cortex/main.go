@@ -26,6 +26,7 @@ import (
 	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/graph"
 	"github.com/hurttlocker/cortex/internal/ingest"
+	"github.com/hurttlocker/cortex/internal/lifecycle"
 	"github.com/hurttlocker/cortex/internal/llm"
 	cortexmcp "github.com/hurttlocker/cortex/internal/mcp"
 	"github.com/hurttlocker/cortex/internal/observe"
@@ -70,6 +71,8 @@ func main() {
 		exitWithError(runSearch(args[1:]))
 	case "answer":
 		exitWithError(runAnswer(args[1:]))
+	case "lifecycle":
+		exitWithError(runLifecycle(args[1:]))
 	case "stats":
 		exitWithError(runStats(args[1:]))
 	case "list":
@@ -1228,6 +1231,90 @@ func runAnswer(args []string) error {
 	}
 	if res.Degraded {
 		fmt.Printf("\n(degraded: %s)\n", res.Reason)
+	}
+	return nil
+}
+
+func runLifecycle(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex lifecycle run [--dry-run] [--json]")
+	}
+	if args[0] != "run" {
+		return fmt.Errorf("unknown lifecycle subcommand %q (expected: run)", args[0])
+	}
+
+	dryRun := false
+	jsonOutput := false
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--dry-run", "-n":
+			dryRun = true
+		case "--json":
+			jsonOutput = true
+		default:
+			return fmt.Errorf("unknown flag: %s\nusage: cortex lifecycle run [--dry-run] [--json]", args[i])
+		}
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	policies, err := cfgresolver.ResolvePolicyConfig("")
+	if err != nil {
+		return fmt.Errorf("resolving policy config: %w", err)
+	}
+
+	runner, err := lifecycle.NewRunner(s, policies)
+	if err != nil {
+		return err
+	}
+	report, err := runner.Run(context.Background(), dryRun)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput || !isTTY() {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+
+	mode := "apply"
+	if dryRun {
+		mode = "dry-run"
+	}
+	fmt.Printf("Lifecycle run (%s):\n", mode)
+	fmt.Printf("  Scanned: %d\n", report.Scanned)
+	fmt.Printf("  Planned/Applied actions: %d (applied=%d)\n", len(report.Actions), report.Applied)
+	fmt.Printf("  Policy hits: reinforce-promote=%d decay-retire=%d conflict-supersede=%d\n",
+		report.PolicyRuns.ReinforcePromote,
+		report.PolicyRuns.DecayRetire,
+		report.PolicyRuns.ConflictSupersede,
+	)
+	show := len(report.Actions)
+	if show > 20 {
+		show = 20
+	}
+	for i := 0; i < show; i++ {
+		a := report.Actions[i]
+		summary := fmt.Sprintf("[%d] %s/%s", i+1, a.Policy, a.Action)
+		switch {
+		case a.FactID > 0:
+			summary += fmt.Sprintf(" fact=%d", a.FactID)
+		case a.WinnerID > 0 || a.LoserID > 0:
+			summary += fmt.Sprintf(" winner=%d loser=%d", a.WinnerID, a.LoserID)
+		}
+		if a.FromState != "" || a.ToState != "" {
+			summary += fmt.Sprintf(" state:%s->%s", a.FromState, a.ToState)
+		}
+		summary += fmt.Sprintf(" applied=%t", a.Applied)
+		fmt.Printf("  %s\n      %s\n", summary, a.Reason)
+	}
+	if show < len(report.Actions) {
+		fmt.Printf("  ... %d additional actions omitted\n", len(report.Actions)-show)
 	}
 	return nil
 }
@@ -8369,7 +8456,7 @@ var cortexCommands = []string{
 	"stats", "stale", "conflicts", "agents", "projects",
 	"graph", "cluster",
 	"reason", "bench",
-	"cleanup", "optimize", "embed", "tag", "answer",
+	"cleanup", "optimize", "embed", "tag", "answer", "lifecycle",
 	"connect",
 	"mcp", "doctor", "completion", "version", "help",
 }
@@ -8448,6 +8535,7 @@ Memory:
   reimport <path>       Wipe database and reimport from scratch
   search <query>        Search memories (keyword, semantic, hybrid, or rrf)
   answer <query>        Search + synthesize short answer with citations
+  lifecycle run         Apply built-in lifecycle policies to facts
   list                  List memories or facts
   export                Export memory store (json, markdown, csv)
   update <id>           Update a memory's content
