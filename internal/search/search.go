@@ -102,6 +102,14 @@ func ParseMode(s string) (Mode, error) {
 	}
 }
 
+// SourceBoost applies an additional score multiplier to matching source prefixes.
+// Prefix matching is case-insensitive and checked against source file prefixes.
+// Example: Prefix "github:" with Weight 1.15 boosts github connector results.
+type SourceBoost struct {
+	Prefix string  `json:"prefix"`
+	Weight float64 `json:"weight"`
+}
+
 // Options configures a search query.
 type Options struct {
 	Mode              Mode     // Search mode (default: keyword)
@@ -115,13 +123,14 @@ type Options struct {
 
 	// Metadata-aware ranking context (Issue #148)
 	// These don't filter — they boost results that match the calling context.
-	BoostAgent        string // Boost results from this agent (e.g., "main", "ace")
-	BoostChannel      string // Boost results from this channel (e.g., "discord", "telegram")
-	After             string // Filter memories imported after date YYYY-MM-DD (Issue #30)
-	Before            string // Filter memories imported before date YYYY-MM-DD (Issue #30)
-	Source            string // Filter by source prefix (e.g., "github", "gmail") (Issue #199)
-	IncludeSuperseded bool   // Include memories backed only by superseded facts
-	Explain           bool   // Attach explainability/provenance payloads to results
+	BoostAgent        string        // Boost results from this agent (e.g., "main", "ace")
+	BoostChannel      string        // Boost results from this channel (e.g., "discord", "telegram")
+	After             string        // Filter memories imported after date YYYY-MM-DD (Issue #30)
+	Before            string        // Filter memories imported before date YYYY-MM-DD (Issue #30)
+	Source            string        // Filter by source prefix (e.g., "github", "gmail") (Issue #199)
+	SourceBoosts      []SourceBoost // Optional score boosts by source prefix
+	IncludeSuperseded bool          // Include memories backed only by superseded facts
+	Explain           bool          // Attach explainability/provenance payloads to results
 }
 
 // Default minimum score thresholds by mode.
@@ -213,7 +222,9 @@ type RankComponents struct {
 	RecencyBoost float64 `json:"recency_boost,omitempty"`
 
 	// Source weighting (Issue #199)
-	SourceWeight float64 `json:"source_weight,omitempty"`
+	SourceWeight          float64 `json:"source_weight,omitempty"`
+	SourceBoostMultiplier float64 `json:"source_boost_multiplier,omitempty"`
+	SourceBoostPrefix     string  `json:"source_boost_prefix,omitempty"`
 }
 
 type confidenceDetail struct {
@@ -377,7 +388,7 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	// Metadata-aware ranking boosts (Issue #148)
 	results = applyMetadataBoosts(results, opts)
 	results = applyRecencyBoost(results, opts.Explain)
-	results = applySourceWeight(results, opts.Explain)
+	results = applySourceWeight(results, opts.SourceBoosts, opts.Explain)
 
 	if !opts.IncludeSuperseded {
 		results = e.filterSupersededMemories(ctx, results)
@@ -988,7 +999,8 @@ func isConnectorSource(sourceFile string) bool {
 
 // applySourceWeight gives manual imports a slight boost over connector imports.
 // Manual imports are first-party curated content; connector data is bulk-ingested.
-func applySourceWeight(results []Result, explain bool) []Result {
+// Optional source boosts can further increase weights for matching source prefixes.
+func applySourceWeight(results []Result, boosts []SourceBoost, explain bool) []Result {
 	for i := range results {
 		var weight float64
 		if isConnectorSource(results[i].SourceFile) {
@@ -997,10 +1009,19 @@ func applySourceWeight(results []Result, explain bool) []Result {
 			weight = sourceWeightManual
 		}
 
-		results[i].Score *= weight
+		score := results[i].Score * weight
+		boostMult, boostPrefix := sourceBoostForResult(results[i].SourceFile, boosts)
+		if boostMult > 0 {
+			score *= boostMult
+		}
+		results[i].Score = score
 		if explain {
 			ensureExplain(&results[i])
 			results[i].Explain.RankComponents.SourceWeight = weight
+			if boostMult > 0 {
+				results[i].Explain.RankComponents.SourceBoostMultiplier = boostMult
+				results[i].Explain.RankComponents.SourceBoostPrefix = boostPrefix
+			}
 		}
 	}
 
@@ -1010,6 +1031,37 @@ func applySourceWeight(results []Result, explain bool) []Result {
 	})
 
 	return results
+}
+
+func sourceBoostForResult(sourceFile string, boosts []SourceBoost) (float64, string) {
+	if len(boosts) == 0 || strings.TrimSpace(sourceFile) == "" {
+		return 0, ""
+	}
+	lowerSrc := strings.ToLower(strings.TrimSpace(sourceFile))
+	bestWeight := 0.0
+	bestPrefix := ""
+	for _, b := range boosts {
+		prefix := strings.ToLower(strings.TrimSpace(b.Prefix))
+		if prefix == "" || b.Weight <= 0 {
+			continue
+		}
+		if matchesSourcePrefix(lowerSrc, prefix) && b.Weight > bestWeight {
+			bestWeight = b.Weight
+			bestPrefix = b.Prefix
+		}
+	}
+	return bestWeight, bestPrefix
+}
+
+func matchesSourcePrefix(sourceFile, prefix string) bool {
+	if strings.HasPrefix(sourceFile, prefix) {
+		return true
+	}
+	trimmed := strings.TrimSuffix(prefix, ":")
+	if trimmed == "" {
+		return false
+	}
+	return strings.HasPrefix(sourceFile, trimmed+":") || strings.HasPrefix(sourceFile, trimmed+"/")
 }
 
 // filterSupersededMemories excludes memories where all linked facts are superseded.

@@ -105,13 +105,13 @@ type ConflictFact struct {
 
 // ConflictResolution is the LLM's decision for one conflict pair.
 type ConflictResolution struct {
-	PairIndex  int            `json:"pair_index"`
-	Action     string         `json:"action"` // "supersede", "merge", "flag-human"
-	WinnerID   int64          `json:"winner_id"`
-	LoserID    int64          `json:"loser_id"`
-	Reason     string         `json:"reason"`
-	Confidence float64        `json:"confidence"`
-	MergedFact *MergedFact    `json:"merged_fact,omitempty"`
+	PairIndex  int         `json:"pair_index"`
+	Action     string      `json:"action"` // "supersede", "merge", "flag-human"
+	WinnerID   int64       `json:"winner_id"`
+	LoserID    int64       `json:"loser_id"`
+	Reason     string      `json:"reason"`
+	Confidence float64     `json:"confidence"`
+	MergedFact *MergedFact `json:"merged_fact,omitempty"`
 }
 
 // MergedFact is a new fact combining two conflicting originals.
@@ -125,11 +125,11 @@ type MergedFact struct {
 // ResolveResult holds the output from a batch LLM resolution run.
 type ResolveResult struct {
 	Resolutions []ConflictResolution
-	Superseded  int           // Facts that will be superseded
-	Merged      int           // Conflict pairs resolved by merging
-	Flagged     int           // Conflicts flagged for human review
-	Errors      int           // Errors during resolution
-	TotalPairs  int           // Total conflict pairs processed
+	Superseded  int // Facts that will be superseded
+	Merged      int // Conflict pairs resolved by merging
+	Flagged     int // Conflicts flagged for human review
+	Errors      int // Errors during resolution
+	TotalPairs  int // Total conflict pairs processed
 	Latency     time.Duration
 	Model       string
 }

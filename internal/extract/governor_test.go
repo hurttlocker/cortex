@@ -102,10 +102,10 @@ func TestGovernor_MinLengthFilters(t *testing.T) {
 	gov := NewGovernor(DefaultGovernorConfig())
 
 	facts := []ExtractedFact{
-		{Subject: "test", Predicate: "k", Object: "a value here", FactType: "kv", Confidence: 0.9},              // pred too short (1 char)
-		{Subject: "test", Predicate: "key", Object: "val", FactType: "kv", Confidence: 0.9},                     // pred too short (3 chars, min is 5)
-		{Subject: "test", Predicate: "name", Object: "ab", FactType: "kv", Confidence: 0.9},                     // pred too short (4 chars, min is 5) + obj too short (2 chars, min is 3)
-		{Subject: "test", Predicate: "status", Object: "valid value here", FactType: "kv", Confidence: 0.9},     // good (pred=6, obj=16)
+		{Subject: "test", Predicate: "k", Object: "a value here", FactType: "kv", Confidence: 0.9},          // pred too short (1 char)
+		{Subject: "test", Predicate: "key", Object: "val", FactType: "kv", Confidence: 0.9},                 // pred too short (3 chars, min is 5)
+		{Subject: "test", Predicate: "name", Object: "ab", FactType: "kv", Confidence: 0.9},                 // pred too short (4 chars, min is 5) + obj too short (2 chars, min is 3)
+		{Subject: "test", Predicate: "status", Object: "valid value here", FactType: "kv", Confidence: 0.9}, // good (pred=6, obj=16)
 	}
 
 	result := gov.Apply(facts)
@@ -120,7 +120,7 @@ func TestGovernor_NumericPredicate(t *testing.T) {
 	facts := []ExtractedFact{
 		{Subject: "test", Predicate: "123", Object: "some value here", FactType: "kv", Confidence: 0.9},
 		{Subject: "test", Predicate: "$50.00", Object: "some value here", FactType: "kv", Confidence: 0.9},
-		{Subject: "test", Predicate: "price", Object: "$50.00 per unit", FactType: "kv", Confidence: 0.9},  // "price" is 5 chars, passes
+		{Subject: "test", Predicate: "price", Object: "$50.00 per unit", FactType: "kv", Confidence: 0.9}, // "price" is 5 chars, passes
 	}
 
 	result := gov.Apply(facts)

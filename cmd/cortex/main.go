@@ -661,6 +661,7 @@ func runSearch(args []string) error {
 	boostAgentFlag := ""
 	boostChannelFlag := ""
 	sourceFlag := ""
+	sourceBoostFlags := []string{}
 	showMetadata := false
 	explain := false
 	includeSuperseded := false
@@ -706,6 +707,11 @@ func runSearch(args []string) error {
 			sourceFlag = args[i]
 		case strings.HasPrefix(args[i], "--source="):
 			sourceFlag = strings.TrimPrefix(args[i], "--source=")
+		case args[i] == "--source-boost" && i+1 < len(args):
+			i++
+			sourceBoostFlags = append(sourceBoostFlags, args[i])
+		case strings.HasPrefix(args[i], "--source-boost="):
+			sourceBoostFlags = append(sourceBoostFlags, strings.TrimPrefix(args[i], "--source-boost="))
 		case args[i] == "--show-metadata":
 			showMetadata = true
 		case args[i] == "--boost-agent" && i+1 < len(args):
@@ -782,7 +788,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--source <provider>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--source <provider>] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 	if limit < 1 || limit > 1000 {
 		return fmt.Errorf("--limit must be between 1 and 1000")
@@ -840,6 +846,15 @@ func runSearch(args []string) error {
 		return err
 	}
 
+	parsedSourceBoosts := make([]search.SourceBoost, 0, len(sourceBoostFlags))
+	for _, raw := range sourceBoostFlags {
+		boost, err := parseSourceBoostArg(raw)
+		if err != nil {
+			return err
+		}
+		parsedSourceBoosts = append(parsedSourceBoosts, boost)
+	}
+
 	opts := search.Options{
 		Mode:              searchMode,
 		Limit:             limit,
@@ -852,6 +867,7 @@ func runSearch(args []string) error {
 		After:             afterFlag,
 		Before:            beforeFlag,
 		Source:            sourceFlag,
+		SourceBoosts:      parsedSourceBoosts,
 		IncludeSuperseded: includeSuperseded,
 		Explain:           explain,
 		BoostAgent:        boostAgentFlag,
@@ -922,6 +938,18 @@ func runSearch(args []string) error {
 		}
 	}
 
+	if globalVerbose && len(parsedSourceBoosts) > 0 {
+		matched := 0
+		for _, r := range results {
+			if weight, _ := searchSourceBoostForResult(r.SourceFile, parsedSourceBoosts); weight > 0 {
+				matched++
+			}
+		}
+		if matched == 0 {
+			fmt.Fprintln(os.Stderr, "  Warning: --source-boost configured but matched 0 results")
+		}
+	}
+
 	// Determine output format
 	if jsonOutput || !isTTY() {
 		return outputJSON(results)
@@ -967,6 +995,49 @@ func mergeExpandedResults(resultSets [][]search.Result, limit int) []search.Resu
 		merged = merged[:limit]
 	}
 	return merged
+}
+
+func parseSourceBoostArg(raw string) (search.SourceBoost, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return search.SourceBoost{}, fmt.Errorf("--source-boost cannot be empty")
+	}
+
+	prefix := value
+	weight := 1.15
+	if idx := strings.LastIndex(value, ":"); idx > 0 && idx < len(value)-1 {
+		maybeWeight := strings.TrimSpace(value[idx+1:])
+		if parsed, err := strconv.ParseFloat(maybeWeight, 64); err == nil {
+			prefix = strings.TrimSpace(value[:idx])
+			weight = parsed
+		}
+	}
+	if prefix == "" {
+		return search.SourceBoost{}, fmt.Errorf("--source-boost requires a non-empty prefix")
+	}
+	if weight < 1.0 || weight > 2.0 {
+		return search.SourceBoost{}, fmt.Errorf("--source-boost weight must be between 1.0 and 2.0")
+	}
+	return search.SourceBoost{Prefix: prefix, Weight: weight}, nil
+}
+
+func searchSourceBoostForResult(sourceFile string, boosts []search.SourceBoost) (float64, string) {
+	lowerSrc := strings.ToLower(strings.TrimSpace(sourceFile))
+	bestWeight := 0.0
+	bestPrefix := ""
+	for _, b := range boosts {
+		prefix := strings.ToLower(strings.TrimSpace(b.Prefix))
+		if prefix == "" || b.Weight <= 0 {
+			continue
+		}
+		if strings.HasPrefix(lowerSrc, prefix) || strings.HasPrefix(lowerSrc, strings.TrimSuffix(prefix, ":")+":") || strings.HasPrefix(lowerSrc, strings.TrimSuffix(prefix, ":")+"/") {
+			if b.Weight > bestWeight {
+				bestWeight = b.Weight
+				bestPrefix = b.Prefix
+			}
+		}
+	}
+	return bestWeight, bestPrefix
 }
 
 func runStats(args []string) error {

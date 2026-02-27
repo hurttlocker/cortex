@@ -543,6 +543,32 @@ func TestRunSearch_InvalidLimitRejected(t *testing.T) {
 	}
 }
 
+func TestParseSourceBoostArg_DefaultWeight(t *testing.T) {
+	boost, err := parseSourceBoostArg("github:")
+	if err != nil {
+		t.Fatalf("parseSourceBoostArg: %v", err)
+	}
+	if boost.Prefix != "github:" {
+		t.Fatalf("unexpected prefix: %q", boost.Prefix)
+	}
+	if boost.Weight != 1.15 {
+		t.Fatalf("expected default weight 1.15, got %f", boost.Weight)
+	}
+}
+
+func TestParseSourceBoostArg_CustomWeightAndClamp(t *testing.T) {
+	boost, err := parseSourceBoostArg("file:1.5")
+	if err != nil {
+		t.Fatalf("parseSourceBoostArg: %v", err)
+	}
+	if boost.Weight != 1.5 {
+		t.Fatalf("expected weight 1.5, got %f", boost.Weight)
+	}
+	if _, err := parseSourceBoostArg("github:2.5"); err == nil {
+		t.Fatal("expected clamp error for >2.0")
+	}
+}
+
 func TestParseBenchArgs_Compare(t *testing.T) {
 	opts, err := parseBenchArgs([]string{"--compare", "google/gemini-2.5-flash,deepseek/deepseek-v3.2", "--recursive"})
 	if err != nil {
