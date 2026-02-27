@@ -1390,8 +1390,10 @@ func TestMain_CorruptDBIncludesRecoveryHint(t *testing.T) {
 }
 
 func TestMain_OpenRouterMissingKeyIncludesHint(t *testing.T) {
+	homeDir := t.TempDir()
 	exitCode, out := runMainSubprocessWithEnv(t, map[string]string{
 		"OPENROUTER_API_KEY": "",
+		"HOME":               homeDir,
 	}, "classify", "--llm", "openrouter/deepseek/deepseek-v3.2", "--limit", "1")
 	if exitCode != 1 {
 		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)

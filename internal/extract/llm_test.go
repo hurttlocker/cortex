@@ -312,6 +312,7 @@ func TestResolveLLMConfig_EnvVar(t *testing.T) {
 }
 
 func TestResolveLLMConfig_None(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	config, err := ResolveLLMConfig("")
 	if err != nil {
 		t.Fatalf("ResolveLLMConfig failed: %v", err)

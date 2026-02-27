@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	cfgresolver "github.com/hurttlocker/cortex/internal/config"
 )
 
 // Provider is the interface for LLM completions.
@@ -31,20 +33,25 @@ type CompletionOpts struct {
 type Config struct {
 	Provider string // "google", "openrouter"
 	Model    string // e.g., "gemini-3-flash", "openai/gpt-5.1-codex-mini"
-	APIKey   string // API key (empty = read from env)
+	APIKey   string // API key (empty = read from env/config)
 	BaseURL  string // Optional URL override
 }
 
 // NewProvider creates an LLM provider from the given config.
 func NewProvider(cfg Config) (Provider, error) {
+	resolved, _ := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{})
+
 	switch strings.ToLower(cfg.Provider) {
 	case "google":
-		key := cfg.APIKey
+		key := strings.TrimSpace(cfg.APIKey)
 		if key == "" {
-			key = os.Getenv("GEMINI_API_KEY")
+			key = strings.TrimSpace(os.Getenv("GEMINI_API_KEY"))
 		}
 		if key == "" {
-			key = os.Getenv("GOOGLE_API_KEY")
+			key = strings.TrimSpace(os.Getenv("GOOGLE_API_KEY"))
+		}
+		if key == "" {
+			key = strings.TrimSpace(resolved.APIKeyForProvider("google").Value)
 		}
 		if key == "" {
 			return nil, fmt.Errorf("google provider requires GEMINI_API_KEY or GOOGLE_API_KEY env var")
@@ -64,9 +71,12 @@ func NewProvider(cfg Config) (Provider, error) {
 		}, nil
 
 	case "openrouter":
-		key := cfg.APIKey
+		key := strings.TrimSpace(cfg.APIKey)
 		if key == "" {
-			key = os.Getenv("OPENROUTER_API_KEY")
+			key = strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
+		}
+		if key == "" {
+			key = strings.TrimSpace(resolved.APIKeyForProvider("openrouter").Value)
 		}
 		if key == "" {
 			return nil, fmt.Errorf("openrouter provider requires OPENROUTER_API_KEY env var")

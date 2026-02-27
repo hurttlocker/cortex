@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	cfgresolver "github.com/hurttlocker/cortex/internal/config"
 )
 
 // LLMConfig holds LLM provider configuration.
@@ -86,26 +88,70 @@ func ParseLLMFlag(flag string) (*LLMConfig, error) {
 }
 
 // ResolveLLMConfig resolves configuration from all sources.
-// Priority: CLI flag > CORTEX_LLM env var > config file (not implemented yet)
+// Priority: config file < env vars < CLI flag
 func ResolveLLMConfig(cliFlag string) (*LLMConfig, error) {
-	// 1. CLI flag takes priority
-	if cliFlag != "" {
-		return ParseLLMFlag(cliFlag)
+	resolved, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{CLILLM: cliFlag})
+	if err != nil {
+		return nil, err
 	}
 
-	// 2. Environment variable
-	if envLLM := os.Getenv("CORTEX_LLM"); envLLM != "" {
-		config, err := ParseLLMFlag(envLLM)
-		if err != nil {
-			return nil, fmt.Errorf("parsing CORTEX_LLM env var: %w", err)
+	candidate := strings.TrimSpace(cliFlag)
+	if candidate == "" {
+		candidate = strings.TrimSpace(resolved.LLMProvider.Value)
+	}
+	if candidate == "" {
+		return nil, nil
+	}
+
+	candidate = normalizeProviderModel(candidate, "openrouter/x-ai/grok-4.1-fast")
+	config, err := ParseLLMFlag(candidate)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fill API key from resolved config if env did not provide one.
+	if strings.TrimSpace(config.APIKey) == "" {
+		if rv := resolved.APIKeyForProvider(config.Provider); strings.TrimSpace(rv.Value) != "" {
+			config.APIKey = rv.Value
 		}
-		return config, nil
 	}
 
-	// 3. Config file support not implemented in v1
-	// Future: load from ~/.cortex/config.yaml
+	// Highest precedence generic overrides.
+	if endpoint := os.Getenv("CORTEX_LLM_ENDPOINT"); endpoint != "" {
+		config.Endpoint = endpoint
+	}
+	if apiKey := os.Getenv("CORTEX_LLM_API_KEY"); apiKey != "" {
+		config.APIKey = apiKey
+	}
 
-	return nil, nil // No LLM configuration found
+	return config, nil
+}
+
+func normalizeProviderModel(raw, fallback string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return raw
+	}
+	if strings.Contains(raw, "/") {
+		return raw
+	}
+	if fallback != "" && strings.HasPrefix(strings.ToLower(fallback), strings.ToLower(raw)+"/") {
+		return fallback
+	}
+	switch strings.ToLower(raw) {
+	case "openrouter":
+		return "openrouter/openai/gpt-4o-mini"
+	case "google":
+		return "google/gemini-2.5-flash"
+	case "openai":
+		return "openai/gpt-4o-mini"
+	case "deepseek":
+		return "deepseek/deepseek-chat"
+	case "ollama":
+		return "ollama/phi4-mini"
+	default:
+		return raw
+	}
 }
 
 // Validate checks if the LLM configuration is valid and complete.

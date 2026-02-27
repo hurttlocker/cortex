@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	cfgresolver "github.com/hurttlocker/cortex/internal/config"
 )
 
 // Embedder generates embedding vectors from text.
@@ -207,6 +209,15 @@ func ParseEmbedFlag(flag string) (*EmbedConfig, error) {
 		}
 	}
 
+	// Fallback to resolved config API key if env didn't provide one.
+	if strings.TrimSpace(config.APIKey) == "" {
+		if resolved, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+			if rv := resolved.APIKeyForProvider(config.Provider); strings.TrimSpace(rv.Value) != "" {
+				config.APIKey = rv.Value
+			}
+		}
+	}
+
 	return config, nil
 }
 
@@ -216,26 +227,50 @@ func NewEmbedConfig(providerModel string) (*EmbedConfig, error) {
 }
 
 // ResolveEmbedConfig resolves configuration from all sources.
-// Priority: CLI flag > CORTEX_EMBED env var > config file (not implemented yet)
+// Priority: config file < env vars < CLI flag
 func ResolveEmbedConfig(cliFlag string) (*EmbedConfig, error) {
-	// 1. CLI flag takes priority
-	if cliFlag != "" {
-		return ParseEmbedFlag(cliFlag)
+	resolved, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{CLIEmbed: cliFlag})
+	if err != nil {
+		return nil, err
 	}
 
-	// 2. Environment variable
-	if envEmbed := os.Getenv("CORTEX_EMBED"); envEmbed != "" {
-		config, err := ParseEmbedFlag(envEmbed)
-		if err != nil {
-			return nil, fmt.Errorf("parsing CORTEX_EMBED env var: %w", err)
+	flag := strings.TrimSpace(cliFlag)
+	if flag == "" {
+		flag = strings.TrimSpace(resolved.EmbedProvider.Value)
+	}
+	if flag == "" {
+		return nil, nil // No embedding configuration found
+	}
+
+	if !strings.Contains(flag, "/") {
+		// Provider-only entry in config/env; use sensible defaults.
+		switch strings.ToLower(flag) {
+		case "ollama":
+			flag = "ollama/nomic-embed-text"
+		case "openrouter":
+			flag = "openrouter/text-embedding-3-small"
+		case "openai":
+			flag = "openai/text-embedding-3-small"
+		case "deepseek":
+			flag = "deepseek/deepseek-embedding"
 		}
-		return config, nil
 	}
 
-	// 3. Config file support not implemented in v1
-	// Future: load from ~/.cortex/config.yaml
-
-	return nil, nil // No embedding configuration found
+	config, err := ParseEmbedFlag(flag)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(config.APIKey) == "" {
+		if strings.TrimSpace(resolved.EmbedAPIKey.Value) != "" {
+			config.APIKey = resolved.EmbedAPIKey.Value
+		} else if rv := resolved.APIKeyForProvider(config.Provider); strings.TrimSpace(rv.Value) != "" {
+			config.APIKey = rv.Value
+		}
+	}
+	if strings.TrimSpace(resolved.EmbedEndpoint.Value) != "" {
+		config.Endpoint = resolved.EmbedEndpoint.Value
+	}
+	return config, nil
 }
 
 // Validate checks if the embedding configuration is valid and complete.

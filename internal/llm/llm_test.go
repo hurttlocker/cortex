@@ -48,6 +48,7 @@ func TestParseLLMFlag(t *testing.T) {
 }
 
 func TestNewProviderErrors(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	// Unknown provider
 	_, err := NewProvider(Config{Provider: "unknown"})
 	if err == nil {
