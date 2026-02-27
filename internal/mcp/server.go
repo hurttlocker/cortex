@@ -131,6 +131,18 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine, defaultAgent
 		mcp.WithString("source",
 			mcp.Description("Filter results by source prefix (e.g., 'github', 'gmail'). Matches connector-imported records by provider name."),
 		),
+		mcp.WithArray("source_boosts",
+			mcp.Description("Optional source-specific score boosts. Array of {prefix, weight}. Weight defaults to 1.15 and is clamped to 1.0-2.0."),
+			mcp.Items(map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"prefix": map[string]any{"type": "string"},
+					"weight": map[string]any{"type": "number", "minimum": 1.0, "maximum": 2.0},
+				},
+				"required":             []string{"prefix"},
+				"additionalProperties": false,
+			}),
+		),
 	)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -177,6 +189,11 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine, defaultAgent
 		if source, err := req.RequireString("source"); err == nil && source != "" {
 			opts.Source = source
 		}
+		if boosts, err := parseMCPSourceBoosts(req); err == nil {
+			opts.SourceBoosts = boosts
+		} else {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid source_boosts: %v", err)), nil
+		}
 
 		results, err := engine.Search(ctx, query, opts)
 		if err != nil {
@@ -186,6 +203,46 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine, defaultAgent
 		data, _ := json.MarshalIndent(results, "", "  ")
 		return mcp.NewToolResultText(string(data)), nil
 	})
+}
+
+type mcpSourceBoost struct {
+	Prefix string  `json:"prefix"`
+	Weight float64 `json:"weight,omitempty"`
+}
+
+func parseMCPSourceBoosts(req mcp.CallToolRequest) ([]search.SourceBoost, error) {
+	raw := req.GetArguments()
+	if raw == nil {
+		return nil, nil
+	}
+	v, ok := raw["source_boosts"]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	blob, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var parsed []mcpSourceBoost
+	if err := json.Unmarshal(blob, &parsed); err != nil {
+		return nil, err
+	}
+	out := make([]search.SourceBoost, 0, len(parsed))
+	for _, b := range parsed {
+		prefix := strings.TrimSpace(b.Prefix)
+		if prefix == "" {
+			return nil, fmt.Errorf("prefix is required")
+		}
+		weight := b.Weight
+		if weight == 0 {
+			weight = 1.15
+		}
+		if weight < 1.0 || weight > 2.0 {
+			return nil, fmt.Errorf("weight for prefix %q must be between 1.0 and 2.0", prefix)
+		}
+		out = append(out, search.SourceBoost{Prefix: prefix, Weight: weight})
+	}
+	return out, nil
 }
 
 func registerImportTool(s *server.MCPServer, st store.Store, defaultAgent string) {

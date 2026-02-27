@@ -213,7 +213,7 @@ func TestApplySourceWeight(t *testing.T) {
 		{Content: "connector import", SourceFile: "github:issues/1", Score: 1.0},
 	}
 
-	weighted := applySourceWeight(results, false)
+	weighted := applySourceWeight(results, nil, false)
 
 	// Manual should be boosted, connector should be penalized
 	manualScore := weighted[0].Score
@@ -233,12 +233,45 @@ func TestApplySourceWeight_Explain(t *testing.T) {
 		{Content: "connector", SourceFile: "github:issues/1", Score: 1.0},
 	}
 
-	weighted := applySourceWeight(results, true)
+	weighted := applySourceWeight(results, nil, true)
 
 	if weighted[0].Explain == nil {
 		t.Fatal("expected explain details when explain=true")
 	}
 	if weighted[0].Explain.RankComponents.SourceWeight != sourceWeightConnector {
 		t.Errorf("expected source weight %f, got %f", sourceWeightConnector, weighted[0].Explain.RankComponents.SourceWeight)
+	}
+}
+
+func TestApplySourceWeight_WithSourceBoost(t *testing.T) {
+	results := []Result{
+		{Content: "github connector", SourceFile: "github:issues/1", Score: 1.0},
+		{Content: "manual", SourceFile: "memory/notes.md", Score: 1.0},
+	}
+	boosts := []SourceBoost{{Prefix: "github:", Weight: 1.5}}
+
+	weighted := applySourceWeight(results, boosts, true)
+	if weighted[0].SourceFile != "github:issues/1" {
+		t.Fatalf("expected github result first after boost, got %q", weighted[0].SourceFile)
+	}
+	if weighted[0].Explain == nil {
+		t.Fatal("expected explain details")
+	}
+	if weighted[0].Explain.RankComponents.SourceBoostMultiplier != 1.5 {
+		t.Fatalf("expected boost multiplier 1.5, got %f", weighted[0].Explain.RankComponents.SourceBoostMultiplier)
+	}
+}
+
+func TestSourceBoostForResult_UsesMaxWeightOnOverlap(t *testing.T) {
+	boosts := []SourceBoost{
+		{Prefix: "github:", Weight: 1.1},
+		{Prefix: "github:issues", Weight: 1.3},
+	}
+	weight, prefix := sourceBoostForResult("github:issues/123", boosts)
+	if weight != 1.3 {
+		t.Fatalf("expected max overlap weight 1.3, got %f", weight)
+	}
+	if prefix != "github:issues" {
+		t.Fatalf("expected prefix github:issues, got %q", prefix)
 	}
 }
