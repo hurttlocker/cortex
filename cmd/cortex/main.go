@@ -664,6 +664,7 @@ func runSearch(args []string) error {
 	boostAgentFlag := ""
 	boostChannelFlag := ""
 	sourceFlag := ""
+	intentFlag := "all"
 	sourceBoostFlags := []string{}
 	showMetadata := false
 	explain := false
@@ -710,6 +711,11 @@ func runSearch(args []string) error {
 			sourceFlag = args[i]
 		case strings.HasPrefix(args[i], "--source="):
 			sourceFlag = strings.TrimPrefix(args[i], "--source=")
+		case args[i] == "--intent" && i+1 < len(args):
+			i++
+			intentFlag = args[i]
+		case strings.HasPrefix(args[i], "--intent="):
+			intentFlag = strings.TrimPrefix(args[i], "--intent=")
 		case args[i] == "--source-boost" && i+1 < len(args):
 			i++
 			sourceBoostFlags = append(sourceBoostFlags, args[i])
@@ -791,7 +797,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--source <provider>] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--source <provider>] [--intent memory|import|connector|all] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 	if limit < 1 || limit > 1000 {
 		return fmt.Errorf("--limit must be between 1 and 1000")
@@ -870,6 +876,7 @@ func runSearch(args []string) error {
 		After:             afterFlag,
 		Before:            beforeFlag,
 		Source:            sourceFlag,
+		Intent:            intentFlag,
 		SourceBoosts:      parsedSourceBoosts,
 		IncludeSuperseded: includeSuperseded,
 		Explain:           explain,

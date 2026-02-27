@@ -102,6 +102,28 @@ func ParseMode(s string) (Mode, error) {
 	}
 }
 
+const (
+	IntentAll       = "all"
+	IntentMemory    = "memory"
+	IntentImport    = "import"
+	IntentConnector = "connector"
+)
+
+func normalizeIntent(intent string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(intent)) {
+	case "", IntentAll:
+		return IntentAll, nil
+	case IntentMemory:
+		return IntentMemory, nil
+	case IntentImport:
+		return IntentImport, nil
+	case IntentConnector:
+		return IntentConnector, nil
+	default:
+		return "", fmt.Errorf("invalid intent %q (valid: memory, import, connector, all)", intent)
+	}
+}
+
 // SourceBoost applies an additional score multiplier to matching source prefixes.
 // Prefix matching is case-insensitive and checked against source file prefixes.
 // Example: Prefix "github:" with Weight 1.15 boosts github connector results.
@@ -128,6 +150,7 @@ type Options struct {
 	After             string        // Filter memories imported after date YYYY-MM-DD (Issue #30)
 	Before            string        // Filter memories imported before date YYYY-MM-DD (Issue #30)
 	Source            string        // Filter by source prefix (e.g., "github", "gmail") (Issue #199)
+	Intent            string        // Convenience source bucket: memory|import|connector|all
 	SourceBoosts      []SourceBoost // Optional score boosts by source prefix
 	IncludeSuperseded bool          // Include memories backed only by superseded facts
 	Explain           bool          // Attach explainability/provenance payloads to results
@@ -340,6 +363,11 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		opts.Limit = 10
 	}
 
+	intent, intentErr := normalizeIntent(opts.Intent)
+	if intentErr != nil {
+		return nil, intentErr
+	}
+
 	var results []Result
 	var err error
 
@@ -363,6 +391,10 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	// Apply source filter (Issue #199)
 	if opts.Source != "" {
 		results = filterBySource(results, opts.Source)
+	}
+
+	if intent != IntentAll {
+		results = filterByIntent(results, intent)
 	}
 
 	// Apply metadata filters (Issue #30)
@@ -981,6 +1013,46 @@ func filterBySource(results []Result, source string) []Result {
 		}
 	}
 	return filtered
+}
+
+func filterByIntent(results []Result, intent string) []Result {
+	var filtered []Result
+	for _, r := range results {
+		switch intent {
+		case IntentMemory:
+			if isMemorySource(r.SourceFile) {
+				filtered = append(filtered, r)
+			}
+		case IntentImport:
+			if !isConnectorSource(r.SourceFile) && !isMemorySource(r.SourceFile) {
+				filtered = append(filtered, r)
+			}
+		case IntentConnector:
+			if isConnectorSource(r.SourceFile) {
+				filtered = append(filtered, r)
+			}
+		default:
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+func isMemorySource(sourceFile string) bool {
+	lower := strings.ToLower(strings.TrimSpace(sourceFile))
+	if lower == "" {
+		return false
+	}
+	if strings.HasPrefix(lower, "memory/") || strings.Contains(lower, "/memory/") {
+		return true
+	}
+	if lower == "memory.md" || strings.HasSuffix(lower, "/memory.md") {
+		return true
+	}
+	if strings.HasSuffix(lower, "memory.md") || strings.Contains(lower, "memory/") {
+		return true
+	}
+	return false
 }
 
 // isConnectorSource returns true if the source file looks like a connector import.
