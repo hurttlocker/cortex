@@ -28,18 +28,18 @@ type ScaleTier struct {
 
 // ScaleResult stores benchmark results for a tier.
 type ScaleResult struct {
-	Tier            string  `json:"tier"`
-	Memories        int     `json:"memories"`
-	Facts           int     `json:"facts"`
-	DBSizeBytes     int64   `json:"db_size_bytes"`
-	ImportMs        float64 `json:"import_ms"`
-	ImportPerSec    float64 `json:"import_per_sec"`
-	SearchBM25P50   float64 `json:"search_bm25_p50_ms"`
-	SearchBM25P99   float64 `json:"search_bm25_p99_ms"`
-	StatsMs         float64 `json:"stats_ms"`
-	StaleMs         float64 `json:"stale_ms"`
-	ConflictsMs     float64 `json:"conflicts_ms"`
-	ExtractMs       float64 `json:"extract_per_memory_ms"`
+	Tier          string  `json:"tier"`
+	Memories      int     `json:"memories"`
+	Facts         int     `json:"facts"`
+	DBSizeBytes   int64   `json:"db_size_bytes"`
+	ImportMs      float64 `json:"import_ms"`
+	ImportPerSec  float64 `json:"import_per_sec"`
+	SearchBM25P50 float64 `json:"search_bm25_p50_ms"`
+	SearchBM25P99 float64 `json:"search_bm25_p99_ms"`
+	StatsMs       float64 `json:"stats_ms"`
+	StaleMs       float64 `json:"stale_ms"`
+	ConflictsMs   float64 `json:"conflicts_ms"`
+	ExtractMs     float64 `json:"extract_per_memory_ms"`
 }
 
 var tiers = []ScaleTier{
@@ -72,7 +72,7 @@ var factTypes = []string{
 func generateSyntheticMemory(rng *rand.Rand, idx int) (string, string) {
 	// Realistic content lengths: 50-2000 chars
 	contentLen := 100 + rng.Intn(1900)
-	
+
 	// Pick a primary subject (Zipf: first few subjects appear more)
 	subjIdx := int(float64(len(subjects)) * (float64(rng.Intn(100)) / 100.0) * (float64(rng.Intn(100)) / 100.0))
 	if subjIdx >= len(subjects) {

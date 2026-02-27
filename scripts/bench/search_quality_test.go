@@ -21,7 +21,7 @@ import (
 // GoldenQuery defines an expected search result.
 type GoldenQuery struct {
 	Query          string   `json:"query"`
-	Mode           string   `json:"mode"` // bm25, hybrid
+	Mode           string   `json:"mode"`            // bm25, hybrid
 	ExpectedTerms  []string `json:"expected_terms"`  // terms that MUST appear in top results
 	ForbiddenTerms []string `json:"forbidden_terms"` // terms that should NOT dominate results
 	MinResults     int      `json:"min_results"`     // minimum result count expected
