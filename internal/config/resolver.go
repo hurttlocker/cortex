@@ -32,6 +32,54 @@ type ResolveOptions struct {
 	CLIDBPath  string
 }
 
+type ReinforcePromotePolicy struct {
+	Enabled           bool   `yaml:"enabled" json:"enabled"`
+	MinReinforcements int    `yaml:"min_reinforcements" json:"min_reinforcements"`
+	MinSources        int    `yaml:"min_sources" json:"min_sources"`
+	TargetState       string `yaml:"target_state" json:"target_state"`
+}
+
+type DecayRetirePolicy struct {
+	Enabled         bool    `yaml:"enabled" json:"enabled"`
+	InactiveDays    int     `yaml:"inactive_days" json:"inactive_days"`
+	ConfidenceBelow float64 `yaml:"confidence_below" json:"confidence_below"`
+	TargetState     string  `yaml:"target_state" json:"target_state"`
+}
+
+type ConflictSupersedePolicy struct {
+	Enabled              bool    `yaml:"enabled" json:"enabled"`
+	RequireStrictlyNewer bool    `yaml:"require_strictly_newer" json:"require_strictly_newer"`
+	MinConfidenceDelta   float64 `yaml:"min_confidence_delta" json:"min_confidence_delta"`
+}
+
+type PolicyConfig struct {
+	ReinforcePromote  ReinforcePromotePolicy  `yaml:"reinforce_promote" json:"reinforce_promote"`
+	DecayRetire       DecayRetirePolicy       `yaml:"decay_retire" json:"decay_retire"`
+	ConflictSupersede ConflictSupersedePolicy `yaml:"conflict_supersede" json:"conflict_supersede"`
+}
+
+func DefaultPolicyConfig() PolicyConfig {
+	return PolicyConfig{
+		ReinforcePromote: ReinforcePromotePolicy{
+			Enabled:           true,
+			MinReinforcements: 5,
+			MinSources:        3,
+			TargetState:       "core",
+		},
+		DecayRetire: DecayRetirePolicy{
+			Enabled:         true,
+			InactiveDays:    45,
+			ConfidenceBelow: 0.35,
+			TargetState:     "retired",
+		},
+		ConflictSupersede: ConflictSupersedePolicy{
+			Enabled:              true,
+			RequireStrictlyNewer: true,
+			MinConfidenceDelta:   0.10,
+		},
+	}
+}
+
 type ResolvedConfig struct {
 	ConfigPath string `json:"config_path"`
 
@@ -45,7 +93,8 @@ type ResolvedConfig struct {
 	EmbedAPIKey   ResolvedValue `json:"embed_api_key"`
 	EmbedEndpoint ResolvedValue `json:"embed_endpoint"`
 
-	LLMKeys map[string]ResolvedValue `json:"llm_keys,omitempty"`
+	Policies PolicyConfig             `json:"policies"`
+	LLMKeys  map[string]ResolvedValue `json:"llm_keys,omitempty"`
 }
 
 type fileConfig struct {
@@ -65,6 +114,7 @@ type fileConfig struct {
 		APIKey   string `yaml:"api_key"`
 		Endpoint string `yaml:"endpoint"`
 	} `yaml:"embed"`
+	Policies PolicyConfig `yaml:"policies"`
 }
 
 func DefaultConfigPath() string {
@@ -80,6 +130,7 @@ func ResolveConfig(opts ResolveOptions) (ResolvedConfig, error) {
 
 	out := ResolvedConfig{
 		ConfigPath: path,
+		Policies:   DefaultPolicyConfig(),
 		LLMKeys:    map[string]ResolvedValue{},
 	}
 
@@ -89,6 +140,7 @@ func ResolveConfig(opts ResolveOptions) (ResolvedConfig, error) {
 	}
 
 	if cfg != nil {
+		out.Policies = cfg.Policies
 		apply(&out.DBPath, cfg.DBPath, SourceConfig, path)
 		apply(&out.LLMProvider, cfg.LLM.Provider, SourceConfig, path)
 		apply(&out.LLMEnrichModel, firstNonEmpty(cfg.LLM.EnrichModel, cfg.LLM.EnrichProvider), SourceConfig, path)
@@ -153,6 +205,14 @@ func ResolveConfig(opts ResolveOptions) (ResolvedConfig, error) {
 	}
 
 	return out, nil
+}
+
+func ResolvePolicyConfig(configPath string) (PolicyConfig, error) {
+	resolved, err := ResolveConfig(ResolveOptions{ConfigPath: configPath})
+	if err != nil {
+		return PolicyConfig{}, err
+	}
+	return resolved.Policies, nil
 }
 
 func (r ResolvedConfig) EffectiveLLMModel(purpose, fallback string) ResolvedValue {
@@ -234,7 +294,7 @@ func loadConfig(path string) (*fileConfig, error) {
 		}
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
-	var cfg fileConfig
+	cfg := fileConfig{Policies: DefaultPolicyConfig()}
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
