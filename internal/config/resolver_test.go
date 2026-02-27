@@ -82,3 +82,72 @@ func TestAPIKeyForProvider_EnvOverridesConfig(t *testing.T) {
 		t.Fatalf("expected source env, got %s", k.Source)
 	}
 }
+
+func TestResolveConfig_PolicyDefaultsWhenMissing(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	yaml := `db_path: ~/.cortex/test.db
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	resolved, err := ResolveConfig(ResolveOptions{ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+
+	if !resolved.Policies.ReinforcePromote.Enabled || resolved.Policies.ReinforcePromote.TargetState != "core" {
+		t.Fatalf("expected default reinforce-promote policy, got %+v", resolved.Policies.ReinforcePromote)
+	}
+	if !resolved.Policies.DecayRetire.Enabled || resolved.Policies.DecayRetire.TargetState != "retired" {
+		t.Fatalf("expected default decay-retire policy, got %+v", resolved.Policies.DecayRetire)
+	}
+	if !resolved.Policies.ConflictSupersede.Enabled {
+		t.Fatalf("expected default conflict-supersede enabled, got %+v", resolved.Policies.ConflictSupersede)
+	}
+}
+
+func TestResolveConfig_PolicyPartialOverrides(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	yaml := `policies:
+  reinforce_promote:
+    min_reinforcements: 7
+  decay_retire:
+    enabled: false
+    inactive_days: 20
+  conflict_supersede:
+    min_confidence_delta: 0.25
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	policies, err := ResolvePolicyConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("ResolvePolicyConfig: %v", err)
+	}
+
+	if policies.ReinforcePromote.MinReinforcements != 7 {
+		t.Fatalf("expected reinforce min_reinforcements=7, got %d", policies.ReinforcePromote.MinReinforcements)
+	}
+	if policies.ReinforcePromote.MinSources != 3 {
+		t.Fatalf("expected reinforce min_sources default=3, got %d", policies.ReinforcePromote.MinSources)
+	}
+	if policies.DecayRetire.Enabled {
+		t.Fatalf("expected decay-retire disabled, got %+v", policies.DecayRetire)
+	}
+	if policies.DecayRetire.InactiveDays != 20 {
+		t.Fatalf("expected decay-retire inactive_days=20, got %d", policies.DecayRetire.InactiveDays)
+	}
+	if policies.DecayRetire.TargetState != "retired" {
+		t.Fatalf("expected decay-retire target_state default=retired, got %q", policies.DecayRetire.TargetState)
+	}
+	if policies.ConflictSupersede.MinConfidenceDelta != 0.25 {
+		t.Fatalf("expected conflict min_confidence_delta=0.25, got %f", policies.ConflictSupersede.MinConfidenceDelta)
+	}
+	if !policies.ConflictSupersede.RequireStrictlyNewer {
+		t.Fatalf("expected conflict require_strictly_newer default=true, got %+v", policies.ConflictSupersede)
+	}
+}
