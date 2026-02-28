@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	cfgresolver "github.com/hurttlocker/cortex/internal/config"
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
@@ -42,7 +43,7 @@ type EntityHub struct {
 	RefCount int
 }
 
-type ObsidianExportConfig struct {
+type ObsidianExportRuntimeConfig struct {
 	VaultRoot      string
 	OutputDir      string
 	DryRun         bool
@@ -52,6 +53,15 @@ type ObsidianExportConfig struct {
 	ConceptMinOut  int
 	MaxNameLen     int
 	Validate       bool
+	HubStats       bool
+
+	Stopwords []string
+	Allowlist []string
+
+	HubTypePerson   string
+	HubTypeProject  string
+	HubTypeStrategy string
+	HubTypeSystem   string
 }
 
 // ── Patterns ────────────────────────────────────────────────────────────
@@ -141,6 +151,12 @@ var obsHubTypeIcons = map[string]string{
 	"person": "👤", "project": "📦", "strategy": "🎯", "system": "⚙️", "concept": "💡",
 }
 
+var (
+	obsActiveHubTypePatterns []HubTypePattern
+	obsActiveEntityBlocklist []*regexp.Regexp
+	obsActiveEntityAllowlist map[string]bool
+)
+
 // ── Core Functions ──────────────────────────────────────────────────────
 
 func obsClassifyTopic(text string) string {
@@ -153,7 +169,11 @@ func obsClassifyTopic(text string) string {
 }
 
 func obsClassifyHubType(name string) string {
-	for _, hp := range obsHubTypePatterns {
+	patterns := obsHubTypePatterns
+	if len(obsActiveHubTypePatterns) > 0 {
+		patterns = obsActiveHubTypePatterns
+	}
+	for _, hp := range patterns {
 		if hp.Pattern.MatchString(name) {
 			return hp.HubType
 		}
@@ -162,12 +182,24 @@ func obsClassifyHubType(name string) string {
 }
 
 func obsIsBlocked(name string) bool {
-	for _, p := range obsEntityBlocklist {
+	blocklist := obsEntityBlocklist
+	if len(obsActiveEntityBlocklist) > 0 {
+		blocklist = obsActiveEntityBlocklist
+	}
+	for _, p := range blocklist {
 		if p.MatchString(name) {
 			return true
 		}
 	}
 	return false
+}
+
+func obsIsAllowlisted(name string) bool {
+	allow := obsEntityAllowlist
+	if obsActiveEntityAllowlist != nil {
+		allow = obsActiveEntityAllowlist
+	}
+	return allow[name]
 }
 
 func obsConfBar(conf float64) string {
@@ -210,18 +242,22 @@ func obsSortedKeys(m map[string]bool) []string {
 
 // ── Entity Index ────────────────────────────────────────────────────────
 
-func obsBuildEntityIndex(facts []*store.Fact) (map[string][]*store.Fact, map[string]map[string]bool) {
+func obsBuildEntityIndex(facts []*store.Fact, cfg ObsidianExportRuntimeConfig) (map[string][]*store.Fact, map[string]map[string]bool) {
 	ef := make(map[string][]*store.Fact)
 	et := make(map[string]map[string]bool)
 	for _, fact := range facts {
 		subj := strings.TrimSpace(fact.Subject)
-		if subj == "" || len(subj) < 2 || len(subj) > 80 {
+		maxNameLen := cfg.MaxNameLen
+		if maxNameLen <= 0 {
+			maxNameLen = defaultMaxNameLen
+		}
+		if subj == "" || len(subj) < 2 || len(subj) > maxNameLen {
 			continue
 		}
 		if m, _ := regexp.MatchString(`^[\d./$~\\]`, subj); m {
 			continue
 		}
-		if !obsEntityAllowlist[subj] && obsIsBlocked(subj) {
+		if !obsIsAllowlisted(subj) && obsIsBlocked(subj) {
 			continue
 		}
 		combined := subj + " " + fact.Predicate + " " + fact.Object + " " + fact.SourceQuote
@@ -235,11 +271,11 @@ func obsBuildEntityIndex(facts []*store.Fact) (map[string][]*store.Fact, map[str
 	return ef, et
 }
 
-func obsSelectHubs(ef map[string][]*store.Fact, et map[string]map[string]bool, cfg ObsidianExportConfig) map[string]*EntityHub {
+func obsSelectHubs(ef map[string][]*store.Fact, et map[string]map[string]bool, cfg ObsidianExportRuntimeConfig) map[string]*EntityHub {
 	hubs := make(map[string]*EntityHub)
 	for entity, facts := range ef {
 		ht := obsClassifyHubType(entity)
-		al := obsEntityAllowlist[entity]
+		al := obsIsAllowlisted(entity)
 		thresh := cfg.MinRefs
 		if al {
 			thresh = 1
@@ -257,14 +293,18 @@ func obsSelectHubs(ef map[string][]*store.Fact, et map[string]map[string]bool, c
 	return hubs
 }
 
-func obsPruneWeak(hubs map[string]*EntityHub, minOut int) int {
+func obsPruneWeak(hubs map[string]*EntityHub, cfg ObsidianExportRuntimeConfig) int {
 	hubNames := make(map[string]bool)
 	for n := range hubs {
 		hubNames[n] = true
 	}
+	minOut := cfg.ConceptMinOut
+	if minOut <= 0 {
+		minOut = defaultConceptMinOut
+	}
 	var rem []string
 	for entity, hub := range hubs {
-		if hub.HubType != "concept" || obsEntityAllowlist[entity] {
+		if hub.HubType != "concept" || obsIsAllowlisted(entity) {
 			continue
 		}
 		out := make(map[string]bool)
@@ -286,6 +326,104 @@ func obsPruneWeak(hubs map[string]*EntityHub, minOut int) int {
 		delete(hubs, e)
 	}
 	return len(rem)
+}
+
+func obsConfigureRules(cfg ObsidianExportRuntimeConfig) error {
+	allow := make(map[string]bool, len(obsEntityAllowlist)+len(cfg.Allowlist))
+	for k, v := range obsEntityAllowlist {
+		allow[k] = v
+	}
+	for _, n := range cfg.Allowlist {
+		n = strings.TrimSpace(n)
+		if n != "" {
+			allow[n] = true
+		}
+	}
+
+	blocklist := make([]*regexp.Regexp, 0, len(obsEntityBlocklist)+len(cfg.Stopwords))
+	blocklist = append(blocklist, obsEntityBlocklist...)
+	for _, raw := range cfg.Stopwords {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		r, err := regexp.Compile(raw)
+		if err != nil {
+			return fmt.Errorf("invalid stopword regex %q: %w", raw, err)
+		}
+		blocklist = append(blocklist, r)
+	}
+
+	patterns := append([]HubTypePattern{}, obsHubTypePatterns...)
+	applyType := func(hubType, expr string) error {
+		expr = strings.TrimSpace(expr)
+		if expr == "" {
+			return nil
+		}
+		r, err := regexp.Compile(expr)
+		if err != nil {
+			return fmt.Errorf("invalid hub type regex for %s: %w", hubType, err)
+		}
+		for i := range patterns {
+			if patterns[i].HubType == hubType {
+				patterns[i].Pattern = r
+				return nil
+			}
+		}
+		patterns = append(patterns, HubTypePattern{Pattern: r, HubType: hubType})
+		return nil
+	}
+	if err := applyType("person", cfg.HubTypePerson); err != nil {
+		return err
+	}
+	if err := applyType("project", cfg.HubTypeProject); err != nil {
+		return err
+	}
+	if err := applyType("strategy", cfg.HubTypeStrategy); err != nil {
+		return err
+	}
+	if err := applyType("system", cfg.HubTypeSystem); err != nil {
+		return err
+	}
+
+	obsActiveEntityAllowlist = allow
+	obsActiveEntityBlocklist = blocklist
+	obsActiveHubTypePatterns = patterns
+	return nil
+}
+
+func obsPrintHubStats(ef map[string][]*store.Fact) {
+	type pair struct {
+		name string
+		refs int
+		typ  string
+	}
+	rows := make([]pair, 0, len(ef))
+	dist := map[string]int{"person": 0, "project": 0, "strategy": 0, "system": 0, "concept": 0}
+	for n, facts := range ef {
+		t := obsClassifyHubType(n)
+		dist[t]++
+		rows = append(rows, pair{name: n, refs: len(facts), typ: t})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].refs == rows[j].refs {
+			return rows[i].name < rows[j].name
+		}
+		return rows[i].refs > rows[j].refs
+	})
+
+	fmt.Println("📊 Hub stats (pre-threshold)")
+	fmt.Printf("   entities: %d (person=%d project=%d strategy=%d system=%d concept=%d)\n",
+		len(rows), dist["person"], dist["project"], dist["strategy"], dist["system"], dist["concept"])
+
+	show := 12
+	if len(rows) < show {
+		show = len(rows)
+	}
+	for i := 0; i < show; i++ {
+		fmt.Printf("   - %s (%d, %s)\n", rows[i].name, rows[i].refs, rows[i].typ)
+	}
+	fmt.Println()
 }
 
 // ── Note Writers ────────────────────────────────────────────────────────
@@ -529,10 +667,35 @@ func runExportObsidian(args []string) error {
 			return runExportTrading(tArgs)
 		}
 	}
-	cfg := ObsidianExportConfig{
-		MinRefs: defaultMinRefs, ConceptMinRefs: defaultConceptMinRefs,
-		ConceptMinOut: defaultConceptMinOut, MaxNameLen: defaultMaxNameLen,
+	obsCfg, err := cfgresolver.ResolveObsidianExportConfig("")
+	if err != nil {
+		return fmt.Errorf("resolving obsidian export config: %w", err)
 	}
+	cfg := ObsidianExportRuntimeConfig{
+		MinRefs:         obsCfg.HubMinRefs,
+		ConceptMinRefs:  obsCfg.ConceptMinRefs,
+		ConceptMinOut:   obsCfg.ConceptMinOutbound,
+		MaxNameLen:      obsCfg.MaxEntityNameLen,
+		Stopwords:       append([]string{}, obsCfg.Stopwords...),
+		Allowlist:       append([]string{}, obsCfg.Allowlist...),
+		HubTypePerson:   obsCfg.HubTypes.Person,
+		HubTypeProject:  obsCfg.HubTypes.Project,
+		HubTypeStrategy: obsCfg.HubTypes.Strategy,
+		HubTypeSystem:   obsCfg.HubTypes.System,
+	}
+	if cfg.MinRefs <= 0 {
+		cfg.MinRefs = defaultMinRefs
+	}
+	if cfg.ConceptMinRefs <= 0 {
+		cfg.ConceptMinRefs = defaultConceptMinRefs
+	}
+	if cfg.ConceptMinOut <= 0 {
+		cfg.ConceptMinOut = defaultConceptMinOut
+	}
+	if cfg.MaxNameLen <= 0 {
+		cfg.MaxNameLen = defaultMaxNameLen
+	}
+
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--vault" && i+1 < len(args):
@@ -549,12 +712,50 @@ func runExportObsidian(args []string) error {
 			cfg.DryRun = true
 		case args[i] == "--clean":
 			cfg.Clean = true
+		case args[i] == "--hub-stats":
+			cfg.HubStats = true
 		case args[i] == "--min-refs" && i+1 < len(args):
 			i++
 			fmt.Sscanf(args[i], "%d", &cfg.MinRefs)
 		case args[i] == "--concept-min-refs" && i+1 < len(args):
 			i++
 			fmt.Sscanf(args[i], "%d", &cfg.ConceptMinRefs)
+		case args[i] == "--concept-min-outbound" && i+1 < len(args):
+			i++
+			fmt.Sscanf(args[i], "%d", &cfg.ConceptMinOut)
+		case args[i] == "--max-entity-name-len" && i+1 < len(args):
+			i++
+			fmt.Sscanf(args[i], "%d", &cfg.MaxNameLen)
+		case args[i] == "--stopword" && i+1 < len(args):
+			i++
+			cfg.Stopwords = append(cfg.Stopwords, args[i])
+		case strings.HasPrefix(args[i], "--stopword="):
+			cfg.Stopwords = append(cfg.Stopwords, strings.TrimPrefix(args[i], "--stopword="))
+		case args[i] == "--allowlist" && i+1 < len(args):
+			i++
+			cfg.Allowlist = append(cfg.Allowlist, args[i])
+		case strings.HasPrefix(args[i], "--allowlist="):
+			cfg.Allowlist = append(cfg.Allowlist, strings.TrimPrefix(args[i], "--allowlist="))
+		case args[i] == "--hub-type-person" && i+1 < len(args):
+			i++
+			cfg.HubTypePerson = args[i]
+		case strings.HasPrefix(args[i], "--hub-type-person="):
+			cfg.HubTypePerson = strings.TrimPrefix(args[i], "--hub-type-person=")
+		case args[i] == "--hub-type-project" && i+1 < len(args):
+			i++
+			cfg.HubTypeProject = args[i]
+		case strings.HasPrefix(args[i], "--hub-type-project="):
+			cfg.HubTypeProject = strings.TrimPrefix(args[i], "--hub-type-project=")
+		case args[i] == "--hub-type-strategy" && i+1 < len(args):
+			i++
+			cfg.HubTypeStrategy = args[i]
+		case strings.HasPrefix(args[i], "--hub-type-strategy="):
+			cfg.HubTypeStrategy = strings.TrimPrefix(args[i], "--hub-type-strategy=")
+		case args[i] == "--hub-type-system" && i+1 < len(args):
+			i++
+			cfg.HubTypeSystem = args[i]
+		case strings.HasPrefix(args[i], "--hub-type-system="):
+			cfg.HubTypeSystem = strings.TrimPrefix(args[i], "--hub-type-system=")
 		case args[i] == "--trading":
 			continue
 		case args[i] == "--validate":
@@ -562,6 +763,21 @@ func runExportObsidian(args []string) error {
 		case strings.HasPrefix(args[i], "-"):
 			return fmt.Errorf("unknown flag: %s", args[i])
 		}
+	}
+	if cfg.MinRefs <= 0 {
+		cfg.MinRefs = defaultMinRefs
+	}
+	if cfg.ConceptMinRefs <= 0 {
+		cfg.ConceptMinRefs = defaultConceptMinRefs
+	}
+	if cfg.ConceptMinOut <= 0 {
+		cfg.ConceptMinOut = defaultConceptMinOut
+	}
+	if cfg.MaxNameLen <= 0 {
+		cfg.MaxNameLen = defaultMaxNameLen
+	}
+	if err := obsConfigureRules(cfg); err != nil {
+		return err
 	}
 	if cfg.VaultRoot == "" {
 		cfg.VaultRoot, _ = os.Getwd()
@@ -571,7 +787,7 @@ func runExportObsidian(args []string) error {
 	}
 
 	fmt.Println("🧠 Cortex → Obsidian Export")
-	fmt.Printf("   Vault: %s\n   Output: %s\n   Thresholds: ≥%d refs (concepts: ≥%d)\n", cfg.VaultRoot, cfg.OutputDir, cfg.MinRefs, cfg.ConceptMinRefs)
+	fmt.Printf("   Vault: %s\n   Output: %s\n   Thresholds: ≥%d refs (concepts: ≥%d, min outbound: %d, max name: %d)\n", cfg.VaultRoot, cfg.OutputDir, cfg.MinRefs, cfg.ConceptMinRefs, cfg.ConceptMinOut, cfg.MaxNameLen)
 	if cfg.Validate {
 		fmt.Println("   Validation: enabled (--validate)")
 	}
@@ -608,10 +824,13 @@ func runExportObsidian(args []string) error {
 	fmt.Printf("   %d active facts\n", len(active))
 
 	fmt.Println("🔗 Building entity index...")
-	ef, et := obsBuildEntityIndex(active)
+	ef, et := obsBuildEntityIndex(active, cfg)
+	if cfg.HubStats {
+		obsPrintHubStats(ef)
+	}
 	hubs := obsSelectHubs(ef, et, cfg)
 	pre := len(hubs)
-	pruned := obsPruneWeak(hubs, cfg.ConceptMinOut)
+	pruned := obsPruneWeak(hubs, cfg)
 	fmt.Printf("   %d entities → %d candidates → %d hubs (%d pruned)\n", len(ef), pre, len(hubs), pruned)
 
 	fmt.Println("📂 Grouping by topic...")

@@ -58,6 +58,35 @@ type PolicyConfig struct {
 	ConflictSupersede ConflictSupersedePolicy `yaml:"conflict_supersede" json:"conflict_supersede"`
 }
 
+type ObsidianHubTypesConfig struct {
+	Person   string `yaml:"person" json:"person"`
+	Project  string `yaml:"project" json:"project"`
+	Strategy string `yaml:"strategy" json:"strategy"`
+	System   string `yaml:"system" json:"system"`
+}
+
+type ObsidianExportConfig struct {
+	HubMinRefs         int                    `yaml:"hub_min_refs" json:"hub_min_refs"`
+	ConceptMinRefs     int                    `yaml:"concept_min_refs" json:"concept_min_refs"`
+	ConceptMinOutbound int                    `yaml:"concept_min_outbound" json:"concept_min_outbound"`
+	MaxEntityNameLen   int                    `yaml:"max_entity_name_len" json:"max_entity_name_len"`
+	Stopwords          []string               `yaml:"stopwords" json:"stopwords"`
+	Allowlist          []string               `yaml:"allowlist" json:"allowlist"`
+	HubTypes           ObsidianHubTypesConfig `yaml:"hub_types" json:"hub_types"`
+}
+
+func DefaultObsidianExportConfig() ObsidianExportConfig {
+	return ObsidianExportConfig{
+		HubMinRefs:         5,
+		ConceptMinRefs:     10,
+		ConceptMinOutbound: 2,
+		MaxEntityNameLen:   45,
+		Stopwords:          []string{},
+		Allowlist:          []string{},
+		HubTypes:           ObsidianHubTypesConfig{},
+	}
+}
+
 func DefaultPolicyConfig() PolicyConfig {
 	return PolicyConfig{
 		ReinforcePromote: ReinforcePromotePolicy{
@@ -93,8 +122,9 @@ type ResolvedConfig struct {
 	EmbedAPIKey   ResolvedValue `json:"embed_api_key"`
 	EmbedEndpoint ResolvedValue `json:"embed_endpoint"`
 
-	Policies PolicyConfig             `json:"policies"`
-	LLMKeys  map[string]ResolvedValue `json:"llm_keys,omitempty"`
+	Policies       PolicyConfig             `json:"policies"`
+	ObsidianExport ObsidianExportConfig     `json:"obsidian_export"`
+	LLMKeys        map[string]ResolvedValue `json:"llm_keys,omitempty"`
 }
 
 type fileConfig struct {
@@ -115,6 +145,9 @@ type fileConfig struct {
 		Endpoint string `yaml:"endpoint"`
 	} `yaml:"embed"`
 	Policies PolicyConfig `yaml:"policies"`
+	Export   struct {
+		Obsidian ObsidianExportConfig `yaml:"obsidian"`
+	} `yaml:"export"`
 }
 
 func DefaultConfigPath() string {
@@ -129,9 +162,10 @@ func ResolveConfig(opts ResolveOptions) (ResolvedConfig, error) {
 	}
 
 	out := ResolvedConfig{
-		ConfigPath: path,
-		Policies:   DefaultPolicyConfig(),
-		LLMKeys:    map[string]ResolvedValue{},
+		ConfigPath:     path,
+		Policies:       DefaultPolicyConfig(),
+		ObsidianExport: DefaultObsidianExportConfig(),
+		LLMKeys:        map[string]ResolvedValue{},
 	}
 
 	cfg, err := loadConfig(path)
@@ -141,6 +175,7 @@ func ResolveConfig(opts ResolveOptions) (ResolvedConfig, error) {
 
 	if cfg != nil {
 		out.Policies = cfg.Policies
+		out.ObsidianExport = cfg.Export.Obsidian
 		apply(&out.DBPath, cfg.DBPath, SourceConfig, path)
 		apply(&out.LLMProvider, cfg.LLM.Provider, SourceConfig, path)
 		apply(&out.LLMEnrichModel, firstNonEmpty(cfg.LLM.EnrichModel, cfg.LLM.EnrichProvider), SourceConfig, path)
@@ -213,6 +248,14 @@ func ResolvePolicyConfig(configPath string) (PolicyConfig, error) {
 		return PolicyConfig{}, err
 	}
 	return resolved.Policies, nil
+}
+
+func ResolveObsidianExportConfig(configPath string) (ObsidianExportConfig, error) {
+	resolved, err := ResolveConfig(ResolveOptions{ConfigPath: configPath})
+	if err != nil {
+		return ObsidianExportConfig{}, err
+	}
+	return resolved.ObsidianExport, nil
 }
 
 func (r ResolvedConfig) EffectiveLLMModel(purpose, fallback string) ResolvedValue {
@@ -295,6 +338,7 @@ func loadConfig(path string) (*fileConfig, error) {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 	cfg := fileConfig{Policies: DefaultPolicyConfig()}
+	cfg.Export.Obsidian = DefaultObsidianExportConfig()
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}

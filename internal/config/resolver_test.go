@@ -151,3 +151,58 @@ func TestResolveConfig_PolicyPartialOverrides(t *testing.T) {
 		t.Fatalf("expected conflict require_strictly_newer default=true, got %+v", policies.ConflictSupersede)
 	}
 }
+
+func TestResolveConfig_ObsidianExportDefaultsWhenMissing(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	yaml := `db_path: ~/.cortex/test.db
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	resolved, err := ResolveConfig(ResolveOptions{ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+	if resolved.ObsidianExport.HubMinRefs != 5 || resolved.ObsidianExport.ConceptMinRefs != 10 {
+		t.Fatalf("unexpected obsidian export defaults: %+v", resolved.ObsidianExport)
+	}
+	if resolved.ObsidianExport.ConceptMinOutbound != 2 || resolved.ObsidianExport.MaxEntityNameLen != 45 {
+		t.Fatalf("unexpected obsidian export defaults: %+v", resolved.ObsidianExport)
+	}
+}
+
+func TestResolveConfig_ObsidianExportOverrides(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	yaml := `export:
+  obsidian:
+    hub_min_refs: 7
+    concept_min_refs: 12
+    concept_min_outbound: 3
+    max_entity_name_len: 40
+    stopwords: ["(?i)^todo$", "(?i)^session$"]
+    allowlist: ["Q", "Mister"]
+    hub_types:
+      person: '^(Q|SB|Mister)$'
+      project: '^(Cortex|Spear)$'
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	obs, err := ResolveObsidianExportConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("ResolveObsidianExportConfig: %v", err)
+	}
+	if obs.HubMinRefs != 7 || obs.ConceptMinRefs != 12 || obs.ConceptMinOutbound != 3 || obs.MaxEntityNameLen != 40 {
+		t.Fatalf("unexpected numeric overrides: %+v", obs)
+	}
+	if len(obs.Stopwords) != 2 || len(obs.Allowlist) != 2 {
+		t.Fatalf("expected stopwords+allowlist override, got %+v", obs)
+	}
+	if obs.HubTypes.Person == "" || obs.HubTypes.Project == "" {
+		t.Fatalf("expected hub type regex overrides, got %+v", obs.HubTypes)
+	}
+}
