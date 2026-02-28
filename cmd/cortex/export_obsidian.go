@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -50,6 +51,7 @@ type ObsidianExportConfig struct {
 	ConceptMinRefs int
 	ConceptMinOut  int
 	MaxNameLen     int
+	Validate       bool
 }
 
 // ── Patterns ────────────────────────────────────────────────────────────
@@ -169,27 +171,39 @@ func obsIsBlocked(name string) bool {
 }
 
 func obsConfBar(conf float64) string {
-	if conf >= 0.9 { return "🟢" }
-	if conf >= 0.7 { return "🟡" }
-	if conf >= 0.5 { return "🟠" }
+	if conf >= 0.9 {
+		return "🟢"
+	}
+	if conf >= 0.7 {
+		return "🟡"
+	}
+	if conf >= 0.5 {
+		return "🟠"
+	}
 	return "🔴"
 }
 
 func obsSanitize(name string) string {
-	r := strings.NewReplacer("<","",">","",":","","\"","","/","","\\","","|","","?","","*","")
+	r := strings.NewReplacer("<", "", ">", "", ":", "", "\"", "", "/", "", "\\", "", "|", "", "?", "", "*", "")
 	c := r.Replace(name)
-	if len(c) > 80 { c = c[:80] }
+	if len(c) > 80 {
+		c = c[:80]
+	}
 	return strings.TrimSpace(c)
 }
 
 func obsEmoji(ft string) string {
-	if e, ok := obsTypeEmoji[ft]; ok { return e }
+	if e, ok := obsTypeEmoji[ft]; ok {
+		return e
+	}
 	return "📝"
 }
 
 func obsSortedKeys(m map[string]bool) []string {
 	keys := make([]string, 0, len(m))
-	for k := range m { keys = append(keys, k) }
+	for k := range m {
+		keys = append(keys, k)
+	}
 	sort.Strings(keys)
 	return keys
 }
@@ -201,13 +215,21 @@ func obsBuildEntityIndex(facts []*store.Fact) (map[string][]*store.Fact, map[str
 	et := make(map[string]map[string]bool)
 	for _, fact := range facts {
 		subj := strings.TrimSpace(fact.Subject)
-		if subj == "" || len(subj) < 2 || len(subj) > 80 { continue }
-		if m, _ := regexp.MatchString(`^[\d./$~\\]`, subj); m { continue }
-		if !obsEntityAllowlist[subj] && obsIsBlocked(subj) { continue }
+		if subj == "" || len(subj) < 2 || len(subj) > 80 {
+			continue
+		}
+		if m, _ := regexp.MatchString(`^[\d./$~\\]`, subj); m {
+			continue
+		}
+		if !obsEntityAllowlist[subj] && obsIsBlocked(subj) {
+			continue
+		}
 		combined := subj + " " + fact.Predicate + " " + fact.Object + " " + fact.SourceQuote
 		topic := obsClassifyTopic(combined)
 		ef[subj] = append(ef[subj], fact)
-		if et[subj] == nil { et[subj] = make(map[string]bool) }
+		if et[subj] == nil {
+			et[subj] = make(map[string]bool)
+		}
 		et[subj][topic] = true
 	}
 	return ef, et
@@ -219,10 +241,16 @@ func obsSelectHubs(ef map[string][]*store.Fact, et map[string]map[string]bool, c
 		ht := obsClassifyHubType(entity)
 		al := obsEntityAllowlist[entity]
 		thresh := cfg.MinRefs
-		if al { thresh = 1 } else if ht == "concept" { thresh = cfg.ConceptMinRefs }
+		if al {
+			thresh = 1
+		} else if ht == "concept" {
+			thresh = cfg.ConceptMinRefs
+		}
 		if len(facts) >= thresh {
 			topics := et[entity]
-			if topics == nil { topics = make(map[string]bool) }
+			if topics == nil {
+				topics = make(map[string]bool)
+			}
 			hubs[entity] = &EntityHub{Name: entity, HubType: ht, Facts: facts, Topics: topics, RefCount: len(facts)}
 		}
 	}
@@ -231,20 +259,32 @@ func obsSelectHubs(ef map[string][]*store.Fact, et map[string]map[string]bool, c
 
 func obsPruneWeak(hubs map[string]*EntityHub, minOut int) int {
 	hubNames := make(map[string]bool)
-	for n := range hubs { hubNames[n] = true }
+	for n := range hubs {
+		hubNames[n] = true
+	}
 	var rem []string
 	for entity, hub := range hubs {
-		if hub.HubType != "concept" || obsEntityAllowlist[entity] { continue }
+		if hub.HubType != "concept" || obsEntityAllowlist[entity] {
+			continue
+		}
 		out := make(map[string]bool)
-		for t := range hub.Topics { out[t] = true }
+		for t := range hub.Topics {
+			out[t] = true
+		}
 		for _, f := range hub.Facts {
 			for oh := range hubNames {
-				if oh != entity && strings.Contains(f.Object, oh) { out[oh] = true }
+				if oh != entity && strings.Contains(f.Object, oh) {
+					out[oh] = true
+				}
 			}
 		}
-		if len(out) < minOut { rem = append(rem, entity) }
+		if len(out) < minOut {
+			rem = append(rem, entity)
+		}
 	}
-	for _, e := range rem { delete(hubs, e) }
+	for _, e := range rem {
+		delete(hubs, e)
+	}
 	return len(rem)
 }
 
@@ -255,7 +295,9 @@ func obsWriteEntity(entity string, hub *EntityHub, outDir string, dryRun bool) e
 	dir := filepath.Join(outDir, "entities")
 	path := filepath.Join(dir, fn)
 	icon := obsHubTypeIcons[hub.HubType]
-	if icon == "" { icon = "💡" }
+	if icon == "" {
+		icon = "💡"
+	}
 
 	var b strings.Builder
 	b.WriteString("---\n")
@@ -268,29 +310,45 @@ func obsWriteEntity(entity string, hub *EntityHub, outDir string, dryRun bool) e
 
 	if len(tl) > 0 {
 		links := make([]string, len(tl))
-		for i, t := range tl { links[i] = "[[" + t + "]]" }
+		for i, t := range tl {
+			links[i] = "[[" + t + "]]"
+		}
 		b.WriteString("**Appears in:** " + strings.Join(links, " · ") + "\n\n")
 	}
 
 	// Group by predicate
 	byPred := make(map[string][]*store.Fact)
 	for _, f := range hub.Facts {
-		p := f.Predicate; if p == "" { p = "related to" }
+		p := f.Predicate
+		if p == "" {
+			p = "related to"
+		}
 		byPred[p] = append(byPred[p], f)
 	}
-	type pg struct { p string; fs []*store.Fact }
+	type pg struct {
+		p  string
+		fs []*store.Fact
+	}
 	var pgs []pg
-	for p, fs := range byPred { pgs = append(pgs, pg{p, fs}) }
+	for p, fs := range byPred {
+		pgs = append(pgs, pg{p, fs})
+	}
 	sort.Slice(pgs, func(i, j int) bool { return len(pgs[i].fs) > len(pgs[j].fs) })
 
 	for _, g := range pgs {
 		fmt.Fprintf(&b, "### %s\n\n", g.p)
 		sort.Slice(g.fs, func(i, j int) bool { return g.fs[i].Confidence > g.fs[j].Confidence })
 		for _, f := range g.fs {
-			st := ""; if f.State != "active" && f.State != "" { st = fmt.Sprintf(" `%s`", f.State) }
+			st := ""
+			if f.State != "active" && f.State != "" {
+				st = fmt.Sprintf(" `%s`", f.State)
+			}
 			fmt.Fprintf(&b, "- %s %s %s %.0f%%%s\n", obsEmoji(f.FactType), f.Object, obsConfBar(f.Confidence), f.Confidence*100, st)
 			if f.SourceQuote != "" {
-				q := f.SourceQuote; if len(q) > 200 { q = q[:200] }
+				q := f.SourceQuote
+				if len(q) > 200 {
+					q = q[:200]
+				}
 				fmt.Fprintf(&b, "  > _%s_\n", q)
 			}
 			b.WriteString("\n")
@@ -298,7 +356,9 @@ func obsWriteEntity(entity string, hub *EntityHub, outDir string, dryRun bool) e
 	}
 
 	b.WriteString("## Related\n\n- [[Cortex Dashboard]]\n")
-	for _, t := range tl { fmt.Fprintf(&b, "- [[%s]]\n", t) }
+	for _, t := range tl {
+		fmt.Fprintf(&b, "- [[%s]]\n", t)
+	}
 	b.WriteString("\n")
 
 	if dryRun {
@@ -315,10 +375,20 @@ func obsWriteTopic(topic string, facts []*store.Fact, hubs map[string]*EntityHub
 	path := filepath.Join(dir, fn)
 
 	te := make(map[string]*EntityHub)
-	for e, h := range hubs { if h.Topics[topic] { te[e] = h } }
+	for e, h := range hubs {
+		if h.Topics[topic] {
+			te[e] = h
+		}
+	}
 
 	byType := make(map[string][]*store.Fact)
-	for _, f := range facts { ft := f.FactType; if ft == "" { ft = "kv" }; byType[ft] = append(byType[ft], f) }
+	for _, f := range facts {
+		ft := f.FactType
+		if ft == "" {
+			ft = "kv"
+		}
+		byType[ft] = append(byType[ft], f)
+	}
 
 	var b strings.Builder
 	b.WriteString("---\n")
@@ -328,16 +398,25 @@ func obsWriteTopic(topic string, facts []*store.Fact, hubs map[string]*EntityHub
 
 	if len(te) > 0 {
 		b.WriteString("## Key Entities\n\n")
-		en := make(map[string]bool); for e := range te { en[e] = true }
+		en := make(map[string]bool)
+		for e := range te {
+			en[e] = true
+		}
 		for _, e := range obsSortedKeys(en) {
-			h := te[e]; fmt.Fprintf(&b, "- %s [[%s]] (%d refs)\n", obsHubTypeIcons[h.HubType], e, h.RefCount)
+			h := te[e]
+			fmt.Fprintf(&b, "- %s [[%s]] (%d refs)\n", obsHubTypeIcons[h.HubType], e, h.RefCount)
 		}
 		b.WriteString("\n")
 	}
 
-	type tg struct { n string; fs []*store.Fact }
+	type tg struct {
+		n  string
+		fs []*store.Fact
+	}
 	var tgs []tg
-	for n, fs := range byType { tgs = append(tgs, tg{n, fs}) }
+	for n, fs := range byType {
+		tgs = append(tgs, tg{n, fs})
+	}
 	sort.Slice(tgs, func(i, j int) bool { return len(tgs[i].fs) > len(tgs[j].fs) })
 
 	for _, g := range tgs {
@@ -345,19 +424,34 @@ func obsWriteTopic(topic string, facts []*store.Fact, hubs map[string]*EntityHub
 		sort.Slice(g.fs, func(i, j int) bool { return g.fs[i].Confidence > g.fs[j].Confidence })
 		for _, f := range g.fs {
 			c := fmt.Sprintf("**%s** %s → %s", f.Subject, f.Predicate, f.Object)
-			if len(c) > 500 { c = c[:497] + "..." }
-			for e := range te {
-				if strings.Contains(c, e) && !strings.Contains(c, "[["+e+"]]") { c = strings.Replace(c, e, "[["+e+"]]", 1) }
+			if len(c) > 500 {
+				c = c[:497] + "..."
 			}
-			st := ""; if f.State != "active" && f.State != "" { st = fmt.Sprintf(" `%s`", f.State) }
+			for e := range te {
+				if strings.Contains(c, e) && !strings.Contains(c, "[["+e+"]]") {
+					c = strings.Replace(c, e, "[["+e+"]]", 1)
+				}
+			}
+			st := ""
+			if f.State != "active" && f.State != "" {
+				st = fmt.Sprintf(" `%s`", f.State)
+			}
 			fmt.Fprintf(&b, "- %s\n  - *%s %.0f%%%s*\n\n", c, obsConfBar(f.Confidence), f.Confidence*100, st)
 		}
 	}
 
 	b.WriteString("## Related Topics\n\n- [[Cortex Dashboard]]\n")
 	rt := make(map[string]bool)
-	for _, h := range te { for t := range h.Topics { if t != topic { rt[t] = true } } }
-	for _, t := range obsSortedKeys(rt) { fmt.Fprintf(&b, "- [[%s]]\n", t) }
+	for _, h := range te {
+		for t := range h.Topics {
+			if t != topic {
+				rt[t] = true
+			}
+		}
+	}
+	for _, t := range obsSortedKeys(rt) {
+		fmt.Fprintf(&b, "- [[%s]]\n", t)
+	}
 	b.WriteString("\n")
 
 	if dryRun {
@@ -368,7 +462,10 @@ func obsWriteTopic(topic string, facts []*store.Fact, hubs map[string]*EntityHub
 	return len(te), os.WriteFile(path, []byte(b.String()), 0644)
 }
 
-type obsTopicResult struct { name string; factCount, entityCount int }
+type obsTopicResult struct {
+	name                   string
+	factCount, entityCount int
+}
 
 func obsWriteDashboard(trs []obsTopicResult, hubs map[string]*EntityHub, outDir string, dryRun bool) error {
 	path := filepath.Join(outDir, "Cortex Dashboard.md")
@@ -376,21 +473,33 @@ func obsWriteDashboard(trs []obsTopicResult, hubs map[string]*EntityHub, outDir 
 	b.WriteString("---\n")
 	fmt.Fprintf(&b, "synced: %s\ntags: [\"#cortex\", \"#cortex/dashboard\", \"#MOC\"]\n---\n\n# 🧠 Cortex Dashboard\n\n", time.Now().Format("2006-01-02 15:04"))
 
-	tf := 0; for _, tr := range trs { tf += tr.factCount }
+	tf := 0
+	for _, tr := range trs {
+		tf += tr.factCount
+	}
 	fmt.Fprintf(&b, "> **%d facts** · **%d entity hubs** · **%d topics** · Last sync: %s\n\n", tf, len(hubs), len(trs), time.Now().Format("Jan 02, 2006 3:04 PM"))
 
 	b.WriteString("## Topics\n\n")
 	sort.Slice(trs, func(i, j int) bool { return trs[i].factCount > trs[j].factCount })
-	for _, tr := range trs { fmt.Fprintf(&b, "- [[%s]] — %d facts, %d entities\n", tr.name, tr.factCount, tr.entityCount) }
+	for _, tr := range trs {
+		fmt.Fprintf(&b, "- [[%s]] — %d facts, %d entities\n", tr.name, tr.factCount, tr.entityCount)
+	}
 	b.WriteString("\n## Entity Hubs\n\n")
 
 	bht := make(map[string][]*EntityHub)
-	for _, h := range hubs { bht[h.HubType] = append(bht[h.HubType], h) }
+	for _, h := range hubs {
+		bht[h.HubType] = append(bht[h.HubType], h)
+	}
 	for _, ht := range []string{"person", "project", "strategy", "system", "concept"} {
-		es := bht[ht]; if len(es) == 0 { continue }
+		es := bht[ht]
+		if len(es) == 0 {
+			continue
+		}
 		sort.Slice(es, func(i, j int) bool { return es[i].RefCount > es[j].RefCount })
 		fmt.Fprintf(&b, "### %s %ss\n\n", obsHubTypeIcons[ht], strings.Title(ht))
-		for _, h := range es { fmt.Fprintf(&b, "- [[%s]] (%d refs)\n", h.Name, h.RefCount) }
+		for _, h := range es {
+			fmt.Fprintf(&b, "- [[%s]] (%d refs)\n", h.Name, h.RefCount)
+		}
 		b.WriteString("\n")
 	}
 
@@ -413,7 +522,9 @@ func runExportObsidian(args []string) error {
 			// Strip --trading from args and pass rest to trading export
 			var tArgs []string
 			for _, x := range args {
-				if x != "--trading" { tArgs = append(tArgs, x) }
+				if x != "--trading" {
+					tArgs = append(tArgs, x)
+				}
 			}
 			return runExportTrading(tArgs)
 		}
@@ -424,23 +535,47 @@ func runExportObsidian(args []string) error {
 	}
 	for i := 0; i < len(args); i++ {
 		switch {
-		case args[i] == "--vault" && i+1 < len(args): i++; cfg.VaultRoot = args[i]
-		case strings.HasPrefix(args[i], "--vault="): cfg.VaultRoot = strings.TrimPrefix(args[i], "--vault=")
-		case args[i] == "--output" && i+1 < len(args): i++; cfg.OutputDir = args[i]
-		case strings.HasPrefix(args[i], "--output="): cfg.OutputDir = strings.TrimPrefix(args[i], "--output=")
-		case args[i] == "--dry-run" || args[i] == "-n": cfg.DryRun = true
-		case args[i] == "--clean": cfg.Clean = true
-		case args[i] == "--min-refs" && i+1 < len(args): i++; fmt.Sscanf(args[i], "%d", &cfg.MinRefs)
-		case args[i] == "--concept-min-refs" && i+1 < len(args): i++; fmt.Sscanf(args[i], "%d", &cfg.ConceptMinRefs)
-		case args[i] == "--trading", args[i] == "--validate": continue
-		case strings.HasPrefix(args[i], "-"): return fmt.Errorf("unknown flag: %s", args[i])
+		case args[i] == "--vault" && i+1 < len(args):
+			i++
+			cfg.VaultRoot = args[i]
+		case strings.HasPrefix(args[i], "--vault="):
+			cfg.VaultRoot = strings.TrimPrefix(args[i], "--vault=")
+		case args[i] == "--output" && i+1 < len(args):
+			i++
+			cfg.OutputDir = args[i]
+		case strings.HasPrefix(args[i], "--output="):
+			cfg.OutputDir = strings.TrimPrefix(args[i], "--output=")
+		case args[i] == "--dry-run" || args[i] == "-n":
+			cfg.DryRun = true
+		case args[i] == "--clean":
+			cfg.Clean = true
+		case args[i] == "--min-refs" && i+1 < len(args):
+			i++
+			fmt.Sscanf(args[i], "%d", &cfg.MinRefs)
+		case args[i] == "--concept-min-refs" && i+1 < len(args):
+			i++
+			fmt.Sscanf(args[i], "%d", &cfg.ConceptMinRefs)
+		case args[i] == "--trading":
+			continue
+		case args[i] == "--validate":
+			cfg.Validate = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
 		}
 	}
-	if cfg.VaultRoot == "" { cfg.VaultRoot, _ = os.Getwd() }
-	if cfg.OutputDir == "" { cfg.OutputDir = filepath.Join(cfg.VaultRoot, "_cortex") }
+	if cfg.VaultRoot == "" {
+		cfg.VaultRoot, _ = os.Getwd()
+	}
+	if cfg.OutputDir == "" {
+		cfg.OutputDir = filepath.Join(cfg.VaultRoot, "_cortex")
+	}
 
 	fmt.Println("🧠 Cortex → Obsidian Export")
-	fmt.Printf("   Vault: %s\n   Output: %s\n   Thresholds: ≥%d refs (concepts: ≥%d)\n\n", cfg.VaultRoot, cfg.OutputDir, cfg.MinRefs, cfg.ConceptMinRefs)
+	fmt.Printf("   Vault: %s\n   Output: %s\n   Thresholds: ≥%d refs (concepts: ≥%d)\n", cfg.VaultRoot, cfg.OutputDir, cfg.MinRefs, cfg.ConceptMinRefs)
+	if cfg.Validate {
+		fmt.Println("   Validation: enabled (--validate)")
+	}
+	fmt.Println()
 
 	if cfg.Clean && !cfg.DryRun {
 		os.RemoveAll(cfg.OutputDir)
@@ -453,16 +588,22 @@ func runExportObsidian(args []string) error {
 	}
 
 	s, err := store.NewStore(getStoreConfig())
-	if err != nil { return fmt.Errorf("opening store: %w", err) }
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
 	defer s.Close()
 	ctx := context.Background()
 
 	fmt.Println("🔍 Loading facts...")
 	all, err := s.ListFacts(ctx, store.ListOpts{Limit: math.MaxInt32})
-	if err != nil { return fmt.Errorf("listing facts: %w", err) }
+	if err != nil {
+		return fmt.Errorf("listing facts: %w", err)
+	}
 	var active []*store.Fact
 	for _, f := range all {
-		if f.State == "active" || f.State == "core" || f.State == "" { active = append(active, f) }
+		if f.State == "active" || f.State == "core" || f.State == "" {
+			active = append(active, f)
+		}
 	}
 	fmt.Printf("   %d active facts\n", len(active))
 
@@ -479,43 +620,252 @@ func runExportObsidian(args []string) error {
 		t := obsClassifyTopic(f.Subject + " " + f.Predicate + " " + f.Object + " " + f.SourceQuote)
 		topics[t] = append(topics[t], f)
 	}
-	tf := 0; for _, fs := range topics { tf += len(fs) }
+	tf := 0
+	for _, fs := range topics {
+		tf += len(fs)
+	}
 	fmt.Printf("   %d facts across %d topics\n\n", tf, len(topics))
 
 	fmt.Println("📝 Writing entity hubs...")
 	hl := make([]*EntityHub, 0, len(hubs))
-	for _, h := range hubs { hl = append(hl, h) }
+	for _, h := range hubs {
+		hl = append(hl, h)
+	}
 	sort.Slice(hl, func(i, j int) bool { return hl[i].RefCount > hl[j].RefCount })
 	for _, h := range hl {
-		if err := obsWriteEntity(h.Name, h, cfg.OutputDir, cfg.DryRun); err != nil { return err }
-		if !cfg.DryRun { fmt.Printf("  ✅ entities/%s.md — %d refs (%s)\n", obsSanitize(h.Name), h.RefCount, h.HubType) }
+		if err := obsWriteEntity(h.Name, h, cfg.OutputDir, cfg.DryRun); err != nil {
+			return err
+		}
+		if !cfg.DryRun {
+			fmt.Printf("  ✅ entities/%s.md — %d refs (%s)\n", obsSanitize(h.Name), h.RefCount, h.HubType)
+		}
 	}
 	fmt.Printf("   %d entity hubs\n\n", len(hubs))
 
 	fmt.Println("📝 Writing topic notes...")
-	type te struct { n string; fs []*store.Fact }
+	type te struct {
+		n  string
+		fs []*store.Fact
+	}
 	var tes []te
-	for n, fs := range topics { tes = append(tes, te{n, fs}) }
+	for n, fs := range topics {
+		tes = append(tes, te{n, fs})
+	}
 	sort.Slice(tes, func(i, j int) bool { return len(tes[i].fs) > len(tes[j].fs) })
 	var trs []obsTopicResult
 	for _, t := range tes {
 		ec, err := obsWriteTopic(t.n, t.fs, hubs, cfg.OutputDir, cfg.DryRun)
-		if err != nil { return err }
-		if !cfg.DryRun { fmt.Printf("  ✅ topics/%s.md — %d facts, %d entities\n", obsSanitize(t.n), len(t.fs), ec) }
+		if err != nil {
+			return err
+		}
+		if !cfg.DryRun {
+			fmt.Printf("  ✅ topics/%s.md — %d facts, %d entities\n", obsSanitize(t.n), len(t.fs), ec)
+		}
 		trs = append(trs, obsTopicResult{t.n, len(t.fs), ec})
 	}
 	fmt.Println()
 
 	fmt.Println("📋 Writing dashboard...")
-	if err := obsWriteDashboard(trs, hubs, cfg.OutputDir, cfg.DryRun); err != nil { return err }
+	if err := obsWriteDashboard(trs, hubs, cfg.OutputDir, cfg.DryRun); err != nil {
+		return err
+	}
 	fmt.Println()
 
 	htc := make(map[string]int)
-	for _, h := range hubs { htc[h.HubType]++ }
+	for _, h := range hubs {
+		htc[h.HubType]++
+	}
 	var ts []string
-	for t, c := range htc { ts = append(ts, fmt.Sprintf("%s: %d", t, c)) }
+	for t, c := range htc {
+		ts = append(ts, fmt.Sprintf("%s: %d", t, c))
+	}
 	sort.Strings(ts)
 	fmt.Printf("✅ Export complete: %d facts → %d topics + %d hubs\n   Types: %s\n", tf, len(topics), len(hubs), strings.Join(ts, ", "))
-	if cfg.DryRun { fmt.Println("   (dry run)") }
+	if cfg.DryRun {
+		fmt.Println("   (dry run)")
+	}
+
+	if cfg.Validate {
+		report, err := obsValidateOutput(cfg.OutputDir)
+		if err != nil {
+			return fmt.Errorf("validate export output: %w", err)
+		}
+		obsPrintValidationReport(report)
+		if report.BrokenLinks > 0 || report.MissingDashboardLinks > 0 || report.Orphans > 0 {
+			return fmt.Errorf("obsidian validation failed: broken=%d missing_dashboard=%d orphans=%d", report.BrokenLinks, report.MissingDashboardLinks, report.Orphans)
+		}
+	}
+
 	return nil
+}
+
+var obsWikilinkPattern = regexp.MustCompile(`\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]`)
+
+// obsValidationReport captures post-export graph/sync health metrics.
+type obsValidationReport struct {
+	Root                  string
+	Files                 int
+	BrokenLinks           int
+	MissingDashboardLinks int
+	LowOutbound           int
+	Orphans               int
+	Unresolved            int
+	AvgOutgoing           float64
+	AvgIncoming           float64
+}
+
+func obsValidateOutput(root string) (obsValidationReport, error) {
+	report := obsValidationReport{Root: root}
+	if root == "" {
+		return report, fmt.Errorf("empty output root")
+	}
+	root = filepath.Clean(root)
+	report.Root = root
+
+	dashboard := filepath.Join(root, "Cortex Dashboard.md")
+	if _, err := os.Stat(dashboard); err != nil {
+		return report, fmt.Errorf("missing dashboard: %w", err)
+	}
+
+	files := make(map[string]string)
+	base := make(map[string][]string)
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if filepath.Ext(path) != ".md" {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		files[rel] = string(b)
+		stem := strings.ToLower(strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel)))
+		base[stem] = append(base[stem], rel)
+		return nil
+	})
+	if err != nil {
+		return report, err
+	}
+	if len(files) == 0 {
+		return report, fmt.Errorf("no markdown files under %s", root)
+	}
+	report.Files = len(files)
+
+	incoming := make(map[string]int)
+	outgoing := make(map[string]int)
+
+	for rel, content := range files {
+		hasDashboard := rel == "Cortex Dashboard.md"
+		matches := obsWikilinkPattern.FindAllStringSubmatch(content, -1)
+		for _, m := range matches {
+			if len(m) < 2 {
+				continue
+			}
+			raw := strings.TrimSpace(m[1])
+			if raw == "" {
+				continue
+			}
+			resolved, explicit := obsResolveInternalWikilink(raw, files, base)
+			if strings.EqualFold(raw, "Cortex Dashboard") {
+				hasDashboard = true
+			}
+			if resolved != "" {
+				outgoing[rel]++
+				incoming[resolved]++
+			} else if explicit {
+				report.BrokenLinks++
+			}
+		}
+
+		if rel != "Cortex Dashboard.md" && !hasDashboard {
+			report.MissingDashboardLinks++
+		}
+		if outgoing[rel] < 2 {
+			report.LowOutbound++
+		}
+	}
+
+	var totalOut, totalIn int
+	for rel := range files {
+		totalOut += outgoing[rel]
+		totalIn += incoming[rel]
+		if outgoing[rel] == 0 && incoming[rel] == 0 {
+			report.Orphans++
+		}
+	}
+	report.Unresolved = report.BrokenLinks
+	report.AvgOutgoing = float64(totalOut) / float64(report.Files)
+	report.AvgIncoming = float64(totalIn) / float64(report.Files)
+
+	return report, nil
+}
+
+func obsResolveInternalWikilink(raw string, files map[string]string, base map[string][]string) (resolved string, explicitInternal bool) {
+	raw = strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
+	if raw == "" {
+		return "", false
+	}
+	if strings.EqualFold(raw, "Cortex Dashboard") {
+		if _, ok := files["Cortex Dashboard.md"]; ok {
+			return "Cortex Dashboard.md", true
+		}
+		return "", true
+	}
+
+	if strings.HasPrefix(raw, "_cortex/") || strings.HasPrefix(raw, "topics/") || strings.HasPrefix(raw, "entities/") {
+		explicitInternal = true
+		cand := strings.TrimPrefix(raw, "_cortex/")
+		if !strings.HasSuffix(strings.ToLower(cand), ".md") {
+			cand += ".md"
+		}
+		cand = filepath.ToSlash(filepath.Clean(cand))
+		if _, ok := files[cand]; ok {
+			return cand, true
+		}
+		return "", true
+	}
+
+	if strings.Contains(raw, "/") {
+		cand := raw
+		if !strings.HasSuffix(strings.ToLower(cand), ".md") {
+			cand += ".md"
+		}
+		cand = filepath.ToSlash(filepath.Clean(cand))
+		if _, ok := files[cand]; ok {
+			return cand, true
+		}
+		// path-like links are considered explicit internal under _cortex export
+		return "", true
+	}
+
+	stem := strings.ToLower(raw)
+	if hits := base[stem]; len(hits) > 0 {
+		sort.Strings(hits)
+		return hits[0], false
+	}
+
+	// likely external workspace note (MEMORY/SOUL/etc.)
+	return "", false
+}
+
+func obsPrintValidationReport(r obsValidationReport) {
+	fmt.Println("🩺 Validation report")
+	fmt.Printf("   root: %s\n", r.Root)
+	fmt.Printf("   files: %d\n", r.Files)
+	fmt.Printf("   avg_outgoing_links_per_file: %.2f\n", r.AvgOutgoing)
+	fmt.Printf("   avg_incoming_links_per_file: %.2f\n", r.AvgIncoming)
+	fmt.Printf("   low_outbound_files(<2): %d\n", r.LowOutbound)
+	fmt.Printf("   orphans(no in+out): %d\n", r.Orphans)
+	fmt.Printf("   broken_wikilinks: %d\n", r.BrokenLinks)
+	fmt.Printf("   missing_dashboard_links: %d\n", r.MissingDashboardLinks)
 }
