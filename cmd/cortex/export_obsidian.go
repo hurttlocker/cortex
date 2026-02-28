@@ -407,6 +407,17 @@ func obsWriteDashboard(trs []obsTopicResult, hubs map[string]*EntityHub, outDir 
 // ── Main Export Function ────────────────────────────────────────────────
 
 func runExportObsidian(args []string) error {
+	// Check for --trading subcommand
+	for _, a := range args {
+		if a == "--trading" {
+			// Strip --trading from args and pass rest to trading export
+			var tArgs []string
+			for _, x := range args {
+				if x != "--trading" { tArgs = append(tArgs, x) }
+			}
+			return runExportTrading(tArgs)
+		}
+	}
 	cfg := ObsidianExportConfig{
 		MinRefs: defaultMinRefs, ConceptMinRefs: defaultConceptMinRefs,
 		ConceptMinOut: defaultConceptMinOut, MaxNameLen: defaultMaxNameLen,
