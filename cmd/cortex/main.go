@@ -2765,6 +2765,10 @@ func runList(args []string) error {
 }
 
 func runExport(args []string) error {
+	// Obsidian subcommand
+	if len(args) > 0 && args[0] == "obsidian" {
+		return runExportObsidian(args[1:])
+	}
 	// Parse flags
 	var format string = "json"
 	var outputFile string
