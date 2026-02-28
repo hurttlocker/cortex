@@ -69,6 +69,8 @@ func main() {
 		exitWithError(runIndex(args[1:]))
 	case "search":
 		exitWithError(runSearch(args[1:]))
+	case "query":
+		exitWithError(runQuery(args[1:]))
 	case "answer":
 		exitWithError(runAnswer(args[1:]))
 	case "lifecycle":
@@ -8455,7 +8457,7 @@ func execCommand(name string, args ...string) error {
 
 // cortexCommands is the authoritative list of top-level commands for completion.
 var cortexCommands = []string{
-	"import", "reimport", "search", "list", "export", "update",
+	"import", "reimport", "search", "query", "list", "export", "update",
 	"extract", "classify", "reinforce", "supersede", "fact-history",
 	"stats", "stale", "conflicts", "agents", "projects",
 	"graph", "cluster",
@@ -8538,6 +8540,7 @@ Memory:
   import <path>         Import memories from files or directories
   reimport <path>       Wipe database and reimport from scratch
   search <query>        Search memories (keyword, semantic, hybrid, or rrf)
+  query                 Filter facts by metadata (--where clauses)
   answer <query>        Search + synthesize short answer with citations
   lifecycle run         Apply built-in lifecycle policies to facts
   list                  List memories or facts
