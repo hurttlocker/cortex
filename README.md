@@ -103,6 +103,19 @@ cortex search "config" --agent mister
 
 See [docs/connectors.md](docs/connectors.md) for full connector setup.
 
+### Shell completions
+
+```bash
+# Bash
+cortex completion bash > /etc/bash_completion.d/cortex
+
+# Zsh (add to your .zshrc)
+cortex completion zsh > "${fpath[1]}/_cortex"
+
+# Fish
+cortex completion fish > ~/.config/fish/completions/cortex.fish
+```
+
 ## Why Cortex
 
 **Memory that fades like yours.** Facts decay over time using [Ebbinghaus curves](https://en.wikipedia.org/wiki/Forgetting_curve) — identity facts last years, temporal facts fade in days. When you search, stale facts rank lower. Reinforce what matters; let the rest go.
