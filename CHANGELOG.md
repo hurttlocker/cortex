@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1] - 2026-03-01
+
+### 🚀 v1.2.1 — Adoption Sprint
+
+First-time user experience overhaul. Every error is now actionable, setup is one command, and the README gets you running in 60 seconds.
+
+- **`cortex init`** — First-time setup wizard: auto-detects LLM keys + Ollama, writes config, creates DB (#276, #283)
+- **README quickstart** — Starts with `cortex init`, adds offline callout, better next-steps flow (#277, #284)
+- **Actionable error messages** — 15 new hint categories in `remediationHint()`: embed/Ollama, LLM providers, auth, timeouts, config, network (#278, #281)
+- **CONTRIBUTING.md + examples/** — Refreshed contributor guide + 4 example setups: local-first, openclaw-agent, obsidian-sync, multi-agent (#279, #285)
+- **Version check in `cortex doctor`** — Compares running binary against latest GitHub release with 24h cache (#280, #282)
+
 ## [1.2.0] - 2026-02-27
 
 ### 🧠 v1.2 — Belief Lifecycle
