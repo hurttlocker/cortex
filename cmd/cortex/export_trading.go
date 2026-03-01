@@ -36,21 +36,31 @@ type DailyResult struct {
 func loadCSV(path string) ([]map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		if os.IsNotExist(err) { return nil, nil }
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	defer f.Close()
 	r := csv.NewReader(f)
 	header, err := r.Read()
-	if err != nil { return nil, nil }
+	if err != nil {
+		return nil, nil
+	}
 	var rows []map[string]string
 	for {
 		record, err := r.Read()
-		if err == io.EOF { break }
-		if err != nil { continue }
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			continue
+		}
 		row := make(map[string]string)
 		for i, h := range header {
-			if i < len(record) { row[h] = record[i] }
+			if i < len(record) {
+				row[h] = record[i]
+			}
 		}
 		rows = append(rows, row)
 	}
@@ -60,7 +70,9 @@ func loadCSV(path string) ([]map[string]string, error) {
 func loadJSON(path string) ([]map[string]interface{}, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) { return nil, nil }
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	var arr []map[string]interface{}
@@ -80,19 +92,27 @@ func safeFloat(v string) float64 {
 }
 
 func fmtPnL(v float64) string {
-	if v >= 0 { return fmt.Sprintf("+$%.2f", v) }
+	if v >= 0 {
+		return fmt.Sprintf("+$%.2f", v)
+	}
 	return fmt.Sprintf("-$%.2f", math.Abs(v))
 }
 
 func fmtPct(v string) string {
 	f := safeFloat(v)
-	if f >= 0 { return fmt.Sprintf("+%.1f%%", f) }
+	if f >= 0 {
+		return fmt.Sprintf("+%.1f%%", f)
+	}
 	return fmt.Sprintf("%.1f%%", f)
 }
 
 func classifyOutcome(pnl float64) string {
-	if pnl > 1 { return "win" }
-	if pnl < -1 { return "loss" }
+	if pnl > 1 {
+		return "win"
+	}
+	if pnl < -1 {
+		return "loss"
+	}
 	return "breakeven"
 }
 
@@ -135,8 +155,14 @@ func writeTradingDaily(dateStr string, equityRow map[string]string, optionsRows 
 
 	// Strategy tags
 	strategies := make(map[string]bool)
-	if equityRow != nil && equityRow["strategy"] != "" { strategies[equityRow["strategy"]] = true }
-	for _, r := range optionsRows { if r["underlying"] != "" { strategies["Triple Crown"] = true } }
+	if equityRow != nil && equityRow["strategy"] != "" {
+		strategies[equityRow["strategy"]] = true
+	}
+	for _, r := range optionsRows {
+		if r["underlying"] != "" {
+			strategies["Triple Crown"] = true
+		}
+	}
 	if len(strategies) > 0 {
 		ss := obsSortedKeys(strategies) // reuse helper from export_obsidian.go
 		fmt.Fprintf(&b, "strategies: [%s]\n", strings.Join(ss, ", "))
@@ -163,8 +189,14 @@ func writeTradingDaily(dateStr string, equityRow map[string]string, optionsRows 
 		b.WriteString("|---|---|---|---|---|---|---|---|\n")
 		for _, t := range optionsRows {
 			pnl := safeFloat(t["pnl"])
-			e := "🟢"; if pnl < 0 { e = "🔴" }
-			de := dirEmoji[t["direction"]]; if de == "" { de = "" }
+			e := "🟢"
+			if pnl < 0 {
+				e = "🔴"
+			}
+			de := dirEmoji[t["direction"]]
+			if de == "" {
+				de = ""
+			}
 			fmt.Fprintf(&b, "| %s%s | %s | $%s | $%s | %s %s | %s | %s | %sm |\n",
 				de, t["symbol"], t["direction"], t["entry"], t["exit"],
 				e, fmtPnL(pnl), fmtPct(t["pnl_pct"]), t["exit_reason"], t["hold_min"])
@@ -181,8 +213,13 @@ func writeTradingDaily(dateStr string, equityRow map[string]string, optionsRows 
 			strike, _ := trade["strike"].(float64)
 			otype, _ := trade["type"].(string)
 			pnl := 0.0
-			if v, ok := trade["pnl"].(float64); ok { pnl = v }
-			pe := "🟢"; if pnl < 0 { pe = "🔴" }
+			if v, ok := trade["pnl"].(float64); ok {
+				pnl = v
+			}
+			pe := "🟢"
+			if pnl < 0 {
+				pe = "🔴"
+			}
 			de := dirEmoji[dir]
 
 			fmt.Fprintf(&b, "#### %s Trade %d: [[%s]] $%.0f %s\n\n", de, i+1, und, strike, otype)
@@ -225,7 +262,9 @@ func writeTradingDaily(dateStr string, equityRow map[string]string, optionsRows 
 }
 
 func numOr(v interface{}, def float64) float64 {
-	if f, ok := v.(float64); ok { return f }
+	if f, ok := v.(float64); ok {
+		return f
+	}
 	return def
 }
 
@@ -240,11 +279,15 @@ func writeTradingIndex(results []DailyResult, outDir string, dryRun bool) error 
 	for _, r := range results {
 		totalPnL += r.PnL
 		totalTrades += r.Trades
-		if r.Result == "win" { wins++ }
+		if r.Result == "win" {
+			wins++
+		}
 	}
 	days := len(results)
 	winRate := 0.0
-	if days > 0 { winRate = float64(wins) / float64(days) * 100 }
+	if days > 0 {
+		winRate = float64(wins) / float64(days) * 100
+	}
 
 	var b strings.Builder
 	b.WriteString("---\n")
@@ -260,9 +303,15 @@ func writeTradingIndex(results []DailyResult, outDir string, dryRun bool) error 
 	fmt.Fprintf(&b, "| Total P&L | %s |\n| Trading Days | %d |\n| Total Trades | %d |\n| Winning Days | %d (%.0f%%) |\n",
 		fmtPnL(totalPnL), days, totalTrades, wins, winRate)
 	losses := 0
-	for _, r := range results { if r.Result == "loss" { losses++ } }
+	for _, r := range results {
+		if r.Result == "loss" {
+			losses++
+		}
+	}
 	fmt.Fprintf(&b, "| Losing Days | %d |\n", losses)
-	if days > 0 { fmt.Fprintf(&b, "| Avg Daily P&L | %s |\n", fmtPnL(totalPnL/float64(days))) }
+	if days > 0 {
+		fmt.Fprintf(&b, "| Avg Daily P&L | %s |\n", fmtPnL(totalPnL/float64(days)))
+	}
 	b.WriteString("\n## Daily Log\n\n| Date | Day | P&L | Trades | Outcome |\n|---|---|---|---|---|\n")
 
 	sorted := make([]DailyResult, len(results))
@@ -270,7 +319,9 @@ func writeTradingIndex(results []DailyResult, outDir string, dryRun bool) error 
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Date > sorted[j].Date })
 	for _, r := range sorted {
 		day := "?"
-		if t, err := time.Parse("2006-01-02", r.Date); err == nil { day = t.Format("Mon") }
+		if t, err := time.Parse("2006-01-02", r.Date); err == nil {
+			day = t.Format("Mon")
+		}
 		e := outcomeEmoji[r.Result]
 		fmt.Fprintf(&b, "| [[%s]] | %s | %s %s | %d | %s |\n", r.Date, day, e, fmtPnL(r.PnL), r.Trades, r.Result)
 	}
@@ -291,16 +342,28 @@ func runExportTrading(args []string) error {
 	cfg := TradingExportConfig{}
 	for i := 0; i < len(args); i++ {
 		switch {
-		case args[i] == "--vault" && i+1 < len(args): i++; cfg.VaultRoot = args[i]
-		case strings.HasPrefix(args[i], "--vault="): cfg.VaultRoot = strings.TrimPrefix(args[i], "--vault=")
-		case args[i] == "--journal" && i+1 < len(args): i++; cfg.JournalDir = args[i]
-		case strings.HasPrefix(args[i], "--journal="): cfg.JournalDir = strings.TrimPrefix(args[i], "--journal=")
-		case args[i] == "--dry-run" || args[i] == "-n": cfg.DryRun = true
-		case args[i] == "--clean": cfg.Clean = true
+		case args[i] == "--vault" && i+1 < len(args):
+			i++
+			cfg.VaultRoot = args[i]
+		case strings.HasPrefix(args[i], "--vault="):
+			cfg.VaultRoot = strings.TrimPrefix(args[i], "--vault=")
+		case args[i] == "--journal" && i+1 < len(args):
+			i++
+			cfg.JournalDir = args[i]
+		case strings.HasPrefix(args[i], "--journal="):
+			cfg.JournalDir = strings.TrimPrefix(args[i], "--journal=")
+		case args[i] == "--dry-run" || args[i] == "-n":
+			cfg.DryRun = true
+		case args[i] == "--clean":
+			cfg.Clean = true
 		}
 	}
-	if cfg.VaultRoot == "" { cfg.VaultRoot, _ = os.Getwd() }
-	if cfg.JournalDir == "" { cfg.JournalDir = filepath.Join(cfg.VaultRoot, "trading_journal") }
+	if cfg.VaultRoot == "" {
+		cfg.VaultRoot, _ = os.Getwd()
+	}
+	if cfg.JournalDir == "" {
+		cfg.JournalDir = filepath.Join(cfg.VaultRoot, "trading_journal")
+	}
 	cfg.OutputDir = filepath.Join(cfg.VaultRoot, "_cortex", "trading")
 
 	fmt.Println("📈 Trading Journal → Obsidian Export")
@@ -315,14 +378,18 @@ func runExportTrading(args []string) error {
 	fmt.Println("📊 Loading equity scorecard...")
 	equityRows, _ := loadCSV(filepath.Join(cfg.JournalDir, "forward_test", "scorecard.csv"))
 	equityByDate := make(map[string]map[string]string)
-	for _, r := range equityRows { equityByDate[r["date"]] = r }
+	for _, r := range equityRows {
+		equityByDate[r["date"]] = r
+	}
 	fmt.Printf("   %d equity days\n", len(equityRows))
 
 	// Load options scorecard
 	fmt.Println("📊 Loading options scorecard...")
 	optionsRows, _ := loadCSV(filepath.Join(cfg.JournalDir, "forward_test", "options", "scorecard.csv"))
 	optionsByDate := make(map[string][]map[string]string)
-	for _, r := range optionsRows { optionsByDate[r["date"]] = append(optionsByDate[r["date"]], r) }
+	for _, r := range optionsRows {
+		optionsByDate[r["date"]] = append(optionsByDate[r["date"]], r)
+	}
 	fmt.Printf("   %d options trades\n", len(optionsRows))
 
 	// Load trade JSONs
@@ -355,10 +422,18 @@ func runExportTrading(args []string) error {
 
 	// Merge all dates
 	allDates := make(map[string]bool)
-	for d := range equityByDate { allDates[d] = true }
-	for d := range optionsByDate { allDates[d] = true }
-	for d := range equityTradesByDate { allDates[d] = true }
-	for d := range optionsTradesByDate { allDates[d] = true }
+	for d := range equityByDate {
+		allDates[d] = true
+	}
+	for d := range optionsByDate {
+		allDates[d] = true
+	}
+	for d := range equityTradesByDate {
+		allDates[d] = true
+	}
+	for d := range optionsTradesByDate {
+		allDates[d] = true
+	}
 	dates := obsSortedKeys(allDates) // reuse helper
 
 	fmt.Printf("📝 Writing %d daily notes...\n", len(dates))
@@ -371,12 +446,20 @@ func runExportTrading(args []string) error {
 	fmt.Println()
 
 	fmt.Println("📋 Writing index...")
-	if err := writeTradingIndex(results, cfg.OutputDir, cfg.DryRun); err != nil { return err }
+	if err := writeTradingIndex(results, cfg.OutputDir, cfg.DryRun); err != nil {
+		return err
+	}
 	fmt.Println()
 
-	totalPnL := 0.0; totalTrades := 0
-	for _, r := range results { totalPnL += r.PnL; totalTrades += r.Trades }
+	totalPnL := 0.0
+	totalTrades := 0
+	for _, r := range results {
+		totalPnL += r.PnL
+		totalTrades += r.Trades
+	}
 	fmt.Printf("✅ Trading sync complete: %d days, %d trades, %s\n", len(results), totalTrades, fmtPnL(totalPnL))
-	if cfg.DryRun { fmt.Println("   (dry run)") }
+	if cfg.DryRun {
+		fmt.Println("   (dry run)")
+	}
 	return nil
 }

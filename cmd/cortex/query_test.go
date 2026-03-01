@@ -18,7 +18,7 @@ func TestParseWhereClause(t *testing.T) {
 
 func TestMatchWhere_Basic(t *testing.T) {
 	rec := queryFactRecord{
-		Fact: &store.Fact{ID: 12, Subject: "QQQ", Predicate: "strategy", Object: "ORB", FactType: "decision", Confidence: 0.92, State: "active", CreatedAt: time.Date(2026, 2, 28, 12, 0, 0, 0, time.UTC)},
+		Fact:       &store.Fact{ID: 12, Subject: "QQQ", Predicate: "strategy", Object: "ORB", FactType: "decision", Confidence: 0.92, State: "active", CreatedAt: time.Date(2026, 2, 28, 12, 0, 0, 0, time.UTC)},
 		SourceFile: "memory/2026-02-28.md",
 		ImportedAt: time.Date(2026, 2, 28, 12, 1, 0, 0, time.UTC),
 	}
