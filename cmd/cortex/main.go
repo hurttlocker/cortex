@@ -121,6 +121,8 @@ func main() {
 		exitWithError(runBench(args[1:]))
 	case "connect":
 		exitWithError(runConnect(args[1:]))
+	case "init":
+		exitWithError(runInit(args[1:]))
 	case "doctor":
 		exitWithError(runDoctor(args[1:]))
 	case "completion":
@@ -7918,6 +7920,177 @@ type doctorReport struct {
 	DBPath      string        `json:"db_path"`
 	Summary     doctorSummary `json:"summary"`
 	Checks      []doctorCheck `json:"checks"`
+}
+
+func runInit(args []string) error {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	nonInteractive := fs.Bool("y", false, "Accept defaults without prompting")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	configPath := cfgresolver.DefaultConfigPath()
+	configDir := filepath.Dir(configPath)
+
+	fmt.Println("🧠 Cortex Setup")
+	fmt.Println()
+
+	// Step 1: Create config directory
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("creating config directory: %w", err)
+	}
+
+	// Step 2: Check if config already exists
+	if _, err := os.Stat(configPath); err == nil {
+		fmt.Printf("  ✓ Config already exists: %s\n", configPath)
+		fmt.Println()
+	} else {
+		// Step 3: Detect LLM provider from env
+		llmProvider := ""
+		llmEnvKey := ""
+		switch {
+		case os.Getenv("OPENROUTER_API_KEY") != "":
+			llmProvider = "openrouter/deepseek/deepseek-chat"
+			llmEnvKey = "OPENROUTER_API_KEY"
+		case os.Getenv("GOOGLE_API_KEY") != "" || os.Getenv("GEMINI_API_KEY") != "":
+			llmProvider = "google/gemini-2.0-flash"
+			if os.Getenv("GOOGLE_API_KEY") != "" {
+				llmEnvKey = "GOOGLE_API_KEY"
+			} else {
+				llmEnvKey = "GEMINI_API_KEY"
+			}
+		case os.Getenv("OPENAI_API_KEY") != "":
+			llmProvider = "openai/gpt-4o-mini"
+			llmEnvKey = "OPENAI_API_KEY"
+		}
+
+		// Detect embed provider
+		embedProvider := ""
+		if isOllamaRunning() {
+			embedProvider = "ollama/nomic-embed-text"
+		}
+
+		if llmProvider != "" {
+			fmt.Printf("  ✓ Detected LLM key: %s\n", llmEnvKey)
+			fmt.Printf("    Default model: %s\n", llmProvider)
+		} else {
+			fmt.Println("  ⚠ No LLM API key found in environment")
+			fmt.Println("    Set one of: OPENROUTER_API_KEY, GOOGLE_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY")
+			fmt.Println("    LLM features (enrichment, classification, answers) will be skipped until configured.")
+		}
+		fmt.Println()
+
+		if embedProvider != "" {
+			fmt.Printf("  ✓ Detected Ollama running — will use %s for embeddings\n", embedProvider)
+		} else {
+			fmt.Println("  ⚠ Ollama not detected — semantic search will be unavailable")
+			fmt.Println("    Install: https://ollama.ai then run: ollama pull nomic-embed-text")
+		}
+		fmt.Println()
+
+		// Build config YAML
+		var cfgLines []string
+		cfgLines = append(cfgLines, "# Cortex configuration")
+		cfgLines = append(cfgLines, "# Docs: https://github.com/hurttlocker/cortex")
+		cfgLines = append(cfgLines, "")
+		if llmProvider != "" {
+			cfgLines = append(cfgLines, "llm:")
+			cfgLines = append(cfgLines, fmt.Sprintf("  provider: %s", llmProvider))
+			cfgLines = append(cfgLines, fmt.Sprintf("  # API key detected from %s", llmEnvKey))
+			cfgLines = append(cfgLines, "")
+		} else {
+			cfgLines = append(cfgLines, "# llm:")
+			cfgLines = append(cfgLines, "#   provider: openrouter/deepseek/deepseek-chat")
+			cfgLines = append(cfgLines, "#   api_key: your-key-here")
+			cfgLines = append(cfgLines, "")
+		}
+		if embedProvider != "" {
+			cfgLines = append(cfgLines, "embed:")
+			cfgLines = append(cfgLines, fmt.Sprintf("  provider: %s", embedProvider))
+			cfgLines = append(cfgLines, "")
+		} else {
+			cfgLines = append(cfgLines, "# embed:")
+			cfgLines = append(cfgLines, "#   provider: ollama/nomic-embed-text")
+			cfgLines = append(cfgLines, "")
+		}
+		cfgContent := strings.Join(cfgLines, "\n") + "\n"
+
+		if !*nonInteractive {
+			fmt.Printf("  Write config to %s? [Y/n] ", configPath)
+			var response string
+			fmt.Scanln(&response)
+			response = strings.TrimSpace(strings.ToLower(response))
+			if response != "" && response != "y" && response != "yes" {
+				fmt.Println("  Skipped config write.")
+				fmt.Println()
+				goto dbSetup
+			}
+		}
+
+		if err := os.WriteFile(configPath, []byte(cfgContent), 0644); err != nil {
+			return fmt.Errorf("writing config: %w", err)
+		}
+		fmt.Printf("  ✓ Wrote %s\n", configPath)
+		fmt.Println()
+	}
+
+dbSetup:
+	// Step 4: Create/verify database
+	dbPath := getDBPath()
+	if dbPath == "" {
+		dbPath = expandUserPath(store.DefaultDBPath)
+	}
+	dbPath = expandUserPath(dbPath)
+
+	if _, err := os.Stat(dbPath); err == nil {
+		st, err := store.NewStore(store.StoreConfig{DBPath: dbPath, ReadOnly: true})
+		if err != nil {
+			fmt.Printf("  ⚠ Database exists but cannot open: %v\n", err)
+			fmt.Println("    Try: cortex doctor")
+		} else {
+			ctx := context.Background()
+			stats, _ := st.Stats(ctx)
+			st.Close()
+			if stats != nil {
+				fmt.Printf("  ✓ Database: %s (%d memories, %d facts)\n", dbPath, stats.MemoryCount, stats.FactCount)
+			} else {
+				fmt.Printf("  ✓ Database: %s (exists)\n", dbPath)
+			}
+		}
+	} else {
+		// Create the DB directory and empty database
+		if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+			return fmt.Errorf("creating database directory: %w", err)
+		}
+		st, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+		if err != nil {
+			return fmt.Errorf("creating database: %w", err)
+		}
+		st.Close()
+		fmt.Printf("  ✓ Created database: %s\n", dbPath)
+	}
+	fmt.Println()
+
+	// Step 5: Print next steps
+	fmt.Println("🚀 Ready! Next steps:")
+	fmt.Println()
+	fmt.Println("  cortex import ~/notes/        # Import your files")
+	fmt.Println("  cortex search \"what I know\"   # Search your knowledge")
+	fmt.Println("  cortex doctor                  # Verify full setup")
+	fmt.Println()
+
+	return nil
+}
+
+// isOllamaRunning checks if Ollama is reachable on localhost
+func isOllamaRunning() bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://localhost:11434/api/tags")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
 }
 
 func runDoctor(args []string) error {
