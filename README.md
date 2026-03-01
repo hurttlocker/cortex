@@ -53,17 +53,28 @@ Replace `...` with `https://github.com/hurttlocker/cortex/releases/latest/downlo
 ## Quick start (60 seconds)
 
 ```bash
-# 1. Import your files
+# 1. Setup (auto-detects your LLM keys + Ollama)
+cortex init
+
+# 2. Import your files
 cortex import ~/notes/ --recursive --extract
 
-# 2. Search
+# 3. Search your knowledge
 cortex search "what did I decide about the API design"
 
-# 3. Connect to your agent (Claude Code, Cursor, etc.)
+# 4. Connect to your agent (Claude Code, Cursor, Windsurf, etc.)
 claude mcp add cortex -- cortex mcp
 ```
 
 That's it. Your agent now has persistent memory with 17 MCP tools.
+
+> **No LLM keys?** Cortex works fully offline — import, search (BM25), and MCP all work without any API keys. Add an LLM provider later for enrichment, classification, and semantic search.
+
+### Verify your setup
+
+```bash
+cortex doctor    # Checks DB, config, embeddings, connectors, version
+```
 
 ### Next steps
 
@@ -72,15 +83,18 @@ That's it. Your agent now has persistent memory with 17 MCP tools.
 cortex connect add github --config '{"token": "ghp_...", "repos": ["owner/repo"]}'
 cortex connect sync --all --extract   # Import + extract facts in one step
 
-# Filter imports by file type
-cortex import ~/docs/ --recursive --extract --ext md,txt,yaml
+# Add semantic search (requires Ollama)
+ollama pull nomic-embed-text
+cortex embed ollama/nomic-embed-text
+cortex search "API design" --mode hybrid   # BM25 + semantic
 
 # Explore your knowledge graph
 cortex graph --serve --port 8090      # Opens interactive 2D explorer
 
-# Check for stale or conflicting facts
-cortex stale --days 30
-cortex conflicts
+# Check health of your knowledge base
+cortex stale --days 30                # What's fading?
+cortex conflicts                      # Any contradictions?
+cortex stats                          # Memory/fact/source counts
 
 # Multi-agent? Scope facts by agent
 cortex import notes.md --agent mister --extract
