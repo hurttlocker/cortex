@@ -7,7 +7,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -8185,6 +8187,30 @@ func runDoctorChecks() doctorReport {
 		})
 	}
 
+	// Version check — compare against latest GitHub release (cached 24h)
+	if latest, err := checkLatestRelease(); err == nil && latest != "" {
+		if latest != version && latest != "v"+version {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "version",
+				Status:  "warn",
+				Details: fmt.Sprintf("running %s, latest is %s", version, latest),
+				Hint:    fmt.Sprintf("Update with `brew upgrade cortex` or download from https://github.com/hurttlocker/cortex/releases/tag/%s", latest),
+			})
+		} else {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "version",
+				Status:  "pass",
+				Details: fmt.Sprintf("up to date (%s)", version),
+			})
+		}
+	} else {
+		addDoctorCheck(&report, doctorCheck{
+			Name:    "version",
+			Status:  "pass",
+			Details: fmt.Sprintf("running %s (update check skipped — offline or rate-limited)", version),
+		})
+	}
+
 	return report
 }
 
@@ -8198,6 +8224,58 @@ func addDoctorCheck(report *doctorReport, check doctorCheck) {
 	default:
 		report.Summary.Fail++
 	}
+}
+
+// checkLatestRelease queries GitHub for the latest Cortex release tag.
+// Results are cached in ~/.cortex/.version-cache for 24 hours to avoid
+// hitting the API on every doctor run.
+func checkLatestRelease() (string, error) {
+	cacheDir := expandUserPath("~/.cortex")
+	cachePath := filepath.Join(cacheDir, ".version-cache")
+
+	// Check cache first (24h TTL)
+	if data, err := os.ReadFile(cachePath); err == nil {
+		parts := strings.SplitN(string(data), "\n", 2)
+		if len(parts) == 2 {
+			if ts, err := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64); err == nil {
+				if time.Since(time.Unix(ts, 0)) < 24*time.Hour {
+					return strings.TrimSpace(parts[1]), nil
+				}
+			}
+		}
+	}
+
+	// Fetch from GitHub API (no auth needed for public repos)
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("https://api.github.com/repos/hurttlocker/cortex/releases/latest")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("github API returned %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	// Parse just the tag_name field
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.Unmarshal(body, &release); err != nil {
+		return "", err
+	}
+
+	// Cache the result
+	_ = os.MkdirAll(cacheDir, 0755)
+	cacheContent := fmt.Sprintf("%d\n%s", time.Now().Unix(), release.TagName)
+	_ = os.WriteFile(cachePath, []byte(cacheContent), 0644)
+
+	return release.TagName, nil
 }
 
 func printDoctorTTY(report doctorReport, quiet bool) {
