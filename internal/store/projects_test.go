@@ -250,3 +250,72 @@ func TestAddMemory_InvalidMemoryClass(t *testing.T) {
 		t.Fatal("expected error for invalid memory class")
 	}
 }
+
+func TestSearchFTSWithFilters_SourcePrefix(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	mems := []*Memory{
+		{Content: "api design notes", SourceFile: "github:issues/123", Project: "core"},
+		{Content: "api design notes", SourceFile: "obsidian:notes/architecture.md", Project: "core"},
+		{Content: "api design notes", SourceFile: "memory/2026-03-01.md", Project: "core"},
+	}
+	for _, m := range mems {
+		m.ContentHash = HashContentOnly(m.Content + "|" + m.SourceFile)
+		if _, err := s.AddMemory(ctx, m); err != nil {
+			t.Fatalf("AddMemory: %v", err)
+		}
+	}
+
+	github, err := s.SearchFTSWithFilters(ctx, "api", 10, "", "github")
+	if err != nil {
+		t.Fatalf("SearchFTSWithFilters github: %v", err)
+	}
+	if len(github) != 1 || github[0].Memory.SourceFile != "github:issues/123" {
+		t.Fatalf("expected github-only result, got %+v", github)
+	}
+
+	obsidian, err := s.SearchFTSWithFilters(ctx, "api", 10, "", "obsidian")
+	if err != nil {
+		t.Fatalf("SearchFTSWithFilters obsidian: %v", err)
+	}
+	if len(obsidian) != 1 || obsidian[0].Memory.SourceFile != "obsidian:notes/architecture.md" {
+		t.Fatalf("expected obsidian-only result, got %+v", obsidian)
+	}
+
+	memory, err := s.SearchFTSWithFilters(ctx, "api", 10, "", "memory")
+	if err != nil {
+		t.Fatalf("SearchFTSWithFilters memory: %v", err)
+	}
+	if len(memory) != 1 || memory[0].Memory.SourceFile != "memory/2026-03-01.md" {
+		t.Fatalf("expected memory-only result, got %+v", memory)
+	}
+}
+
+func TestSearchFTSWithFilters_SourceAndProjectTogether(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	mems := []*Memory{
+		{Content: "trade checklist", SourceFile: "github:issues/1", Project: "trading"},
+		{Content: "trade checklist", SourceFile: "github:issues/2", Project: "research"},
+		{Content: "trade checklist", SourceFile: "obsidian:daily/2026-03-01.md", Project: "trading"},
+	}
+	for _, m := range mems {
+		m.ContentHash = HashContentOnly(m.Content + "|" + m.SourceFile + "|" + m.Project)
+		if _, err := s.AddMemory(ctx, m); err != nil {
+			t.Fatalf("AddMemory: %v", err)
+		}
+	}
+
+	results, err := s.SearchFTSWithFilters(ctx, "trade", 10, "trading", "github")
+	if err != nil {
+		t.Fatalf("SearchFTSWithFilters project+source: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected exactly 1 result, got %d", len(results))
+	}
+	if results[0].Memory.Project != "trading" || results[0].Memory.SourceFile != "github:issues/1" {
+		t.Fatalf("unexpected result: project=%q source=%q", results[0].Memory.Project, results[0].Memory.SourceFile)
+	}
+}

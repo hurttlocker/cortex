@@ -92,49 +92,61 @@ func (s *SQLiteStore) ExtendedStats(ctx context.Context) (int, string, string, e
 
 // SearchFTS performs full-text search using FTS5 with BM25 ranking.
 func (s *SQLiteStore) SearchFTS(ctx context.Context, query string, limit int) ([]*SearchResult, error) {
-	return s.SearchFTSWithProject(ctx, query, limit, "")
+	return s.SearchFTSWithFilters(ctx, query, limit, "", "")
 }
 
 // SearchFTSWithProject performs full-text search, optionally scoped to a project.
 // If project is empty, searches all memories (backward-compatible).
 func (s *SQLiteStore) SearchFTSWithProject(ctx context.Context, query string, limit int, project string) ([]*SearchResult, error) {
+	return s.SearchFTSWithFilters(ctx, query, limit, project, "")
+}
+
+// SearchFTSWithFilters performs full-text search with optional project + source prefix filters.
+func (s *SQLiteStore) SearchFTSWithFilters(ctx context.Context, query string, limit int, project string, sourcePrefix string) ([]*SearchResult, error) {
 	if limit <= 0 {
 		limit = 10
 	}
 
-	var rows *sql.Rows
-	var err error
+	var sqlBuilder strings.Builder
+	sqlBuilder.WriteString(`SELECT m.id, m.content, m.source_file, m.source_line, m.source_section,
+		        m.content_hash, m.project, m.memory_class, m.metadata, m.imported_at, m.updated_at,
+		        rank,
+		        snippet(memories_fts, 0, '<b>', '</b>', '...', 32)
+		 FROM memories_fts
+		 JOIN memories m ON memories_fts.rowid = m.id
+		 WHERE memories_fts MATCH ?
+		   AND m.deleted_at IS NULL`)
 
+	args := []any{query}
 	if project != "" {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT m.id, m.content, m.source_file, m.source_line, m.source_section,
-			        m.content_hash, m.project, m.memory_class, m.metadata, m.imported_at, m.updated_at,
-			        rank,
-			        snippet(memories_fts, 0, '<b>', '</b>', '...', 32)
-			 FROM memories_fts
-			 JOIN memories m ON memories_fts.rowid = m.id
-			 WHERE memories_fts MATCH ?
-			   AND m.deleted_at IS NULL
-			   AND m.project = ?
-			 ORDER BY rank
-			 LIMIT ?`,
-			query, project, limit,
-		)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT m.id, m.content, m.source_file, m.source_line, m.source_section,
-			        m.content_hash, m.project, m.memory_class, m.metadata, m.imported_at, m.updated_at,
-			        rank,
-			        snippet(memories_fts, 0, '<b>', '</b>', '...', 32)
-			 FROM memories_fts
-			 JOIN memories m ON memories_fts.rowid = m.id
-			 WHERE memories_fts MATCH ?
-			   AND m.deleted_at IS NULL
-			 ORDER BY rank
-			 LIMIT ?`,
-			query, limit,
-		)
+		sqlBuilder.WriteString(`
+		   AND m.project = ?`)
+		args = append(args, project)
 	}
+
+	sourcePrefix = strings.ToLower(strings.TrimSpace(sourcePrefix))
+	if sourcePrefix != "" {
+		if strings.Contains(sourcePrefix, ":") || strings.Contains(sourcePrefix, "/") {
+			sqlBuilder.WriteString(`
+		   AND (LOWER(m.source_file) = ? OR LOWER(m.source_file) LIKE ?)`)
+			args = append(args, sourcePrefix, sourcePrefix+"%")
+		} else {
+			sqlBuilder.WriteString(`
+		   AND (
+		     LOWER(m.source_file) = ?
+		     OR LOWER(m.source_file) LIKE ?
+		     OR LOWER(m.source_file) LIKE ?
+		   )`)
+			args = append(args, sourcePrefix, sourcePrefix+":%", sourcePrefix+"/%")
+		}
+	}
+
+	sqlBuilder.WriteString(`
+		 ORDER BY rank
+		 LIMIT ?`)
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, sqlBuilder.String(), args...)
 	if err != nil {
 		return nil, fmt.Errorf("FTS search: %w", err)
 	}
@@ -161,40 +173,51 @@ func (s *SQLiteStore) SearchFTSWithProject(ctx context.Context, query string, li
 
 	// Fallback: if FTS returned nothing, try LIKE search for CJK/Unicode content (#51)
 	if len(results) == 0 && query != "" {
-		results, _ = s.searchLikeFallback(ctx, query, limit, project)
+		results, _ = s.searchLikeFallback(ctx, query, limit, project, sourcePrefix)
 	}
 
 	return results, nil
 }
 
 // searchLikeFallback uses SQL LIKE for queries that FTS5 can't tokenize well (CJK, etc.)
-func (s *SQLiteStore) searchLikeFallback(ctx context.Context, query string, limit int, project string) ([]*SearchResult, error) {
+func (s *SQLiteStore) searchLikeFallback(ctx context.Context, query string, limit int, project string, sourcePrefix string) ([]*SearchResult, error) {
 	likePattern := "%" + query + "%"
-	var rows *sql.Rows
-	var err error
+	var sqlBuilder strings.Builder
+	sqlBuilder.WriteString(`SELECT id, content, source_file, source_line, source_section,
+	        content_hash, project, memory_class, metadata, imported_at, updated_at
+	 FROM memories
+	 WHERE content LIKE ?
+	   AND deleted_at IS NULL`)
 
+	args := []any{likePattern}
 	if project != "" {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, content, source_file, source_line, source_section,
-			        content_hash, project, memory_class, metadata, imported_at, updated_at
-			 FROM memories
-			 WHERE content LIKE ?
-			   AND deleted_at IS NULL
-			   AND project = ?
-			 LIMIT ?`,
-			likePattern, project, limit,
-		)
-	} else {
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, content, source_file, source_line, source_section,
-			        content_hash, project, memory_class, metadata, imported_at, updated_at
-			 FROM memories
-			 WHERE content LIKE ?
-			   AND deleted_at IS NULL
-			 LIMIT ?`,
-			likePattern, limit,
-		)
+		sqlBuilder.WriteString(`
+	   AND project = ?`)
+		args = append(args, project)
 	}
+
+	sourcePrefix = strings.ToLower(strings.TrimSpace(sourcePrefix))
+	if sourcePrefix != "" {
+		if strings.Contains(sourcePrefix, ":") || strings.Contains(sourcePrefix, "/") {
+			sqlBuilder.WriteString(`
+	   AND (LOWER(source_file) = ? OR LOWER(source_file) LIKE ?)`)
+			args = append(args, sourcePrefix, sourcePrefix+"%")
+		} else {
+			sqlBuilder.WriteString(`
+	   AND (
+	     LOWER(source_file) = ?
+	     OR LOWER(source_file) LIKE ?
+	     OR LOWER(source_file) LIKE ?
+	   )`)
+			args = append(args, sourcePrefix, sourcePrefix+":%", sourcePrefix+"/%")
+		}
+	}
+
+	sqlBuilder.WriteString(`
+	 LIMIT ?`)
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, sqlBuilder.String(), args...)
 	if err != nil {
 		return nil, err
 	}
