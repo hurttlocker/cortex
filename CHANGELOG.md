@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.2] - 2026-03-01
+
+### 🎯 v1.2.2 — Distribution & Polish Sprint
+
+Ship faster, onboard smoother, fix silent killers.
+
+- **`cortex demo`** — One-command first-win experience: creates sample files, imports with extraction, runs search, shows results in <30s (#293, #298)
+- **`search --source <prefix>`** — Hard filter search results by connector origin: `--source github`, `--source obsidian`, etc. (#291, #296)
+- **Progress output** — `import` and `connect sync` now show file/record counters + timing summaries on stderr (#292, #297)
+- **Shell completions documented** — bash/zsh/fish completion instructions added to README (#294, #295)
+- **Lifecycle perf fix** — O(N²) → O(N) reinforce-promote query. Was hanging indefinitely at 11K+ facts, now completes in 3.4s (#286)
+- **awesome-mcp-servers** — Submitted to 82K-star curated list ([PR #2573](https://github.com/punkpeye/awesome-mcp-servers/pull/2573))
+- **Homebrew tap verified** — `brew install hurttlocker/cortex/cortex-memory` confirmed working
+
 ## [1.2.1] - 2026-03-01
 
 ### 🚀 v1.2.1 — Adoption Sprint
