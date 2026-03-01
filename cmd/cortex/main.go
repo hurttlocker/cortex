@@ -192,6 +192,53 @@ func remediationHint(err error) string {
 		return "Check file permissions for the database path and source files, then retry."
 	case strings.Contains(msg, "read-only"):
 		return "Database is in read-only mode. Remove --read-only flag for write operations."
+
+	// Embed / Ollama errors
+	case strings.Contains(msg, "ollama unreachable"):
+		return "Ollama is not running. Start it with `ollama serve`, then retry."
+	case strings.Contains(msg, "health check failed"):
+		return "Embedding provider is unreachable. Check that the service is running, or switch providers with `--embed <provider/model>`."
+	case strings.Contains(msg, "unknown provider") && strings.Contains(msg, "supported"):
+		return "Supported embed providers: ollama, openai, deepseek, openrouter, custom. Example: `--embed ollama/nomic-embed-text`"
+	case strings.Contains(msg, "api key is required for provider"):
+		return "Set the API key for your embed provider via environment variable (e.g., OPENAI_API_KEY, OPENROUTER_API_KEY)."
+	case strings.Contains(msg, "invalid --embed format"):
+		return "Use format: `--embed provider/model` (e.g., `--embed ollama/nomic-embed-text`)."
+
+	// LLM provider errors
+	case strings.Contains(msg, "unknown llm provider"):
+		return "Supported LLM providers: google, openrouter. Example: `--llm google/gemini-3-flash`"
+	case strings.Contains(msg, "invalid --llm format"):
+		return "Use format: `--llm provider/model` (e.g., `--llm google/gemini-3-flash`)."
+	case strings.Contains(msg, "rate limit"),
+		strings.Contains(msg, "429"):
+		return "API rate limit hit. Wait a moment and retry, or switch to a different provider."
+	case strings.Contains(msg, "401"),
+		strings.Contains(msg, "unauthorized"),
+		strings.Contains(msg, "invalid api key"),
+		strings.Contains(msg, "authentication"):
+		return "API key is invalid or expired. Check your key and update it with the correct value."
+	case strings.Contains(msg, "timeout"),
+		strings.Contains(msg, "deadline exceeded"),
+		strings.Contains(msg, "context deadline"):
+		return "Request timed out. Check your network connection, or retry with a smaller batch."
+
+	// Config errors
+	case strings.Contains(msg, "config") && strings.Contains(msg, "not found"):
+		return "No config file found. Run `cortex doctor` to check your setup, or create ~/.cortex/config.yaml."
+	case strings.Contains(msg, "unmarshal"),
+		strings.Contains(msg, "yaml:"),
+		strings.Contains(msg, "json:"):
+		return "Config file has a syntax error. Check ~/.cortex/config.yaml for formatting issues."
+
+	// Connectivity
+	case strings.Contains(msg, "no such host"),
+		strings.Contains(msg, "dns"),
+		strings.Contains(msg, "dial tcp"):
+		return "Network error — cannot reach the remote service. Check your internet connection."
+	case strings.Contains(msg, "connection refused"):
+		return "Connection refused. The service may not be running. Check the endpoint URL and port."
+
 	default:
 		return ""
 	}
@@ -570,7 +617,7 @@ func runImport(args []string) error {
 			}
 			// Pre-check: can we create the provider?
 			if _, err := tryCreateProvider(enrichLLM); err != nil {
-				fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key configured). Rule-based extraction will still run.\n")
+				fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key). Set OPENROUTER_API_KEY for richer facts, or pass --no-enrich to silence this.\n")
 				llmAvailable = false
 			} else {
 				fmt.Println("\nRunning LLM enrichment...")
@@ -598,7 +645,7 @@ func runImport(args []string) error {
 				}
 			}
 			if _, err := tryCreateProvider(classifyLLM); err != nil {
-				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key). Pass --no-classify to silence this.\n")
+				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key). Set OPENROUTER_API_KEY for auto-classification, or pass --no-classify to silence this.\n")
 			} else {
 				fmt.Println("\nClassifying facts...")
 				classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM, totalResult.NewMemoryIDs)
@@ -2208,7 +2255,7 @@ func runExtract(args []string) error {
 			}
 		}
 		if provider, err := tryCreateProvider(enrichLLM); err != nil {
-			fmt.Fprintf(os.Stderr, "  Skipping enrichment (no API key?): %v\n", err)
+			fmt.Fprintf(os.Stderr, "  Skipping enrichment: %v. Set OPENROUTER_API_KEY or pass --no-enrich.\n", err)
 		} else {
 			result, err := extract.EnrichFacts(ctx, provider, string(content), facts)
 			if err != nil {
@@ -4206,7 +4253,7 @@ func runReimport(args []string) error {
 				}
 			}
 			if _, err := tryCreateProvider(enrichLLM); err != nil {
-				fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key). Set OPENROUTER_API_KEY for better facts.\n")
+				fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key). Set OPENROUTER_API_KEY for richer facts, or pass --no-enrich to silence this.\n")
 			} else {
 				fmt.Println("  Running LLM enrichment...")
 				enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM, totalResult.NewMemoryIDs)
@@ -4230,7 +4277,7 @@ func runReimport(args []string) error {
 				}
 			}
 			if _, err := tryCreateProvider(classifyLLM); err != nil {
-				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key).\n")
+				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key). Set OPENROUTER_API_KEY, or pass --no-classify to silence this.\n")
 			} else {
 				fmt.Println("  Classifying facts...")
 				classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM, totalResult.NewMemoryIDs)
