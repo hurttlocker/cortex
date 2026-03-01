@@ -275,3 +275,43 @@ func TestSyncProviderNotFound(t *testing.T) {
 		t.Error("expected error for nonexistent provider")
 	}
 }
+
+func TestSyncOne_ProgressCallback(t *testing.T) {
+	mock := &mockProvider{
+		name: "test",
+		records: []Record{
+			{ExternalID: "r1", Content: "one", Source: "doc1"},
+			{ExternalID: "r2", Content: "two", Source: "doc2"},
+			{ExternalID: "r3", Content: "three", Source: "doc3"},
+		},
+	}
+
+	engine, cs, _ := newTestSyncEngine(t, mock)
+	ctx := context.Background()
+
+	_, _ = cs.Add(ctx, "test", json.RawMessage(`{}`))
+	conn, _ := cs.Get(ctx, "test")
+
+	updates := make([]SyncProgress, 0)
+	result := engine.SyncOne(ctx, conn, SyncOptions{
+		ProgressFn: func(p SyncProgress) {
+			updates = append(updates, p)
+		},
+	})
+	if result.Error != "" {
+		t.Fatalf("sync error: %s", result.Error)
+	}
+	if len(updates) == 0 {
+		t.Fatal("expected progress updates, got none")
+	}
+	last := updates[len(updates)-1]
+	if last.Provider != "test" {
+		t.Fatalf("expected provider test, got %s", last.Provider)
+	}
+	if last.Total != 3 || last.Current != 3 {
+		t.Fatalf("expected final progress 3/3, got %d/%d", last.Current, last.Total)
+	}
+	if last.Imported != 3 || last.Skipped != 0 {
+		t.Fatalf("unexpected final imported/skipped: %+v", last)
+	}
+}

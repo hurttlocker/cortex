@@ -31,6 +31,19 @@ type SyncOptions struct {
 
 	// AgentID tags all imported memories/facts with this agent identity.
 	AgentID string
+
+	// ProgressFn receives periodic per-provider progress updates during sync.
+	// Intended for CLI/UI progress output (e.g., stderr lines), not business logic.
+	ProgressFn func(SyncProgress)
+}
+
+// SyncProgress describes in-flight connector sync progress.
+type SyncProgress struct {
+	Provider string
+	Current  int
+	Total    int
+	Imported int
+	Skipped  int
 }
 
 // SyncEngine orchestrates connector syncs through the standard Cortex ingest pipeline.
@@ -129,6 +142,9 @@ func (se *SyncEngine) SyncOne(ctx context.Context, c *Connector, opts ...SyncOpt
 	}
 
 	result.RecordsFetched = len(records)
+	if opt.ProgressFn != nil {
+		opt.ProgressFn(SyncProgress{Provider: c.Provider, Current: 0, Total: result.RecordsFetched, Imported: 0, Skipped: 0})
+	}
 
 	// Import each record through the standard pipeline
 	var importedMemoryIDs []int64
@@ -153,6 +169,15 @@ func (se *SyncEngine) SyncOne(ctx context.Context, c *Connector, opts ...SyncOpt
 			}
 		} else {
 			result.RecordsSkipped++ // deduplicated
+		}
+		if opt.ProgressFn != nil {
+			opt.ProgressFn(SyncProgress{
+				Provider: c.Provider,
+				Current:  i + 1,
+				Total:    result.RecordsFetched,
+				Imported: result.RecordsImported,
+				Skipped:  result.RecordsSkipped,
+			})
 		}
 	}
 

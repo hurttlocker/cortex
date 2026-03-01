@@ -563,6 +563,8 @@ func runImport(args []string) error {
 
 	engine := ingest.NewEngine(s)
 	ctx := context.Background()
+	importStart := time.Now()
+	totalFactsExtracted := 0
 
 	if opts.DryRun {
 		fmt.Println("Dry run mode — no changes will be written")
@@ -575,8 +577,21 @@ func runImport(args []string) error {
 	for _, path := range paths {
 		fmt.Printf("Importing %s...\n", path)
 
+		var lastProgress time.Time
 		opts.ProgressFn = func(current, total int, file string) {
-			fmt.Printf("  [%d/%d] %s\n", current, total, file)
+			if total <= 0 {
+				return
+			}
+			now := time.Now()
+			if current < total && now.Sub(lastProgress) < 500*time.Millisecond {
+				return
+			}
+			lastProgress = now
+			name := filepath.Base(file)
+			if name == "." || name == string(filepath.Separator) {
+				name = file
+			}
+			fmt.Fprintf(os.Stderr, "  import progress: %d/%d files (%s)\n", current, total, name)
 		}
 
 		result, err := engine.ImportFile(ctx, path, opts)
@@ -592,7 +607,15 @@ func runImport(args []string) error {
 	// Run extraction if requested — ONLY on newly imported memories (not all recent)
 	if enableExtraction && !opts.DryRun && totalResult.MemoriesNew > 0 {
 		fmt.Println("\nRunning extraction...")
-		extractionStats, err := runExtractionOnImportedMemories(ctx, s, llmFlag, totalResult.NewMemoryIDs)
+		var lastExtractProgress time.Time
+		extractionStats, err := runExtractionOnImportedMemories(ctx, s, llmFlag, totalResult.NewMemoryIDs, func(done, total, facts int) {
+			now := time.Now()
+			if done < total && now.Sub(lastExtractProgress) < 500*time.Millisecond {
+				return
+			}
+			lastExtractProgress = now
+			fmt.Fprintf(os.Stderr, "  extraction progress: %d/%d memories, %d facts\n", done, total, facts)
+		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Extraction error: %v\n", err)
 		} else {
@@ -604,6 +627,7 @@ func runImport(args []string) error {
 			} else {
 				fmt.Printf("  Facts extracted: %d (rules only)\n", extractionStats.FactsExtracted)
 			}
+			totalFactsExtracted += extractionStats.FactsExtracted
 		}
 
 		// Run LLM enrichment (default when extracting, skip with --no-enrich)
@@ -695,6 +719,13 @@ func runImport(args []string) error {
 
 	fmt.Println()
 	fmt.Print(ingest.FormatImportResult(totalResult))
+	fmt.Fprintf(os.Stderr, "import summary: files=%d imported=%d skipped=%d facts_extracted=%d duration=%s\n",
+		totalResult.FilesScanned,
+		totalResult.FilesImported,
+		totalResult.FilesSkipped,
+		totalFactsExtracted,
+		time.Since(importStart).Round(time.Millisecond),
+	)
 
 	if hadPathErrors || len(totalResult.Errors) > 0 {
 		return fmt.Errorf("import completed with %d error(s)", boolToInt(hadPathErrors)+len(totalResult.Errors))
@@ -2897,7 +2928,7 @@ type ExtractionStats struct {
 }
 
 // runExtractionOnImportedMemories runs extraction on recently imported memories.
-func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag string, newMemoryIDs []int64) (*ExtractionStats, error) {
+func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag string, newMemoryIDs []int64, progressFn func(done, total, facts int)) (*ExtractionStats, error) {
 	// Only process newly imported memories — never re-extract on existing ones
 	if len(newMemoryIDs) == 0 {
 		return &ExtractionStats{}, nil
@@ -2923,6 +2954,8 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 
 	pipeline := extract.NewPipeline(llmConfig)
 	stats := &ExtractionStats{}
+	processed := 0
+	total := len(memories)
 
 	for _, memory := range memories {
 		// Build metadata
@@ -2967,6 +3000,10 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 			} else {
 				stats.RulesFactsExtracted++
 			}
+		}
+		processed++
+		if progressFn != nil {
+			progressFn(processed, total, stats.FactsExtracted)
 		}
 	}
 
@@ -4238,7 +4275,7 @@ func runReimport(args []string) error {
 	// Run extraction if requested — only on newly imported memories
 	if enableExtraction && totalResult.MemoriesNew > 0 {
 		fmt.Println("  Extracting facts...")
-		extractionStats, err := runExtractionOnImportedMemories(ctx, s, llmFlag, totalResult.NewMemoryIDs)
+		extractionStats, err := runExtractionOnImportedMemories(ctx, s, llmFlag, totalResult.NewMemoryIDs, nil)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Extraction error: %v\n", err)
 		} else {
@@ -7738,12 +7775,26 @@ func runConnectSync(args []string) error {
 		enrichEffective = true // explicit --enrich always wins
 	}
 
+	syncStart := time.Now()
+	lastSyncProgress := map[string]time.Time{}
 	syncOpts := connect.SyncOptions{
 		Extract: *enableExtract,
 		Enrich:  enrichEffective,
 		NoInfer: *noInfer,
 		LLM:     *llmFlag,
 		AgentID: *agentFlag,
+		ProgressFn: func(p connect.SyncProgress) {
+			if p.Total <= 0 {
+				return
+			}
+			now := time.Now()
+			last := lastSyncProgress[p.Provider]
+			if p.Current < p.Total && now.Sub(last) < 500*time.Millisecond {
+				return
+			}
+			lastSyncProgress[p.Provider] = now
+			fmt.Fprintf(os.Stderr, "sync progress [%s]: %d/%d records (imported=%d skipped=%d)\n", p.Provider, p.Current, p.Total, p.Imported, p.Skipped)
+		},
 	}
 
 	ctx := context.Background()
@@ -7757,15 +7808,22 @@ func runConnectSync(args []string) error {
 			fmt.Println("No enabled connectors to sync.")
 			return nil
 		}
+		totalFetched, totalImported, totalSkipped, totalFacts := 0, 0, 0, 0
 		for _, r := range results {
 			printSyncResult(r)
+			totalFetched += r.RecordsFetched
+			totalImported += r.RecordsImported
+			totalSkipped += r.RecordsSkipped
+			totalFacts += r.FactsExtracted
 		}
+		fmt.Fprintf(os.Stderr, "sync summary: providers=%d fetched=%d imported=%d skipped=%d facts=%d duration=%s\n", len(results), totalFetched, totalImported, totalSkipped, totalFacts, time.Since(syncStart).Round(time.Millisecond))
 	} else {
 		result, err := engine.SyncProvider(ctx, *providerName, syncOpts)
 		if err != nil {
 			return err
 		}
 		printSyncResult(result)
+		fmt.Fprintf(os.Stderr, "sync summary: provider=%s fetched=%d imported=%d skipped=%d facts=%d duration=%s\n", result.Provider, result.RecordsFetched, result.RecordsImported, result.RecordsSkipped, result.FactsExtracted, time.Since(syncStart).Round(time.Millisecond))
 	}
 	return nil
 }
