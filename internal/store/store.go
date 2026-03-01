@@ -234,6 +234,7 @@ type Store interface {
 	// Search
 	SearchFTS(ctx context.Context, query string, limit int) ([]*SearchResult, error)
 	SearchFTSWithProject(ctx context.Context, query string, limit int, project string) ([]*SearchResult, error)
+	SearchFTSWithFilters(ctx context.Context, query string, limit int, project string, sourcePrefix string) ([]*SearchResult, error)
 	SearchEmbedding(ctx context.Context, vector []float32, limit int, minSimilarity float64) ([]*SearchResult, error)
 	SearchEmbeddingWithProject(ctx context.Context, vector []float32, limit int, minSimilarity float64, project string) ([]*SearchResult, error)
 

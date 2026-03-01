@@ -359,8 +359,26 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		return nil, nil
 	}
 
+	requestedLimit := opts.Limit
+	if requestedLimit <= 0 {
+		requestedLimit = 10
+	}
 	if opts.Limit <= 0 {
-		opts.Limit = 10
+		opts.Limit = requestedLimit
+	}
+	// When source filter is set, search a wider candidate set first,
+	// then apply the hard source filter and trim back to requested limit.
+	if strings.TrimSpace(opts.Source) != "" {
+		expanded := requestedLimit * 5
+		if expanded < 50 {
+			expanded = 50
+		}
+		if expanded > 500 {
+			expanded = 500
+		}
+		if expanded > opts.Limit {
+			opts.Limit = expanded
+		}
 	}
 
 	intent, intentErr := normalizeIntent(opts.Intent)
@@ -432,6 +450,10 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 
 	if opts.Explain {
 		e.addExplainability(results, confidenceDetails)
+	}
+
+	if len(results) > requestedLimit {
+		results = results[:requestedLimit]
 	}
 
 	return results, nil
@@ -1059,7 +1081,7 @@ func isMemorySource(sourceFile string) bool {
 // Connector sources use "provider:path" format (e.g., "github:issues/123").
 func isConnectorSource(sourceFile string) bool {
 	// Known connector provider prefixes
-	connectorPrefixes := []string{"github:", "gmail:", "calendar:", "drive:", "slack:", "discord:", "telegram:", "notion:"}
+	connectorPrefixes := []string{"github:", "gmail:", "calendar:", "drive:", "slack:", "discord:", "telegram:", "notion:", "obsidian:"}
 	lower := strings.ToLower(sourceFile)
 	for _, prefix := range connectorPrefixes {
 		if strings.HasPrefix(lower, prefix) {
@@ -1409,12 +1431,12 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 		return nil, nil
 	}
 
-	storeResults, err := e.store.SearchFTSWithProject(ctx, sanitized, opts.Limit, opts.Project)
+	storeResults, err := e.store.SearchFTSWithFilters(ctx, sanitized, opts.Limit, opts.Project, opts.Source)
 	if err != nil {
 		// If the query has bad FTS5 syntax, try a simpler fallback
 		if isFTSSyntaxError(err) {
 			escaped := escapeFTSQuery(query)
-			storeResults, err = e.store.SearchFTSWithProject(ctx, escaped, opts.Limit, opts.Project)
+			storeResults, err = e.store.SearchFTSWithFilters(ctx, escaped, opts.Limit, opts.Project, opts.Source)
 			if err != nil {
 				return nil, fmt.Errorf("search failed: %w", err)
 			}
@@ -1428,7 +1450,7 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 	if len(storeResults) == 0 && hasMultipleSearchTerms(sanitized) {
 		orQuery := buildORQuery(sanitized)
 		if orQuery != "" {
-			storeResults, err = e.store.SearchFTSWithProject(ctx, orQuery, opts.Limit, opts.Project)
+			storeResults, err = e.store.SearchFTSWithFilters(ctx, orQuery, opts.Limit, opts.Project, opts.Source)
 			if err != nil {
 				// OR fallback failed — not fatal, just return empty
 				storeResults = nil

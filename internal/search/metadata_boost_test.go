@@ -193,6 +193,7 @@ func TestIsConnectorSource(t *testing.T) {
 		{"discord:messages/456", true},
 		{"telegram:chats/789", true},
 		{"notion:pages/abc", true},
+		{"obsidian:notes/cortex.md", true},
 		{"memory/2026-02-23.md", false},
 		{"MEMORY.md", false},
 		{"/Users/q/notes.md", false},
