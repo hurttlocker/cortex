@@ -123,6 +123,8 @@ func main() {
 		exitWithError(runConnect(args[1:]))
 	case "init":
 		exitWithError(runInit(args[1:]))
+	case "demo":
+		exitWithError(runDemo(args[1:]))
 	case "doctor":
 		exitWithError(runDoctor(args[1:]))
 	case "completion":
@@ -8813,7 +8815,7 @@ func execCommand(name string, args ...string) error {
 
 // cortexCommands is the authoritative list of top-level commands for completion.
 var cortexCommands = []string{
-	"import", "reimport", "search", "query", "list", "export", "update",
+	"import", "reimport", "search", "query", "list", "export", "update", "demo",
 	"extract", "classify", "reinforce", "supersede", "fact-history",
 	"stats", "stale", "conflicts", "agents", "projects",
 	"graph", "cluster",
@@ -8902,6 +8904,7 @@ Memory:
   list                  List memories or facts
   export                Export memory store (json, markdown, csv)
   update <id>           Update a memory's content
+  demo                  Run a full 60-second demo on temp data
 
 Facts:
   extract <file>        Extract facts from a file (without importing)
