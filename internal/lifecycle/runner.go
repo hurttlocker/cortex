@@ -98,15 +98,22 @@ func (r *Runner) applyReinforcePromote(ctx context.Context, dryRun bool) ([]Acti
 	cfg := r.policies.ReinforcePromote
 	actions := []Action{}
 	rows, err := r.sqlite.GetDB().QueryContext(ctx, `
+		WITH source_counts AS (
+			SELECT LOWER(subject) AS lsub, LOWER(predicate) AS lpred, LOWER(object) AS lobj,
+			       COUNT(DISTINCT memory_id) AS source_count
+			FROM facts
+			WHERE superseded_by IS NULL
+			GROUP BY LOWER(subject), LOWER(predicate), LOWER(object)
+		)
 		SELECT f.id, f.state,
 		       COALESCE((SELECT COUNT(*) FROM fact_accesses_v1 a
 		                 WHERE a.fact_id = f.id AND a.access_type IN ('reinforce','reference','import')), 0) AS reinforcement_count,
-		       COALESCE((SELECT COUNT(DISTINCT f2.memory_id) FROM facts f2
-		                 WHERE f2.superseded_by IS NULL
-		                   AND LOWER(f2.subject) = LOWER(f.subject)
-		                   AND LOWER(f2.predicate) = LOWER(f.predicate)
-		                   AND LOWER(f2.object) = LOWER(f.object)), 0) AS source_count
+		       COALESCE(sc.source_count, 0) AS source_count
 		FROM facts f
+		LEFT JOIN source_counts sc
+		  ON LOWER(f.subject) = sc.lsub
+		 AND LOWER(f.predicate) = sc.lpred
+		 AND LOWER(f.object) = sc.lobj
 		WHERE f.superseded_by IS NULL AND LOWER(f.state) = 'active'`)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query reinforce-promote candidates: %w", err)
