@@ -32,16 +32,10 @@ This is a sufficiently long summary with context and operational detail so it is
 	}
 }
 
-func TestEnforceResponseQualityContract_Repairs(t *testing.T) {
-	out := enforceResponseQualityContract("brief", "test query")
-	for _, h := range []string{"## Summary", "## Evidence", "## Conflicts & Trade-offs", "## Next Actions"} {
-		if !strings.Contains(out, h) {
-			t.Fatalf("missing required header %s", h)
-		}
-	}
-	for _, label := range []string{"Priority:", "Owner:", "Timeline:", "Recommendation:", "Impact:"} {
-		if !strings.Contains(out, label) {
-			t.Fatalf("missing required label %s", label)
-		}
+func TestEnforceResponseQualityContract_LeavesModelOutputUntouched(t *testing.T) {
+	in := "brief"
+	out := enforceResponseQualityContract(in, "test query")
+	if strings.TrimSpace(out) != in {
+		t.Fatalf("expected output to remain unchanged, got %q", out)
 	}
 }
