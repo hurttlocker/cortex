@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.3] - 2026-03-05
+
+### 🩹 v1.2.3 — Reason Output Quality Patch
+
+- **Reason output passthrough** — removed hardcoded quality-contract boilerplate injection in `enforceResponseQualityContract()` so model output is preserved for downstream validation and fallback handling. (#299, #300)
+- **Testing updated** — reason quality contract tests now assert passthrough behavior instead of template rewrite.
+- **Operational impact** — prevents generic normalized digest text from masking real model behavior in workspace/weekly/compaction summaries.
+
 ## [1.2.2] - 2026-03-01
 
 ### 🎯 v1.2.2 — Distribution & Polish Sprint
