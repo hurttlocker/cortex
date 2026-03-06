@@ -507,6 +507,14 @@ func (s *SQLiteStore) GetAttributeConflictsLimitWithSuperseded(ctx context.Conte
 		prefixDenyClause = "AND " + strings.Join(prefixClauses, " AND ")
 	}
 
+	// Principled entity-length filter: subjects longer than entitySubjectMaxLen chars
+	// are almost never real entity names — they're document section titles or descriptive
+	// phrases. Filtering them here covers historical DB rows that predate the extraction
+	// governor's MaxSubjectLength=40 cap. This replaces the need to grow the ad-hoc
+	// subject denylist with ever-more specific titles.
+	const entitySubjectMaxLen = 40
+	entityLenClause := fmt.Sprintf("AND LENGTH(f.subject) <= %d", entitySubjectMaxLen)
+
 	pairQuery := fmt.Sprintf(`SELECT LOWER(f.subject), LOWER(f.predicate), COUNT(DISTINCT f.object) as obj_count
 		 FROM facts f
 		 JOIN memories m ON f.memory_id = m.id AND m.deleted_at IS NULL
@@ -516,10 +524,11 @@ func (s *SQLiteStore) GetAttributeConflictsLimitWithSuperseded(ctx context.Conte
 		   %s
 		   %s
 		   %s
+		   %s
 		 GROUP BY LOWER(f.subject), LOWER(f.predicate)
 		 HAVING COUNT(DISTINCT f.object) > 1
 		 ORDER BY obj_count DESC
-		 LIMIT ?`, supersededClause, denyClause, subjDenyClause, prefixDenyClause)
+		 LIMIT ?`, supersededClause, denyClause, subjDenyClause, prefixDenyClause, entityLenClause)
 
 	pairQueryArgs := append(append(append(denyArgs, subjArgs...), prefixArgs...), limit)
 	pairRows, err := s.db.QueryContext(ctx, pairQuery, pairQueryArgs...)

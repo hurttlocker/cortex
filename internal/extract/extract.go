@@ -112,8 +112,12 @@ func NewPipelineWithOptions(opts ...PipelineOption) *Pipeline {
 
 // MaxSubjectLength caps subjects to prevent section-header-as-subject noise.
 // Real entities (people, projects, tools) are short. Long subjects are almost
-// always section headers from conversation captures.
-const MaxSubjectLength = 50
+// always section headers or document titles, not entity names.
+// Lowered from 50 to 40 (pass 3): real entity names ("Q", "Cortex", "Spear",
+// "ORB Strategy") are all well under 40 chars. Document section titles like
+// "Email Security Framework & Spacemail Integration" (48 chars) are now truncated
+// at the first word boundary at or before 40 chars.
+const MaxSubjectLength = 40
 
 // timestampPrefixRE matches common timestamp prefixes at the start of section
 // headers, e.g. "11:27 PM ET — ...", "2026-02-20 16:28 ET — ...",

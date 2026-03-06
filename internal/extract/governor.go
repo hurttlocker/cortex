@@ -303,6 +303,16 @@ var timestampSubjectRE = regexp.MustCompile(
 		`)`,
 )
 
+// nlDateSubjectRE matches natural-language date subjects like "Feb 18, 2026",
+// "February 2026", "March 15, 2026". Both full and 3-letter abbreviated month
+// names are matched. These are section headers from date-stamped journal files,
+// not real entities, and should never be fact subjects.
+var nlDateSubjectRE = regexp.MustCompile(
+	`(?i)^(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|` +
+		`Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)` +
+		`(\s+\d{1,2},?)?\s+\d{4}\b`,
+)
+
 // isGenericSubject detects subjects that carry no useful signal.
 // Empty subjects are allowed (means source wasn't labeled, not necessarily noise).
 // Generic labels, timestamp-prefixed headers, and overly long subjects are dropped.
@@ -359,14 +369,24 @@ func isGenericSubject(subj string) bool {
 		return true
 	}
 
+	// Natural-language date subjects ("Feb 18, 2026", "March 2026") are date-stamped
+	// section headers from journals, not entity names.
+	if nlDateSubjectRE.MatchString(trimmed) {
+		return true
+	}
+
 	// Subjects containing emoji section markers are usually headers, not entities
 	if strings.ContainsAny(trimmed, "✅🚩📌🌙") && len(trimmed) > 30 {
 		return true
 	}
 
-	// Very long subjects (>50 chars) are almost certainly not real entities.
-	// Real entity names: "Q", "Cortex", "Spear", "SB", "ORB Strategy" — all short.
-	if len(trimmed) > 50 {
+	// Very long subjects (>40 chars) are almost certainly document section titles,
+	// not real entity names. Real entities: "Q", "Cortex", "Spear", "SB",
+	// "ORB Strategy" — all well under 40 chars.
+	// Lowered from 50 to 40 (pass 3): catches titles like
+	// "Email Security Framework & Spacemail Integration" (48 chars) that slipped
+	// through the old threshold.
+	if len(trimmed) > 40 {
 		return true
 	}
 

@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] - pass3-subject-semantics
+
+### Subject/context separation (pass 3)
+
+Three root-cause gaps produced ~400 residual conflict-noise facts even after pass 1+2 hardening. Each was caused by section headers or document titles being stored as fact subjects, then triggering false attribute conflicts against each other.
+
+**Root causes fixed:**
+
+- **Natural-language date subjects** — section headers like `"Feb 18, 2026"` or `"March 2026"` were used as entity subjects because `timestampSubjectRE` only caught ISO-format and clock-time prefixes. Added `nlDateSubjectRE` to `isGenericSubject()` matching both full and 3-letter abbreviated month names. Fixes live-DB example: `subject="Feb 18, 2026", predicate="memorysearch"`.
+
+- **Long document section titles** — subjects between 41–50 chars (like `"Email Security Framework & Spacemail Integration"` at 48 chars) slipped under the old 50-char `isGenericSubject` threshold. Lowered to 40 chars. Real entity names (`Q`, `Cortex`, `Spear`, `SB`, `ORB Strategy`) are all well under 40 chars. `MaxSubjectLength` constant also lowered from 50→40 so the extraction pipeline no longer produces subjects that would be caught by the governor.
+
+- **Conflict query lacks principled entity filter** — the ad-hoc subject denylist in `GetAttributeConflictsLimitWithSuperseded` was growing with specific section names. Replaced the growth pattern with a principled `LENGTH(f.subject) <= 40` clause. This filters historical DB rows that predate the governor fix without requiring a full DB reprocess.
+
+**Files changed:**
+- `internal/extract/governor.go` — `nlDateSubjectRE` var + `isGenericSubject` length threshold 50→40
+- `internal/extract/extract.go` — `MaxSubjectLength` constant 50→40
+- `internal/store/events.go` — `entitySubjectMaxLen=40` clause in conflict pair query
+- `internal/extract/governor_test.go` — 4 new pass 3 tests
+
+**Reprocess recommendation:** Targeted. Only facts with `LENGTH(subject) > 40` or subjects matching month-name date patterns need re-extraction. Full DB reprocess is not required — the conflict query now filters these facts at query time for existing data.
+
 ## [Unreleased] - trust-hardening-first-pass
 
 ### Signal quality hardening sprint

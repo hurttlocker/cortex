@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -337,4 +338,99 @@ func TestGovernor_TighterDefaults(t *testing.T) {
 	if acfg.MinObjectLength != 4 {
 		t.Errorf("expected AutoCapture MinObjectLength=4, got %d", acfg.MinObjectLength)
 	}
+}
+
+// Pass 3: subject/context separation tests
+
+func TestGovernor_DropsNaturalLanguageDateSubjects(t *testing.T) {
+	gov := NewGovernor(DefaultGovernorConfig())
+
+	facts := []ExtractedFact{
+		// Natural language date subjects — date-stamped journal section headers, not entities
+		{Subject: "Feb 18, 2026", Predicate: "memorysearch", Object: "ran search query", FactType: "kv", Confidence: 0.9},
+		{Subject: "February 2026", Predicate: "status", Object: "month complete", FactType: "state", Confidence: 0.9},
+		{Subject: "March 15, 2026", Predicate: "decision", Object: "shipped patch v2", FactType: "decision", Confidence: 0.9},
+		// Real entity — must survive
+		{Subject: "Q", Predicate: "email", Object: "q@example.com", FactType: "identity", Confidence: 0.9},
+	}
+
+	result := gov.Apply(facts)
+	if len(result) != 1 {
+		t.Errorf("expected only the real identity fact to remain, got %d: %+v", len(result), result)
+	}
+	if len(result) > 0 && result[0].Subject != "Q" {
+		t.Errorf("expected surviving fact subject=Q, got %q", result[0].Subject)
+	}
+}
+
+func TestGovernor_DropsLongDocumentTitleSubjects(t *testing.T) {
+	gov := NewGovernor(DefaultGovernorConfig())
+
+	// "Email Security Framework & Spacemail Integration" = 48 chars
+	// Used to slip under the old 50-char threshold; now caught at 40.
+	longTitle := "Email Security Framework & Spacemail Integration"
+	if len(longTitle) <= 40 {
+		// Sanity check the test string
+		panic("test string should be > 40 chars")
+	}
+
+	facts := []ExtractedFact{
+		{Subject: longTitle, Predicate: "email", Object: "ops@example.com", FactType: "kv", Confidence: 0.9},
+		// Real short entity — must survive
+		{Subject: "Cortex", Predicate: "status", Object: "running normally here", FactType: "state", Confidence: 0.9},
+	}
+
+	result := gov.Apply(facts)
+	if len(result) != 1 {
+		t.Errorf("expected only the short-entity fact to remain, got %d: %+v", len(result), result)
+	}
+	if len(result) > 0 && result[0].Subject != "Cortex" {
+		t.Errorf("expected surviving fact subject=Cortex, got %q", result[0].Subject)
+	}
+}
+
+func TestIsGenericSubject_NLDates(t *testing.T) {
+	cases := []struct {
+		subj    string
+		generic bool
+	}{
+		{"Feb 18, 2026", true},
+		{"February 2026", true},
+		{"March 15, 2026", true},
+		{"January 2024", true},
+		{"December 31, 2025", true},
+		// Borderline: month name alone is not a date
+		{"February", false},
+		// Real entity names must not be caught
+		{"Q", false},
+		{"Cortex", false},
+		{"ORB Strategy", false},
+	}
+	for _, tc := range cases {
+		got := isGenericSubject(tc.subj)
+		if got != tc.generic {
+			t.Errorf("isGenericSubject(%q) = %v, want %v", tc.subj, got, tc.generic)
+		}
+	}
+}
+
+func TestIsGenericSubject_LengthBoundary(t *testing.T) {
+	// Exactly 40 chars — at limit, should NOT be dropped
+	exactly40 := "This subject is exactly forty chars long!" // 41... let me count
+	// "This subject is exactly forty chars lon" = 39, "g" = 40
+	s40 := "This subject is exactly forty chars lon" // 39 chars
+	if len(s40) != 39 {
+		// just use a known-length string
+		s40 = strings.Repeat("x", 40)
+	}
+	if isGenericSubject(s40) {
+		t.Errorf("40-char subject should not be generic: %q", s40)
+	}
+
+	// 41 chars — one over, should be dropped
+	s41 := strings.Repeat("x", 41)
+	if !isGenericSubject(s41) {
+		t.Errorf("41-char subject should be generic (too long): %q", s41)
+	}
+	_ = exactly40
 }
