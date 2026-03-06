@@ -1408,10 +1408,10 @@ func runLifecycle(args []string) error {
 }
 
 type beliefsReport struct {
-	GeneratedAt string                 `json:"generated_at"`
-	Agent       string                 `json:"agent,omitempty"`
-	States      map[string]int64       `json:"states"`
-	Total       int64                  `json:"total"`
+	GeneratedAt string                   `json:"generated_at"`
+	Agent       string                   `json:"agent,omitempty"`
+	States      map[string]int64         `json:"states"`
+	Total       int64                    `json:"total"`
 	Policies    cfgresolver.PolicyConfig `json:"policies"`
 }
 
