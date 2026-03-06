@@ -389,6 +389,45 @@ func (s *SQLiteStore) GetAttributeConflictsLimit(ctx context.Context, limit int)
 	return s.GetAttributeConflictsLimitWithSuperseded(ctx, limit, false)
 }
 
+// multivaluedPredicateDenylist contains predicates that are inherently multi-valued
+// (append-only / accumulate-by-design) and should never be flagged as attribute conflicts.
+// These predicates represent reinforcing evidence, tags, or references — not single-valued
+// attributes where two values would genuinely contradict each other.
+var multivaluedPredicateDenylist = []string{
+	"reinforce",
+	"reinforced",
+	"reinforces",
+	"references",
+	"referenced by",
+	"tagged",
+	"tagged as",
+	"has tag",
+	"tag",
+	"cited by",
+	"cites",
+	"related to",
+	"supports",
+	"corroborates",
+	"http",
+	"https",
+	"url",
+	"urls",
+	"link",
+	"links",
+}
+
+// IsMultivaluedPredicate returns true if the predicate is known to be multi-valued
+// and should not trigger attribute-conflict detection.
+func IsMultivaluedPredicate(predicate string) bool {
+	p := strings.ToLower(strings.TrimSpace(predicate))
+	for _, deny := range multivaluedPredicateDenylist {
+		if p == deny {
+			return true
+		}
+	}
+	return false
+}
+
 // GetAttributeConflictsLimitWithSuperseded includes superseded facts when requested.
 func (s *SQLiteStore) GetAttributeConflictsLimitWithSuperseded(ctx context.Context, limit int, includeSuperseded bool) ([]Conflict, error) {
 	if limit <= 0 {
@@ -400,18 +439,30 @@ func (s *SQLiteStore) GetAttributeConflictsLimitWithSuperseded(ctx context.Conte
 		supersededClause = ""
 	}
 
+	// Build a SQL exclusion clause for known multi-valued predicates.
+	// This avoids flagging append-only facts (e.g. "reinforce", "references") as conflicts.
+	denyPlaceholders := make([]string, len(multivaluedPredicateDenylist))
+	denyArgs := make([]any, len(multivaluedPredicateDenylist))
+	for i, p := range multivaluedPredicateDenylist {
+		denyPlaceholders[i] = "?"
+		denyArgs[i] = p
+	}
+	denyClause := fmt.Sprintf("AND LOWER(f.predicate) NOT IN (%s)", strings.Join(denyPlaceholders, ","))
+
 	pairQuery := fmt.Sprintf(`SELECT LOWER(f.subject), LOWER(f.predicate), COUNT(DISTINCT f.object) as obj_count
 		 FROM facts f
 		 JOIN memories m ON f.memory_id = m.id AND m.deleted_at IS NULL
 		 WHERE f.subject != '' AND f.subject IS NOT NULL
 		   AND f.confidence > 0
 		   %s
+		   %s
 		 GROUP BY LOWER(f.subject), LOWER(f.predicate)
 		 HAVING COUNT(DISTINCT f.object) > 1
 		 ORDER BY obj_count DESC
-		 LIMIT ?`, supersededClause)
+		 LIMIT ?`, supersededClause, denyClause)
 
-	pairRows, err := s.db.QueryContext(ctx, pairQuery, limit)
+	pairQueryArgs := append(denyArgs, limit)
+	pairRows, err := s.db.QueryContext(ctx, pairQuery, pairQueryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("finding conflicting pairs: %w", err)
 	}

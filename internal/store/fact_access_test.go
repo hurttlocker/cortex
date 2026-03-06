@@ -265,3 +265,94 @@ func TestGetAttributeConflictsCrossAgent(t *testing.T) {
 		t.Fatal("Expected cross_agent=true")
 	}
 }
+
+// TestGetAttributeConflicts_MultiValuedPredicatesSuppressed verifies that
+// predicates like "reinforce" and "references" (which are append-only by design)
+// are not flagged as attribute conflicts even when multiple distinct objects exist.
+func TestGetAttributeConflicts_MultiValuedPredicatesSuppressed(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	m1, _ := s.AddMemory(ctx, &Memory{Content: "session 1", SourceFile: "a.md"})
+	m2, _ := s.AddMemory(ctx, &Memory{Content: "session 2", SourceFile: "b.md"})
+
+	// "reinforce" with different objects — should NOT be a conflict.
+	s.AddFact(ctx, &Fact{MemoryID: m1, Subject: "user", Predicate: "reinforce", Object: "goal A", FactType: "state", Confidence: 0.8})
+	s.AddFact(ctx, &Fact{MemoryID: m2, Subject: "user", Predicate: "reinforce", Object: "goal B", FactType: "state", Confidence: 0.8})
+
+	// "references" with different objects — should NOT be a conflict.
+	s.AddFact(ctx, &Fact{MemoryID: m1, Subject: "doc", Predicate: "references", Object: "RFC 1234", FactType: "kv", Confidence: 0.9})
+	s.AddFact(ctx, &Fact{MemoryID: m2, Subject: "doc", Predicate: "references", Object: "RFC 5678", FactType: "kv", Confidence: 0.9})
+
+	// URL-ish predicates often show up from noisy extraction and should not be
+	// treated as single-valued attribute conflicts either.
+	s.AddFact(ctx, &Fact{MemoryID: m1, Subject: "doc", Predicate: "https", Object: "https://example.com/a", FactType: "kv", Confidence: 0.9})
+	s.AddFact(ctx, &Fact{MemoryID: m2, Subject: "doc", Predicate: "https", Object: "https://example.com/b", FactType: "kv", Confidence: 0.9})
+
+	// A real single-valued conflict (same subject+predicate, different objects).
+	s.AddFact(ctx, &Fact{MemoryID: m1, Subject: "user", Predicate: "email", Object: "old@example.com", FactType: "identity", Confidence: 0.7})
+	s.AddFact(ctx, &Fact{MemoryID: m2, Subject: "user", Predicate: "email", Object: "new@example.com", FactType: "identity", Confidence: 0.9})
+
+	conflicts, err := s.GetAttributeConflicts(ctx)
+	if err != nil {
+		t.Fatalf("GetAttributeConflicts: %v", err)
+	}
+
+	// Only the email conflict should be returned.
+	for _, c := range conflicts {
+		if c.Fact1.Predicate == "reinforce" || c.Fact2.Predicate == "reinforce" {
+			t.Errorf("reinforce predicate should not produce a conflict, got: %+v", c)
+		}
+		if c.Fact1.Predicate == "references" || c.Fact2.Predicate == "references" {
+			t.Errorf("references predicate should not produce a conflict, got: %+v", c)
+		}
+		if c.Fact1.Predicate == "https" || c.Fact2.Predicate == "https" {
+			t.Errorf("https predicate should not produce a conflict, got: %+v", c)
+		}
+	}
+	if len(conflicts) == 0 {
+		t.Fatal("Expected at least 1 real conflict (email), got 0")
+	}
+	hasEmail := false
+	for _, c := range conflicts {
+		if c.Fact1.Predicate == "email" || c.Fact2.Predicate == "email" {
+			hasEmail = true
+		}
+	}
+	if !hasEmail {
+		t.Fatalf("Expected email conflict to be present; got: %+v", conflicts)
+	}
+}
+
+// TestIsMultivaluedPredicate verifies the denylist helper.
+func TestIsMultivaluedPredicate(t *testing.T) {
+	cases := []struct {
+		predicate string
+		want      bool
+	}{
+		{"reinforce", true},
+		{"Reinforce", true},
+		{"  reinforce  ", true},
+		{"reinforced", true},
+		{"references", true},
+		{"tagged", true},
+		{"tagged as", true},
+		{"has tag", true},
+		{"tag", true},
+		{"https", true},
+		{"http", true},
+		{"url", true},
+		{"links", true},
+		{"email", false},
+		{"status", false},
+		{"engine", false},
+		{"location", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		got := IsMultivaluedPredicate(tc.predicate)
+		if got != tc.want {
+			t.Errorf("IsMultivaluedPredicate(%q) = %v, want %v", tc.predicate, got, tc.want)
+		}
+	}
+}

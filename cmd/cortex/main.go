@@ -906,10 +906,29 @@ func runSearch(args []string) error {
 	}
 	defer s.Close()
 
-	// Create search engine with optional embedder
+	// Create search engine with optional embedder.
+	// For hybrid/rrf/semantic modes, auto-resolve embedder from config/env when
+	// --embed is not explicitly provided so the smartest mode works by default.
 	var engine *search.Engine
-	if embedFlag != "" {
-		// Configure embedder
+	embedExplicit := embedFlag != ""
+	if !embedExplicit && (searchMode == search.ModeHybrid || searchMode == search.ModeRRF || searchMode == search.ModeSemantic) {
+		// Attempt auto-resolution from config/env; errors here are non-fatal.
+		if autoConfig, autoErr := embed.ResolveEmbedConfig(""); autoErr == nil && autoConfig != nil {
+			if autoConfig.Validate() == nil {
+				if embedder, clientErr := embed.NewClient(autoConfig); clientErr == nil {
+					engine = search.NewEngineWithEmbedder(s, embedder)
+					hnswPath := getHNSWPath()
+					if count, err := engine.LoadOrBuildHNSW(context.Background(), hnswPath, 3600); err == nil && count > 0 {
+						if globalVerbose {
+							fmt.Fprintf(os.Stderr, "  HNSW index: %d vectors loaded (auto-resolved from config)\n", count)
+						}
+					}
+				}
+			}
+		}
+	}
+	if engine == nil && embedExplicit {
+		// --embed was explicitly provided: use it and surface errors.
 		embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
 		if err != nil {
 			return fmt.Errorf("configuring embedder: %w", err)
@@ -935,7 +954,8 @@ func runSearch(args []string) error {
 				fmt.Fprintf(os.Stderr, "  HNSW index: %d vectors loaded\n", count)
 			}
 		}
-	} else {
+	}
+	if engine == nil {
 		engine = search.NewEngine(s)
 	}
 
@@ -1382,6 +1402,26 @@ func runLifecycle(args []string) error {
 		report.PolicyRuns.DecayRetire,
 		report.PolicyRuns.ConflictSupersede,
 	)
+
+	// Show per-policy skip stats so operators can diagnose zero-action runs.
+	printSkipStats := func(name string, ss lifecycle.PolicySkipStats) {
+		if ss.Scanned == 0 {
+			return
+		}
+		fmt.Printf("  %s: scanned=%d acted=%d skipped=%d", name, ss.Scanned, ss.Acted, ss.Skipped)
+		if len(ss.SkipReasons) > 0 {
+			reasons := make([]string, 0, len(ss.SkipReasons))
+			for k, v := range ss.SkipReasons {
+				reasons = append(reasons, fmt.Sprintf("%s=%d", k, v))
+			}
+			fmt.Printf(" [%s]", strings.Join(reasons, " "))
+		}
+		fmt.Println()
+	}
+	printSkipStats("reinforce-promote", report.SkipStats.ReinforcePromote)
+	printSkipStats("decay-retire", report.SkipStats.DecayRetire)
+	printSkipStats("conflict-supersede", report.SkipStats.ConflictSupersede)
+
 	show := len(report.Actions)
 	if show > 20 {
 		show = 20
@@ -8625,6 +8665,25 @@ func runDoctorChecks() doctorReport {
 				Status:  "warn",
 				Details: "llm_provider not resolved",
 				Hint:    "Set llm.provider in ~/.cortex/config.yaml, CORTEX_LLM, or --llm.",
+			})
+		}
+
+		if embedProvider := strings.TrimSpace(resolvedCfg.EmbedProvider.Value); embedProvider != "" {
+			from := strings.TrimSpace(resolvedCfg.EmbedProvider.From)
+			if from == "" {
+				from = string(resolvedCfg.EmbedProvider.Source)
+			}
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "embed_config",
+				Status:  "pass",
+				Details: fmt.Sprintf("embed_provider: %s (from: %s)", embedProvider, from),
+			})
+		} else if stats != nil && stats.EmbeddingCount > 0 {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "embed_config",
+				Status:  "warn",
+				Details: "embeddings exist, but no embed provider is configured for new query embeddings",
+				Hint:    "Set embed.provider in ~/.cortex/config.yaml or CORTEX_EMBED (for example ollama/nomic-embed-text) so hybrid/semantic search can use the stored vectors.",
 			})
 		}
 	}
