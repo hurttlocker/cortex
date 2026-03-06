@@ -107,6 +107,8 @@ func main() {
 		exitWithError(runUpdate(args[1:]))
 	case "reimport":
 		exitWithError(runReimport(args[1:]))
+	case "refresh-source":
+		exitWithError(runRefreshSource(args[1:]))
 	case "cleanup":
 		exitWithError(runCleanup(args[1:]))
 	case "optimize":
@@ -4621,6 +4623,252 @@ func runReimport(args []string) error {
 	return nil
 }
 
+// runRefreshSource removes all memories/facts for a single source file and reimports it
+// using the current extraction pipeline. Unlike `reimport`, it is narrowly scoped to
+// exactly one file and does NOT touch the rest of the database.
+func runRefreshSource(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex refresh-source <path> [--dry-run] [--extract] [--no-enrich] [--no-classify] [--embed <model>] [--llm <model>] [--force]")
+	}
+
+	var path string
+	dryRun := false
+	enableExtraction := false
+	noEnrich := false
+	noClassify := false
+	embedFlag := ""
+	llmFlag := ""
+	force := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--dry-run" || args[i] == "-n":
+			dryRun = true
+		case args[i] == "--extract":
+			enableExtraction = true
+		case args[i] == "--no-enrich":
+			noEnrich = true
+		case args[i] == "--no-classify":
+			noClassify = true
+		case args[i] == "--embed" && i+1 < len(args):
+			i++
+			embedFlag = args[i]
+		case strings.HasPrefix(args[i], "--embed="):
+			embedFlag = strings.TrimPrefix(args[i], "--embed=")
+		case args[i] == "--llm" && i+1 < len(args):
+			i++
+			llmFlag = args[i]
+		case strings.HasPrefix(args[i], "--llm="):
+			llmFlag = strings.TrimPrefix(args[i], "--llm=")
+		case args[i] == "--force" || args[i] == "-f":
+			force = true
+		case args[i] == "--help" || args[i] == "-h":
+			fmt.Print(`cortex refresh-source — Safely refresh a single source file
+
+Removes all memories and facts derived from the given file, then reimports
+it using the current extraction pipeline. Only the specified file is touched;
+the rest of the database is left intact.
+
+Unlike ` + "`cortex reimport`" + `, this command is scoped to a single file and
+does not wipe or rebuild the database.
+
+Usage:
+  cortex refresh-source <path> [flags]
+
+Flags:
+  --dry-run, -n        Preview what would be removed/imported, no writes
+  --extract            Run fact extraction on newly imported memories
+  --no-enrich          Skip LLM enrichment (only with --extract)
+  --no-classify        Skip fact classification (only with --extract)
+  --embed <model>      Generate embeddings for new memories
+  --llm <model>        LLM for extraction/enrichment
+  --force, -f          Skip confirmation prompt
+
+Examples:
+  cortex refresh-source /path/to/memory/2026-01-28.md
+  cortex refresh-source /path/to/memory/2026-01-28.md --dry-run
+  cortex refresh-source /path/to/memory/2026-01-28.md --extract --force
+`)
+			return nil
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		default:
+			if path != "" {
+				return fmt.Errorf("refresh-source accepts exactly one file path; got extra argument: %s", args[i])
+			}
+			path = args[i]
+		}
+	}
+
+	if path == "" {
+		return fmt.Errorf("no path specified")
+	}
+
+	// Resolve to absolute path (this is how source_file is stored in the DB)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolving path: %w", err)
+	}
+
+	// Fail clearly if the file is missing — we refuse to operate on ghosts
+	if _, statErr := os.Stat(absPath); os.IsNotExist(statErr) {
+		return fmt.Errorf("source file not found: %s\n(refresh-source will not purge a file that no longer exists on disk; use `cortex cleanup` for orphaned memories)", absPath)
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Query existing memories for this source — for reporting and confirmation
+	existing, err := s.ListMemories(ctx, store.ListOpts{SourceFile: absPath, Limit: 100000})
+	if err != nil {
+		return fmt.Errorf("querying existing memories: %w", err)
+	}
+
+	// Count associated facts for the report
+	var existingFactCount int64
+	if len(existing) > 0 {
+		memIDs := make([]int64, len(existing))
+		for i, m := range existing {
+			memIDs[i] = m.ID
+		}
+		existingFacts, err := s.GetFactsByMemoryIDs(ctx, memIDs)
+		if err != nil {
+			return fmt.Errorf("querying existing facts: %w", err)
+		}
+		existingFactCount = int64(len(existingFacts))
+	}
+
+	fmt.Printf("Source: %s\n", absPath)
+	fmt.Printf("  Existing memories : %d\n", len(existing))
+	fmt.Printf("  Existing facts    : %d\n", existingFactCount)
+
+	if dryRun {
+		fmt.Println("\n[dry-run] No changes made.")
+		fmt.Println("  Would remove the memories/facts above and reimport from disk.")
+		return nil
+	}
+
+	// Confirmation prompt when there are existing memories and --force not set
+	if !force && len(existing) > 0 {
+		fmt.Printf("\nThis will remove %d memories and %d facts for this source, then reimport.\n", len(existing), existingFactCount)
+		fmt.Print("Continue? [y/N] ")
+		var answer string
+		fmt.Scanln(&answer)
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Println("Aborted.")
+			return nil
+		}
+	}
+
+	// Step 1: Remove existing memories + facts for this source
+	fmt.Printf("\nStep 1/3: Removing existing memories for source...\n")
+	removed, err := s.DeleteMemoriesBySourceFile(ctx, absPath)
+	if err != nil {
+		return fmt.Errorf("removing memories for source: %w", err)
+	}
+	fmt.Printf("  ✓ Removed %d memories (%d facts)\n", removed, existingFactCount)
+
+	// Step 2: Reimport from disk
+	fmt.Println("Step 2/3: Reimporting from disk...")
+	engine := ingest.NewEngine(s)
+	opts := ingest.ImportOptions{
+		ProgressFn: func(current, total int, file string) {
+			fmt.Printf("  [%d/%d] %s\n", current, total, file)
+		},
+	}
+
+	result, err := engine.ImportFile(ctx, absPath, opts)
+	if err != nil {
+		return fmt.Errorf("reimporting %s: %w", absPath, err)
+	}
+	fmt.Printf("  ✓ Imported %d new memories (%d unchanged)\n", result.MemoriesNew, result.MemoriesUnchanged)
+
+	// Run extraction if requested
+	if enableExtraction && result.MemoriesNew > 0 {
+		fmt.Println("  Extracting facts...")
+		extractionStats, err := runExtractionOnImportedMemories(ctx, s, llmFlag, result.NewMemoryIDs, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Extraction error: %v\n", err)
+		} else {
+			fmt.Printf("  ✓ Extracted %d facts\n", extractionStats.FactsExtracted)
+		}
+
+		if !noEnrich {
+			enrichLLM := llmFlag
+			if enrichLLM == "" {
+				if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+					enrichLLM = resolvedCfg.EffectiveLLMModel("enrich", extract.DefaultEnrichModel).Value
+				}
+				if enrichLLM == "" {
+					enrichLLM = extract.DefaultEnrichModel
+				}
+			}
+			if _, err := tryCreateProvider(enrichLLM); err != nil {
+				fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key). Pass --no-enrich to silence this.\n")
+			} else {
+				fmt.Println("  Running LLM enrichment...")
+				enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM, result.NewMemoryIDs)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  Enrichment error: %v\n", err)
+				} else if enrichStats.NewFacts > 0 {
+					fmt.Printf("  🧠 Enrichment: +%d new facts from LLM\n", enrichStats.NewFacts)
+				}
+			}
+		}
+
+		if !noClassify && !noEnrich {
+			classifyLLM := llmFlag
+			if classifyLLM == "" {
+				if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+					classifyLLM = resolvedCfg.EffectiveLLMModel("classify", extract.DefaultClassifyModel).Value
+				}
+				if classifyLLM == "" {
+					classifyLLM = extract.DefaultClassifyModel
+				}
+			}
+			if _, err := tryCreateProvider(classifyLLM); err != nil {
+				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key). Pass --no-classify to silence this.\n")
+			} else {
+				fmt.Println("  Classifying facts...")
+				classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM, result.NewMemoryIDs)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  Classification error: %v\n", err)
+				} else if classifyStats.Reclassified > 0 {
+					fmt.Printf("  🏷️  Classified: %d/%d kv facts reclassified\n",
+						classifyStats.Reclassified, classifyStats.Total)
+				}
+			}
+		}
+	}
+
+	// Step 3: Embed
+	if embedFlag != "" && result.MemoriesNew > 0 {
+		fmt.Println("Step 3/3: Generating embeddings...")
+		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag)
+		if err != nil {
+			return fmt.Errorf("embedding error: %w", err)
+		}
+		fmt.Printf("  ✓ Generated %d embeddings\n", embedStats.EmbeddingsAdded)
+		if embedStats.HNSWRebuilt {
+			fmt.Printf("  ✓ Rebuilt HNSW index (%d vectors)\n", embedStats.HNSWVectorCount)
+		}
+	} else if embedFlag == "" {
+		fmt.Println("Step 3/3: Skipped (no --embed flag)")
+	} else {
+		fmt.Println("Step 3/3: Skipped (no new memories)")
+	}
+
+	fmt.Printf("\n✅ Refresh complete: removed %d old, imported %d new memories from %s\n",
+		removed, result.MemoriesNew, filepath.Base(absPath))
+	return nil
+}
+
 func runOptimize(args []string) error {
 	jsonOutput := false
 	checkOnly := false
@@ -9108,7 +9356,7 @@ func execCommand(name string, args ...string) error {
 
 // cortexCommands is the authoritative list of top-level commands for completion.
 var cortexCommands = []string{
-	"import", "reimport", "search", "query", "list", "export", "update", "demo",
+	"import", "reimport", "refresh-source", "search", "query", "list", "export", "update", "demo",
 	"extract", "classify", "reinforce", "supersede", "fact-history",
 	"stats", "stale", "conflicts", "agents", "projects",
 	"graph", "cluster",
@@ -9190,6 +9438,7 @@ Usage:
 Memory:
   import <path>         Import memories from files or directories
   reimport <path>       Wipe database and reimport from scratch
+  refresh-source <path> Refresh one source file without touching the rest of the DB
   search <query>        Search memories (keyword, semantic, hybrid, or rrf)
   query                 Filter facts by metadata (--where clauses)
   answer <query>        Search + synthesize short answer with citations

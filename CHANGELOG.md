@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased] - safe-source-refresh
+
+### Safe per-source refresh path
+
+- **`cortex refresh-source <path>`** — New command that safely refreshes a single source file without touching the rest of the database. Finds all memories derived from the given file, removes their facts (hard-delete) and soft-deletes the memories, then reimports the file from disk using the current extraction pipeline. Supports `--dry-run`, `--extract`, `--no-enrich`, `--no-classify`, `--embed`, `--llm`, and `--force`.
+- **`store.DeleteMemoriesBySourceFile`** — New store method that soft-deletes all active memories for a given `source_file` and hard-deletes their associated facts atomically per-memory. Returns the count of memories removed. Calling on an already-purged or unknown source is safe (returns 0).
+- **Reimport unblocked** — Because memories are soft-deleted (not hard-deleted), `FindByHash` (which filters `WHERE deleted_at IS NULL`) no longer sees the old records, so the re-import of unchanged content produces fresh memory rows without hash-collision skips.
+
+**Files changed:**
+- `internal/store/memory.go` — `DeleteMemoriesBySourceFile` implementation
+- `internal/store/store.go` — Store interface extended with `DeleteMemoriesBySourceFile`
+- `internal/store/refresh_test.go` — Two tests: basic isolation and reimportability
+- `cmd/cortex/main.go` — `runRefreshSource` handler, switch registration, help text, command list
+
 ## [Unreleased] - pass3-subject-semantics
 
 ### Subject/context separation (pass 3)
