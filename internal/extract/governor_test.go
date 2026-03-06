@@ -239,6 +239,39 @@ func TestGovernor_BoldSubjects(t *testing.T) {
 	}
 }
 
+func TestGovernor_DropsURLSchemeAndSessionMetadata(t *testing.T) {
+	gov := NewGovernor(DefaultGovernorConfig())
+
+	facts := []ExtractedFact{
+		{Subject: "links", Predicate: "https", Object: "//example.com/a", FactType: "kv", Confidence: 0.9},
+		{Subject: "session", Predicate: "session id", Object: "abc123", FactType: "kv", Confidence: 0.9},
+		{Subject: "Cortex", Predicate: "status", Object: "healthy", FactType: "state", Confidence: 0.9},
+	}
+
+	result := gov.Apply(facts)
+	if len(result) != 1 {
+		t.Errorf("expected only the real state fact to remain, got %d: %+v", len(result), result)
+	}
+	if len(result) > 0 && result[0].Predicate != "status" {
+		t.Errorf("expected predicate status, got %q", result[0].Predicate)
+	}
+}
+
+func TestGovernor_DropsGenericBucketSubjects(t *testing.T) {
+	gov := NewGovernor(DefaultGovernorConfig())
+
+	facts := []ExtractedFact{
+		{Subject: "COMPLETED TODAY", Predicate: "mister", Object: "shipped patch", FactType: "kv", Confidence: 0.9},
+		{Subject: "System Health", Predicate: "launchd", Object: "14 services running", FactType: "state", Confidence: 0.9},
+		{Subject: "Q", Predicate: "email", Object: "q@example.com", FactType: "identity", Confidence: 0.9},
+	}
+
+	result := gov.Apply(facts)
+	if len(result) != 1 {
+		t.Errorf("expected only the real identity fact to remain, got %d: %+v", len(result), result)
+	}
+}
+
 func TestGovernor_FilePathPredicates(t *testing.T) {
 	gov := NewGovernor(DefaultGovernorConfig())
 

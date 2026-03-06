@@ -189,9 +189,14 @@ func normalizeSubject(raw string, isCapture bool) string {
 	s = timestampPrefixRE.ReplaceAllString(s, "")
 	s = strings.TrimSpace(s)
 
-	// Strip trailing "> subsection" fragments
-	s = sectionTrailRE.ReplaceAllString(s, "")
-	s = strings.TrimSpace(s)
+	// Strip trailing "> subsection" fragments only for auto-capture subjects.
+	// Structured markdown uses hierarchical section paths intentionally
+	// (e.g. "Completed Today > Trading Systems") and collapsing them creates
+	// overly generic subjects that amplify conflict noise.
+	if isCapture {
+		s = sectionTrailRE.ReplaceAllString(s, "")
+		s = strings.TrimSpace(s)
+	}
 
 	// Strip parenthesized time ranges and dates
 	s = parenthesizedTimeRE.ReplaceAllString(s, "")
@@ -689,6 +694,17 @@ func shouldSkipKVExtraction(patternName, key, value, sourceLine string, autoCapt
 
 	k := normalizeKVKeyForFilter(keyTrim)
 	if k == "" {
+		return true
+	}
+
+	// Drop URL scheme keys and transport/envelope metadata globally.
+	// These are provenance wrappers, not durable memory facts.
+	switch k {
+	case "http", "https", "url", "urls", "link", "links",
+		"sessionid", "sessionkey", "senderid", "messageid",
+		"channel", "username", "label", "tag", "currenttime",
+		"isgroupchat", "groupsubject", "groupchannel", "groupspace",
+		"assistant", "user", "system":
 		return true
 	}
 

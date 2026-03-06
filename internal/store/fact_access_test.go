@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -325,6 +326,42 @@ func TestGetAttributeConflicts_MultiValuedPredicatesSuppressed(t *testing.T) {
 }
 
 // TestIsMultivaluedPredicate verifies the denylist helper.
+func TestGetAttributeConflicts_GenericBucketSubjectsSuppressed(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	m1, _ := s.AddMemory(ctx, &Memory{Content: "standup 1", SourceFile: "a.md"})
+	m2, _ := s.AddMemory(ctx, &Memory{Content: "standup 2", SourceFile: "b.md"})
+
+	// Generic bucket subject should not produce conflicts.
+	s.AddFact(ctx, &Fact{MemoryID: m1, Subject: "COMPLETED TODAY", Predicate: "mister", Object: "shipped patch", FactType: "kv", Confidence: 0.9})
+	s.AddFact(ctx, &Fact{MemoryID: m2, Subject: "COMPLETED TODAY", Predicate: "mister", Object: "fixed alert noise", FactType: "kv", Confidence: 0.9})
+
+	// Hierarchical bucket subject should also be suppressed.
+	s.AddFact(ctx, &Fact{MemoryID: m1, Subject: "COMPLETED TODAY > Trading Systems", Predicate: "mister", Object: "hardened auth", FactType: "config", Confidence: 0.9})
+	s.AddFact(ctx, &Fact{MemoryID: m2, Subject: "COMPLETED TODAY > Trading Systems", Predicate: "mister", Object: "added loss lock", FactType: "config", Confidence: 0.9})
+
+	// Real conflict should still surface.
+	s.AddFact(ctx, &Fact{MemoryID: m1, Subject: "db", Predicate: "engine", Object: "sqlite", FactType: "config", Confidence: 0.8})
+	s.AddFact(ctx, &Fact{MemoryID: m2, Subject: "db", Predicate: "engine", Object: "postgres", FactType: "config", Confidence: 0.9})
+
+	conflicts, err := s.GetAttributeConflicts(ctx)
+	if err != nil {
+		t.Fatalf("GetAttributeConflicts: %v", err)
+	}
+	for _, c := range conflicts {
+		if strings.EqualFold(c.Fact1.Subject, "COMPLETED TODAY") || strings.EqualFold(c.Fact2.Subject, "COMPLETED TODAY") {
+			t.Fatalf("generic bucket subject should not produce conflict: %+v", c)
+		}
+		if strings.Contains(strings.ToLower(c.Fact1.Subject), "completed today >") || strings.Contains(strings.ToLower(c.Fact2.Subject), "completed today >") {
+			t.Fatalf("hierarchical bucket subject should not produce conflict: %+v", c)
+		}
+	}
+	if len(conflicts) != 1 {
+		t.Fatalf("expected only the real db engine conflict, got %d: %+v", len(conflicts), conflicts)
+	}
+}
+
 func TestIsMultivaluedPredicate(t *testing.T) {
 	cases := []struct {
 		predicate string
@@ -343,6 +380,9 @@ func TestIsMultivaluedPredicate(t *testing.T) {
 		{"http", true},
 		{"url", true},
 		{"links", true},
+		{"timestamp", true},
+		{"session id", true},
+		{"assistant", true},
 		{"email", false},
 		{"status", false},
 		{"engine", false},

@@ -177,14 +177,18 @@ func (g *Governor) isNoise(f ExtractedFact) bool {
 	// Generic regex-extracted predicates that aren't real facts.
 	// Note: "email" and "phone" are kept — they're valid in KV pairs like "Email: test@example.com"
 	noisePredicates := map[string]bool{
-		"amount": true, "url": true, "date": true, "value": true,
+		"amount": true, "url": true, "urls": true, "date": true, "value": true,
+		"http": true, "https": true, "link": true, "links": true,
+		"session id": true, "session key": true, "message id": true, "sender_id": true,
+		"current time": true, "group subject": true, "group channel": true,
+		"assistant": true, "user": true, "system": true,
 	}
 	if noisePredicates[predLower] {
 		return true
 	}
 
 	// URLs as objects (http links aren't facts — they're references)
-	if strings.HasPrefix(objLower, "http://") || strings.HasPrefix(objLower, "https://") {
+	if strings.HasPrefix(objLower, "http://") || strings.HasPrefix(objLower, "https://") || strings.HasPrefix(objLower, "//") {
 		return true
 	}
 
@@ -325,6 +329,14 @@ func isGenericSubject(subj string) bool {
 		"assistant",
 		"user",
 		"system",
+		"completed today",
+		"in progress",
+		"blocked",
+		"stats",
+		"system health",
+		"notes",
+		"active projects",
+		"major technical outcomes",
 	}
 	for _, g := range generic {
 		if lower == g {

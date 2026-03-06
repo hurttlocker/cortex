@@ -206,14 +206,14 @@ func TestExtractKeyValues_AutoCaptureSkipsSimpleColonNoise(t *testing.T) {
 
 func TestExtractKeyValues_NonAutoCaptureKeepsSimpleColon(t *testing.T) {
 	pipeline := NewPipeline()
-	text := "Current time: Saturday, February 14th"
+	text := "Milestone: ship phase 2"
 
 	facts := pipeline.extractKeyValues(text, map[string]string{"source_file": "memory/2026-02-20.md"})
 	if len(facts) != 1 {
 		t.Fatalf("Expected 1 fact for non-auto-capture simple colon, got %d", len(facts))
 	}
-	if facts[0].Predicate != "current time" {
-		t.Fatalf("Expected predicate 'current time', got %q", facts[0].Predicate)
+	if facts[0].Predicate != "milestone" {
+		t.Fatalf("Expected predicate 'milestone', got %q", facts[0].Predicate)
 	}
 }
 
@@ -301,6 +301,36 @@ Current time: Saturday, February 14th, 2026 — 9:04 PM
 	}
 	if !foundDecision {
 		t.Fatalf("expected decision fact to survive scaffold stripping, got facts=%+v", facts)
+	}
+}
+
+func TestNormalizeSubject_PreservesStructuredHierarchy(t *testing.T) {
+	subj := normalizeSubject("COMPLETED TODAY > Trading Systems", false)
+	if subj != "COMPLETED TODAY > Trading Systems" {
+		t.Fatalf("expected structured hierarchy preserved, got %q", subj)
+	}
+}
+
+func TestNormalizeSubject_CollapsesAutoCaptureHierarchy(t *testing.T) {
+	subj := normalizeSubject("Conversation Capture > Assistant", true)
+	if subj != "Assistant" && subj != "" {
+		// normalizeSubject strips the prefix first, then collapses nested capture paths.
+		t.Fatalf("expected auto-capture hierarchy collapsed, got %q", subj)
+	}
+}
+
+func TestExtractKeyValues_SkipsURLSchemeAndEnvelopeKeys(t *testing.T) {
+	pipeline := NewPipeline()
+	text := `https: //example.com/a
+Session ID: abc123
+Decision: ship phase 2`
+
+	facts := pipeline.extractKeyValues(text, map[string]string{"source_file": "memory/2026-03-06.md"})
+	if len(facts) != 1 {
+		t.Fatalf("expected only the real decision fact to remain, got %d facts: %+v", len(facts), facts)
+	}
+	if facts[0].Predicate != "decision" {
+		t.Fatalf("expected decision predicate, got %q", facts[0].Predicate)
 	}
 }
 

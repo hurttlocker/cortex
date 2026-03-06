@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file.
 
 - **Hybrid search auto-embedder** — `--mode hybrid|rrf|semantic` now automatically resolves the embedder from `embed.provider` in `config.yaml` or `CORTEX_EMBED` env var when `--embed` is not explicitly passed. The smartest mode now works by default when embeddings are configured. Falls back to BM25 gracefully if no embedder is available at all.
 - **Conflict detection predicate-aware** — `cortex conflicts` no longer flags obviously multi-valued predicates (`reinforce`, `references`, `tagged`, etc.) as attribute conflicts. These predicates are append-only by design. A denylist of 15 predicate patterns is applied at query time. Real single-valued attribute conflicts (e.g. `email`, `status`, `location`) are unaffected.
+- **Extraction root-cause cleanup** — structured markdown now preserves full hierarchical section paths instead of collapsing everything to the first header bucket; URL-scheme keys (`https:`) and envelope metadata (`session id`, `assistant`, `channel`, etc.) are dropped before they become facts.
+- **Conflict subject-bucket suppression** — generic section buckets like `Completed Today`, `In Progress`, and their hierarchical forms (`Completed Today > Trading Systems`) are no longer treated as entity subjects for attribute-conflict detection.
 - **Lifecycle skip-stats visibility** — `cortex lifecycle run` now emits per-policy skip stats explaining why candidates were not acted upon (e.g. `needs_reinforcements=12 too_fresh=47 confidence_too_high=3`). Diagnoses zero-action lifecycle runs without changing any automatic behavior.
 - **Docs reality sync** — Updated `ARCHITECTURE.md` and `CORTEX_DEEP_DIVE.md` to reflect hybrid auto-resolve behavior.
 
