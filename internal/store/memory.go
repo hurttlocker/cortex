@@ -359,7 +359,7 @@ func (s *SQLiteStore) DeleteMemoriesBySourceFile(ctx context.Context, sourceFile
 
 	now := time.Now().UTC()
 	for _, id := range ids {
-		if _, err := s.db.ExecContext(ctx, `DELETE FROM facts WHERE memory_id = ?`, id); err != nil {
+		if _, err := s.DeleteFactsByMemoryID(ctx, id); err != nil {
 			return 0, fmt.Errorf("deleting facts for memory %d: %w", id, err)
 		}
 		if _, err := s.db.ExecContext(ctx,

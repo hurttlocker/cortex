@@ -147,3 +147,96 @@ func TestDeleteMemoriesBySourceFileReimportable(t *testing.T) {
 		t.Errorf("expected FindByHash to return nil after deletion, got memory id=%d", found2.ID)
 	}
 }
+
+func TestDeleteFactsByMemoryID_CleansDependentRows(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	ctx := context.Background()
+
+	mem1, err := s.AddMemory(ctx, &Memory{Content: "source a", SourceFile: "a.md"})
+	if err != nil {
+		t.Fatalf("AddMemory mem1: %v", err)
+	}
+	mem2, err := s.AddMemory(ctx, &Memory{Content: "source b", SourceFile: "b.md"})
+	if err != nil {
+		t.Fatalf("AddMemory mem2: %v", err)
+	}
+
+	fact1, err := s.AddFact(ctx, &Fact{MemoryID: mem1, Subject: "alpha", Predicate: "status", Object: "old", FactType: "state", Confidence: 0.7})
+	if err != nil {
+		t.Fatalf("AddFact fact1: %v", err)
+	}
+	fact2, err := s.AddFact(ctx, &Fact{MemoryID: mem1, Subject: "alpha", Predicate: "owner", Object: "q", FactType: "identity", Confidence: 0.8})
+	if err != nil {
+		t.Fatalf("AddFact fact2: %v", err)
+	}
+	fact3, err := s.AddFact(ctx, &Fact{MemoryID: mem2, Subject: "alpha", Predicate: "status", Object: "new", FactType: "state", Confidence: 0.9})
+	if err != nil {
+		t.Fatalf("AddFact fact3: %v", err)
+	}
+
+	if err := s.SupersedeFact(ctx, fact1, fact3, "refreshed"); err != nil {
+		t.Fatalf("SupersedeFact: %v", err)
+	}
+
+	fact1Ptr := func(v int64) *int64 { return &v }(fact1)
+	fact2Ptr := func(v int64) *int64 { return &v }(fact2)
+	if err := s.CreateAlert(ctx, &Alert{AlertType: AlertTypeDecay, Severity: AlertSeverityWarning, FactID: fact1Ptr, RelatedFactID: fact2Ptr, Message: "test"}); err != nil {
+		t.Fatalf("CreateAlert: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO fact_accesses_v1 (fact_id, agent_id, access_type) VALUES (?, 'agent:main', 'read')`, fact1); err != nil {
+		t.Fatalf("insert fact_access: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO fact_edges_v1 (source_fact_id, target_fact_id, edge_type, confidence, source, agent_id) VALUES (?, ?, 'supports', 0.9, 'explicit', '')`, fact1, fact3); err != nil {
+		t.Fatalf("insert fact_edge: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO fact_cooccurrence_v1 (fact_id_a, fact_id_b, count, last_seen) VALUES (?, ?, 1, CURRENT_TIMESTAMP)`, fact1, fact3); err != nil {
+		t.Fatalf("insert cooccurrence: %v", err)
+	}
+
+	deleted, err := s.DeleteFactsByMemoryID(ctx, mem1)
+	if err != nil {
+		t.Fatalf("DeleteFactsByMemoryID: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("expected 2 deleted facts, got %d", deleted)
+	}
+
+	remaining, err := s.GetFactsByMemoryIDsIncludingSuperseded(ctx, []int64{mem1})
+	if err != nil {
+		t.Fatalf("GetFactsByMemoryIDsIncludingSuperseded: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("expected 0 remaining facts for mem1, got %d", len(remaining))
+	}
+
+	kept, err := s.GetFact(ctx, fact3)
+	if err != nil {
+		t.Fatalf("GetFact fact3: %v", err)
+	}
+	if kept == nil {
+		t.Fatalf("expected surviving fact3 to remain")
+	}
+	if kept.SupersededBy != nil {
+		t.Fatalf("expected surviving fact superseded_by cleared, got %v", *kept.SupersededBy)
+	}
+
+	var count int
+	checks := []struct {
+		query string
+		name  string
+		args  []any
+	}{
+		{`SELECT COUNT(*) FROM alerts WHERE fact_id = ? OR related_fact_id = ?`, "alerts", []any{fact1, fact1}},
+		{`SELECT COUNT(*) FROM fact_accesses_v1 WHERE fact_id = ?`, "fact_accesses_v1", []any{fact1}},
+		{`SELECT COUNT(*) FROM fact_edges_v1 WHERE source_fact_id = ? OR target_fact_id = ?`, "fact_edges_v1", []any{fact1, fact1}},
+		{`SELECT COUNT(*) FROM fact_cooccurrence_v1 WHERE fact_id_a = ? OR fact_id_b = ?`, "fact_cooccurrence_v1", []any{fact1, fact1}},
+	}
+	for _, check := range checks {
+		if err := s.db.QueryRowContext(ctx, check.query, check.args...).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", check.name, err)
+		}
+		if count != 0 {
+			t.Fatalf("expected %s rows referencing deleted fact to be gone, got %d", check.name, count)
+		}
+	}
+}
