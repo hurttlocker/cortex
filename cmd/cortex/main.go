@@ -77,6 +77,8 @@ func main() {
 		exitWithError(runAnswer(args[1:]))
 	case "lifecycle":
 		exitWithError(runLifecycle(args[1:]))
+	case "beliefs":
+		exitWithError(runBeliefs(args[1:]))
 	case "stats":
 		exitWithError(runStats(args[1:]))
 	case "list":
@@ -1403,6 +1405,228 @@ func runLifecycle(args []string) error {
 		fmt.Printf("  ... %d additional actions omitted\n", len(report.Actions)-show)
 	}
 	return nil
+}
+
+type beliefsReport struct {
+	GeneratedAt string                 `json:"generated_at"`
+	Agent       string                 `json:"agent,omitempty"`
+	States      map[string]int64       `json:"states"`
+	Total       int64                  `json:"total"`
+	Policies    cfgresolver.PolicyConfig `json:"policies"`
+}
+
+func runBeliefs(args []string) error {
+	jsonOutput := false
+	agentID := ""
+	positionals := make([]string, 0, len(args))
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--json":
+			jsonOutput = true
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentID = strings.TrimSpace(args[i])
+		case strings.HasPrefix(args[i], "--agent="):
+			agentID = strings.TrimSpace(strings.TrimPrefix(args[i], "--agent="))
+		case args[i] == "--help" || args[i] == "-h":
+			fmt.Println(`cortex beliefs — lifecycle belief stats and manual state overrides
+
+Usage:
+  cortex beliefs [stats] [--json] [--agent <id>]
+  cortex beliefs promote <fact_id> [fact_id...]
+  cortex beliefs retire <fact_id> [fact_id...]
+  cortex beliefs activate <fact_id> [fact_id...]
+  cortex beliefs set <active|core|retired|archive> <fact_id> [fact_id...]
+
+Notes:
+  - archive/archived is an alias for retired
+  - superseded is system-managed and cannot be set directly`)
+			return nil
+		default:
+			positionals = append(positionals, args[i])
+		}
+	}
+
+	if len(positionals) == 0 || strings.EqualFold(positionals[0], "stats") {
+		s, err := store.NewStore(getStoreConfig())
+		if err != nil {
+			return fmt.Errorf("opening store: %w", err)
+		}
+		defer s.Close()
+
+		sqlStore, ok := s.(*store.SQLiteStore)
+		if !ok {
+			return fmt.Errorf("beliefs requires SQLiteStore backend")
+		}
+
+		ctx := context.Background()
+		states := map[string]int64{}
+		order := []string{store.FactStateActive, store.FactStateCore, store.FactStateRetired, store.FactStateSuperseded}
+		var total int64
+		for _, st := range order {
+			n, err := countFactsByState(ctx, sqlStore, st, agentID)
+			if err != nil {
+				return fmt.Errorf("counting state %s: %w", st, err)
+			}
+			states[st] = n
+			total += n
+		}
+
+		policies, err := cfgresolver.ResolvePolicyConfig("")
+		if err != nil {
+			return fmt.Errorf("resolving policies: %w", err)
+		}
+
+		report := beliefsReport{
+			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+			Agent:       agentID,
+			States:      states,
+			Total:       total,
+			Policies:    policies,
+		}
+
+		if jsonOutput || !isTTY() {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(report)
+		}
+
+		title := "Beliefs state counts"
+		if agentID != "" {
+			title = fmt.Sprintf("Beliefs state counts (agent=%s)", agentID)
+		}
+		fmt.Printf("%s:\n", title)
+		for _, st := range order {
+			fmt.Printf("  %-10s %d\n", st, states[st])
+		}
+		fmt.Printf("  %-10s %d\n", "total", total)
+		fmt.Println()
+		fmt.Println("Lifecycle policies:")
+		fmt.Printf("  reinforce-promote: enabled=%t min_reinforcements=%d min_sources=%d target=%s\n",
+			report.Policies.ReinforcePromote.Enabled,
+			report.Policies.ReinforcePromote.MinReinforcements,
+			report.Policies.ReinforcePromote.MinSources,
+			report.Policies.ReinforcePromote.TargetState,
+		)
+		fmt.Printf("  decay-retire:      enabled=%t inactive_days=%d confidence_below=%.2f target=%s\n",
+			report.Policies.DecayRetire.Enabled,
+			report.Policies.DecayRetire.InactiveDays,
+			report.Policies.DecayRetire.ConfidenceBelow,
+			report.Policies.DecayRetire.TargetState,
+		)
+		fmt.Printf("  conflict-supersede: enabled=%t require_strictly_newer=%t min_confidence_delta=%.2f\n",
+			report.Policies.ConflictSupersede.Enabled,
+			report.Policies.ConflictSupersede.RequireStrictlyNewer,
+			report.Policies.ConflictSupersede.MinConfidenceDelta,
+		)
+		return nil
+	}
+
+	sub := strings.ToLower(strings.TrimSpace(positionals[0]))
+	state := ""
+	ids := []string{}
+
+	switch sub {
+	case "promote":
+		state = store.FactStateCore
+		ids = positionals[1:]
+	case "retire":
+		state = store.FactStateRetired
+		ids = positionals[1:]
+	case "activate":
+		state = store.FactStateActive
+		ids = positionals[1:]
+	case "archive", "archived":
+		state = store.FactStateRetired
+		ids = positionals[1:]
+	case "set":
+		if len(positionals) < 3 {
+			return fmt.Errorf("usage: cortex beliefs set <active|core|retired|archive> <fact_id> [fact_id...]")
+		}
+		resolved, err := resolveBeliefTargetState(positionals[1])
+		if err != nil {
+			return err
+		}
+		state = resolved
+		ids = positionals[2:]
+	default:
+		return fmt.Errorf("unknown beliefs subcommand %q", sub)
+	}
+
+	if len(ids) == 0 {
+		return fmt.Errorf("no fact IDs provided")
+	}
+	if globalReadOnly {
+		return fmt.Errorf("belief state updates are not available in --read-only mode")
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	updated, err := updateBeliefStates(context.Background(), s, state, ids)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Updated %d fact(s) to state=%s\n", updated, state)
+	return nil
+}
+
+func resolveBeliefTargetState(raw string) (string, error) {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
+	case store.FactStateActive, "activate":
+		return store.FactStateActive, nil
+	case store.FactStateCore, "promote":
+		return store.FactStateCore, nil
+	case store.FactStateRetired, "retire", "archive", "archived":
+		return store.FactStateRetired, nil
+	case store.FactStateSuperseded:
+		return "", fmt.Errorf("state %q is system-managed and cannot be set directly", store.FactStateSuperseded)
+	default:
+		return "", fmt.Errorf("invalid belief state %q (valid: active, core, retired, archive)", raw)
+	}
+}
+
+func updateBeliefStates(ctx context.Context, s store.Store, state string, ids []string) (int, error) {
+	state, err := resolveBeliefTargetState(state)
+	if err != nil {
+		return 0, err
+	}
+
+	updated := 0
+	for _, rawID := range ids {
+		id, err := strconv.ParseInt(strings.TrimSpace(rawID), 10, 64)
+		if err != nil {
+			return updated, fmt.Errorf("invalid fact id %q", rawID)
+		}
+		if err := s.UpdateFactState(ctx, id, state); err != nil {
+			return updated, fmt.Errorf("updating fact %d: %w", id, err)
+		}
+		updated++
+	}
+	return updated, nil
+}
+
+func countFactsByState(ctx context.Context, sqlStore *store.SQLiteStore, state, agentID string) (int64, error) {
+	query := `SELECT COUNT(*) FROM facts WHERE LOWER(state)=?`
+	args := []interface{}{strings.ToLower(strings.TrimSpace(state))}
+	if strings.TrimSpace(agentID) != "" {
+		query += ` AND LOWER(COALESCE(agent_id, '')) = LOWER(?)`
+		args = append(args, strings.TrimSpace(agentID))
+	}
+	var n int64
+	if err := sqlStore.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return n, nil
 }
 
 func runStats(args []string) error {
@@ -8830,7 +9054,7 @@ var cortexCommands = []string{
 	"stats", "stale", "conflicts", "agents", "projects",
 	"graph", "cluster",
 	"reason", "bench",
-	"cleanup", "optimize", "embed", "tag", "answer", "lifecycle",
+	"cleanup", "optimize", "embed", "tag", "answer", "lifecycle", "beliefs",
 	"connect",
 	"mcp", "doctor", "completion", "version", "help",
 }
@@ -8911,6 +9135,7 @@ Memory:
   query                 Filter facts by metadata (--where clauses)
   answer <query>        Search + synthesize short answer with citations
   lifecycle run         Apply built-in lifecycle policies to facts
+  beliefs               Belief lifecycle stats + manual state overrides
   list                  List memories or facts
   export                Export memory store (json, markdown, csv)
   update <id>           Update a memory's content

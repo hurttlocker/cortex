@@ -1816,6 +1816,141 @@ func TestRunDoctor_QuietSuppressesPassingChecks(t *testing.T) {
 	}
 }
 
+// ==================== beliefs command ====================
+
+func TestRunBeliefs_JSONStats(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memID, err := s.AddMemory(ctx, &store.Memory{Content: "beliefs stats seed", SourceFile: "beliefs.md"})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	fActive, _ := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "A", Predicate: "is", Object: "active", FactType: "state", Confidence: 0.9})
+	fCore, _ := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "B", Predicate: "is", Object: "core", FactType: "state", Confidence: 0.9})
+	if err := s.UpdateFactState(ctx, fCore, store.FactStateCore); err != nil {
+		t.Fatalf("UpdateFactState core: %v", err)
+	}
+	fRet, _ := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "C", Predicate: "is", Object: "retired", FactType: "state", Confidence: 0.9})
+	if err := s.UpdateFactState(ctx, fRet, store.FactStateRetired); err != nil {
+		t.Fatalf("UpdateFactState retired: %v", err)
+	}
+	fOld, _ := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "D", Predicate: "is", Object: "old", FactType: "state", Confidence: 0.7})
+	fNew, _ := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "D", Predicate: "is", Object: "new", FactType: "state", Confidence: 0.95})
+	if err := s.SupersedeFact(ctx, fOld, fNew, "test"); err != nil {
+		t.Fatalf("SupersedeFact: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	_ = fActive
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runBeliefs([]string{"--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runBeliefs --json: %v\nout=%s", runErr, out)
+	}
+
+	var report beliefsReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode beliefs report: %v\nout=%q", err, out)
+	}
+	if report.States[store.FactStateActive] != 2 {
+		t.Fatalf("active count = %d, want 2", report.States[store.FactStateActive])
+	}
+	if report.States[store.FactStateCore] != 1 {
+		t.Fatalf("core count = %d, want 1", report.States[store.FactStateCore])
+	}
+	if report.States[store.FactStateRetired] != 1 {
+		t.Fatalf("retired count = %d, want 1", report.States[store.FactStateRetired])
+	}
+	if report.States[store.FactStateSuperseded] != 1 {
+		t.Fatalf("superseded count = %d, want 1", report.States[store.FactStateSuperseded])
+	}
+	if report.Total != 5 {
+		t.Fatalf("total = %d, want 5", report.Total)
+	}
+}
+
+func TestRunBeliefs_StateOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memID, err := s.AddMemory(ctx, &store.Memory{Content: "beliefs override seed", SourceFile: "beliefs.md"})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	factID, err := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "Q", Predicate: "focus", Object: "cortex", FactType: "state", Confidence: 0.9})
+	if err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	if err := runBeliefs([]string{"promote", fmt.Sprintf("%d", factID)}); err != nil {
+		t.Fatalf("beliefs promote: %v", err)
+	}
+
+	s2, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore reopen: %v", err)
+	}
+	f, err := s2.GetFact(ctx, factID)
+	if err != nil {
+		t.Fatalf("GetFact: %v", err)
+	}
+	if f.State != store.FactStateCore {
+		t.Fatalf("state after promote = %q, want %q", f.State, store.FactStateCore)
+	}
+	if err := s2.Close(); err != nil {
+		t.Fatalf("close s2: %v", err)
+	}
+
+	if err := runBeliefs([]string{"archive", fmt.Sprintf("%d", factID)}); err != nil {
+		t.Fatalf("beliefs archive: %v", err)
+	}
+
+	s3, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore reopen #2: %v", err)
+	}
+	f, err = s3.GetFact(ctx, factID)
+	if err != nil {
+		t.Fatalf("GetFact #2: %v", err)
+	}
+	if f.State != store.FactStateRetired {
+		t.Fatalf("state after archive = %q, want %q", f.State, store.FactStateRetired)
+	}
+	if err := s3.Close(); err != nil {
+		t.Fatalf("close s3: %v", err)
+	}
+}
+
 // ==================== agents command ====================
 
 func TestRunAgents_UnknownArgument(t *testing.T) {
