@@ -1728,6 +1728,64 @@ func TestRunDoctor_JSONHealthyDB(t *testing.T) {
 	}
 }
 
+func TestRunDoctor_ResolvedConfigProviderOnlyPasses(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	home := filepath.Join(tmpDir, "home")
+	cfgDir := filepath.Join(home, ".cortex")
+	if err := os.MkdirAll(cfgDir, 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	cfg := []byte("llm:\n  provider: openrouter\n")
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), cfg, 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	t.Setenv("CORTEX_LLM", "")
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runDoctor([]string{"--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runDoctor --json failed: %v\nout=%s", runErr, out)
+	}
+
+	var report doctorReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode doctor report: %v\nout=%q", err, out)
+	}
+
+	check, ok := findDoctorCheck(report, "resolved_config")
+	if !ok {
+		t.Fatalf("expected resolved_config check in report: %+v", report)
+	}
+	if check.Status != "pass" {
+		t.Fatalf("expected resolved_config status=pass for provider-only config, got %+v", check)
+	}
+	if !strings.Contains(strings.ToLower(check.Details), "openrouter") {
+		t.Fatalf("expected resolved_config details to include provider, got %+v", check)
+	}
+}
+
 func TestRunDoctor_QuietSuppressesPassingChecks(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "cortex.db")

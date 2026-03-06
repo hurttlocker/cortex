@@ -8385,6 +8385,16 @@ func runDoctorChecks() doctorReport {
 				Status:  "pass",
 				Details: fmt.Sprintf("llm_provider: %s (from: %s)", model.Value, model.From),
 			})
+		} else if provider := strings.TrimSpace(resolvedCfg.LLMProvider.Value); provider != "" {
+			from := strings.TrimSpace(resolvedCfg.LLMProvider.From)
+			if from == "" {
+				from = string(resolvedCfg.LLMProvider.Source)
+			}
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "resolved_config",
+				Status:  "pass",
+				Details: fmt.Sprintf("llm_provider: %s (from: %s; provider-only)", provider, from),
+			})
 		} else {
 			addDoctorCheck(&report, doctorCheck{
 				Name:    "resolved_config",
