@@ -46,13 +46,20 @@ func TestDeleteMemoriesBySourceFile(t *testing.T) {
 		t.Errorf("expected 2 memories removed, got %d", removed)
 	}
 
-	// Source A memories should be soft-deleted (not visible via ListMemories)
+	// Source A memories should be fully removed (not visible via ListMemories)
 	remaining, err := s.ListMemories(ctx, ListOpts{SourceFile: srcA, Limit: 100})
 	if err != nil {
 		t.Fatalf("ListMemories A: %v", err)
 	}
 	if len(remaining) != 0 {
 		t.Errorf("expected 0 active memories for srcA, got %d", len(remaining))
+	}
+	gone, err := s.GetMemory(ctx, idA1)
+	if err != nil {
+		t.Fatalf("GetMemory A1: %v", err)
+	}
+	if gone != nil {
+		t.Fatalf("expected memory A1 to be hard-deleted")
 	}
 
 	// Source B memory should be untouched
@@ -138,7 +145,7 @@ func TestDeleteMemoriesBySourceFileReimportable(t *testing.T) {
 		t.Errorf("expected 1 removed, got %d", removed)
 	}
 
-	// Hash lookup should return nil (soft-deleted) — reimport is unblocked
+	// Hash lookup should return nil — reimport is unblocked after hard deletion
 	found2, err := s.FindByHash(ctx, HashContentOnly(content))
 	if err != nil {
 		t.Fatalf("FindByHash after deletion: %v", err)

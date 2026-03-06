@@ -712,7 +712,7 @@ func runImport(args []string) error {
 	// Run embedding if requested
 	if embedFlag != "" && !opts.DryRun && totalResult.MemoriesNew > 0 {
 		fmt.Println("\nGenerating embeddings...")
-		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag)
+		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag, totalResult.NewMemoryIDs)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Embedding error: %v\n", err)
 		} else {
@@ -3478,7 +3478,7 @@ type EmbeddingStats struct {
 }
 
 // runEmbeddingOnImportedMemories runs embedding on recently imported memories.
-func runEmbeddingOnImportedMemories(ctx context.Context, s store.Store, embedFlag string) (*EmbeddingStats, error) {
+func runEmbeddingOnImportedMemories(ctx context.Context, s store.Store, embedFlag string, memoryIDs []int64) (*EmbeddingStats, error) {
 	// Configure embedder
 	embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
 	if err != nil {
@@ -3499,10 +3499,22 @@ func runEmbeddingOnImportedMemories(ctx context.Context, s store.Store, embedFla
 	// Create embedding engine
 	embedEngine := ingest.NewEmbedEngine(s, embedder)
 
-	// Embed only recently imported memories (filter for ones without embeddings)
+	// Embed only the memories created by the current import/refresh operation.
+	allowed := make(map[int64]struct{}, len(memoryIDs))
+	for _, id := range memoryIDs {
+		allowed[id] = struct{}{}
+	}
+
 	opts := ingest.DefaultEmbedOptions()
 	opts.ProgressFn = func(current, total int) {
 		fmt.Printf("  [%d/%d] Embedding memories...\n", current, total)
+	}
+	opts.FilterFn = func(memory *store.Memory) bool {
+		if len(allowed) == 0 {
+			return false
+		}
+		_, ok := allowed[memory.ID]
+		return ok
 	}
 
 	result, err := embedEngine.EmbedMemories(ctx, opts)
@@ -4603,7 +4615,7 @@ func runReimport(args []string) error {
 	// Step 3: Embed (if requested)
 	if embedFlag != "" && totalResult.MemoriesNew > 0 {
 		fmt.Println("Step 3/3: Generating embeddings...")
-		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag)
+		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag, totalResult.NewMemoryIDs)
 		if err != nil {
 			return fmt.Errorf("embedding error: %w", err)
 		}
@@ -4788,6 +4800,9 @@ Examples:
 		return fmt.Errorf("reimporting %s: %w", absPath, err)
 	}
 	fmt.Printf("  ✓ Imported %d new memories (%d unchanged)\n", result.MemoriesNew, result.MemoriesUnchanged)
+	if removed > 0 && result.MemoriesNew == 0 {
+		return fmt.Errorf("refresh-source removed %d existing memories for %s but recreated 0 new ones; aborting success path", removed, absPath)
+	}
 
 	// Run extraction if requested
 	if enableExtraction && result.MemoriesNew > 0 {
@@ -4850,7 +4865,7 @@ Examples:
 	// Step 3: Embed
 	if embedFlag != "" && result.MemoriesNew > 0 {
 		fmt.Println("Step 3/3: Generating embeddings...")
-		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag)
+		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag, result.NewMemoryIDs)
 		if err != nil {
 			return fmt.Errorf("embedding error: %w", err)
 		}

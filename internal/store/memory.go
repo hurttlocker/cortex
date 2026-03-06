@@ -330,12 +330,13 @@ func (s *SQLiteStore) FindByHash(ctx context.Context, hash string) (*Memory, err
 	return m, nil
 }
 
-// DeleteMemoriesBySourceFile soft-deletes all active memories for a given source file
-// and hard-deletes their associated facts. Safe to call on files with 0 memories.
-// Returns the number of memories removed.
+// DeleteMemoriesBySourceFile permanently removes all memories for a given source file,
+// including previously soft-deleted rows, after cleaning their dependent facts.
+// This is intentionally destructive and is used by refresh-source to make same-file
+// replacement possible without content-hash collisions from tombstoned rows.
 func (s *SQLiteStore) DeleteMemoriesBySourceFile(ctx context.Context, sourceFile string) (int64, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id FROM memories WHERE source_file = ? AND deleted_at IS NULL`, sourceFile)
+		`SELECT id FROM memories WHERE source_file = ?`, sourceFile)
 	if err != nil {
 		return 0, fmt.Errorf("querying memories for source %q: %w", sourceFile, err)
 	}
@@ -357,14 +358,12 @@ func (s *SQLiteStore) DeleteMemoriesBySourceFile(ctx context.Context, sourceFile
 		return 0, nil
 	}
 
-	now := time.Now().UTC()
 	for _, id := range ids {
 		if _, err := s.DeleteFactsByMemoryID(ctx, id); err != nil {
 			return 0, fmt.Errorf("deleting facts for memory %d: %w", id, err)
 		}
-		if _, err := s.db.ExecContext(ctx,
-			`UPDATE memories SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`, now, id); err != nil {
-			return 0, fmt.Errorf("soft-deleting memory %d: %w", id, err)
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM memories WHERE id = ?`, id); err != nil {
+			return 0, fmt.Errorf("deleting memory %d: %w", id, err)
 		}
 	}
 	return int64(len(ids)), nil
