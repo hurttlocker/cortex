@@ -230,3 +230,48 @@ func TestEmbedMemories_BatchSizeRespected(t *testing.T) {
 		}
 	}
 }
+
+func TestEmbedMemories_SourceFileScope(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	sourceA := "/tmp/source-a.md"
+	sourceB := "/tmp/source-b.md"
+	memories := []*store.Memory{
+		{Content: "source A memory one", SourceFile: sourceA},
+		{Content: "source A memory two", SourceFile: sourceA},
+		{Content: "source B memory one", SourceFile: sourceB},
+	}
+	ids, err := s.AddMemoryBatch(ctx, memories)
+	if err != nil {
+		t.Fatalf("AddMemoryBatch: %v", err)
+	}
+
+	embedder := newMockEmbedder(384)
+	engine := NewEmbedEngine(s, embedder)
+
+	result, err := engine.EmbedMemories(ctx, EmbedOptions{
+		BatchSize:  2,
+		SourceFile: sourceA,
+	})
+	if err != nil {
+		t.Fatalf("EmbedMemories source scope: %v", err)
+	}
+
+	if result.MemoriesProcessed != 2 {
+		t.Fatalf("MemoriesProcessed = %d, want 2", result.MemoriesProcessed)
+	}
+	if result.EmbeddingsAdded != 2 {
+		t.Fatalf("EmbeddingsAdded = %d, want 2", result.EmbeddingsAdded)
+	}
+
+	for _, id := range ids[:2] {
+		vec, err := s.GetEmbedding(ctx, id)
+		if err != nil || len(vec) == 0 {
+			t.Fatalf("expected embedding for source A memory %d", id)
+		}
+	}
+	if vec, err := s.GetEmbedding(ctx, ids[2]); err == nil && len(vec) > 0 {
+		t.Fatalf("did not expect embedding for source B memory %d", ids[2])
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/connect"
+	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/observe"
 	"github.com/hurttlocker/cortex/internal/store"
 )
@@ -814,6 +815,163 @@ func TestOutputResolveBatchTTY_VerboseShowsAll(t *testing.T) {
 }
 
 // ==================== embed watch parsing + locking ====================
+
+type mockCommandEmbedder struct {
+	dims int
+}
+
+func (m *mockCommandEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	batch, err := m.EmbedBatch(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	return batch[0], nil
+}
+
+func (m *mockCommandEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	result := make([][]float32, len(texts))
+	for i, text := range texts {
+		vec := make([]float32, m.dims)
+		vec[0] = float32(len(text))
+		result[i] = vec
+	}
+	return result, nil
+}
+
+func (m *mockCommandEmbedder) Dimensions() int { return m.dims }
+
+func TestRunEmbedSource_Help(t *testing.T) {
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runEmbedSource([]string{"--help"})
+	})
+	if runErr != nil {
+		t.Fatalf("runEmbedSource --help: %v", runErr)
+	}
+	if !strings.Contains(out, "cortex embed-source") {
+		t.Fatalf("expected embed-source help output, got: %q", out)
+	}
+	if !strings.Contains(out, "Embeds only active memories") {
+		t.Fatalf("expected scoped description in help, got: %q", out)
+	}
+}
+
+func TestParseEmbedSourceArgs(t *testing.T) {
+	opts, err := parseEmbedSourceArgs([]string{"notes.md", "ollama/nomic-embed-text", "--batch-size", "7"})
+	if err != nil {
+		t.Fatalf("parseEmbedSourceArgs: %v", err)
+	}
+	if opts.sourceFile != "notes.md" {
+		t.Fatalf("sourceFile = %q, want notes.md", opts.sourceFile)
+	}
+	if opts.embedFlag != "ollama/nomic-embed-text" {
+		t.Fatalf("embedFlag = %q, want ollama/nomic-embed-text", opts.embedFlag)
+	}
+	if opts.batchSize != 7 {
+		t.Fatalf("batchSize = %d, want 7", opts.batchSize)
+	}
+}
+
+func TestParseEmbedSourceArgs_EnvFallback(t *testing.T) {
+	t.Setenv("CORTEX_EMBED", "ollama/nomic-embed-text")
+	opts, err := parseEmbedSourceArgs([]string{"notes.md"})
+	if err != nil {
+		t.Fatalf("parseEmbedSourceArgs env fallback: %v", err)
+	}
+	if opts.sourceFile != "notes.md" {
+		t.Fatalf("sourceFile = %q, want notes.md", opts.sourceFile)
+	}
+	if opts.embedFlag != "" {
+		t.Fatalf("embedFlag = %q, want empty when using env fallback", opts.embedFlag)
+	}
+}
+
+func TestRunEmbedSource_EmbedsOnlyRequestedSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	sourceA := filepath.Join(tmpDir, "2026-02-21.md")
+	sourceB := filepath.Join(tmpDir, "2026-02-22.md")
+
+	if err := os.WriteFile(sourceA, []byte("source a"), 0600); err != nil {
+		t.Fatalf("write sourceA: %v", err)
+	}
+	if err := os.WriteFile(sourceB, []byte("source b"), 0600); err != nil {
+		t.Fatalf("write sourceB: %v", err)
+	}
+
+	oldDBPath := globalDBPath
+	oldReadOnly := globalReadOnly
+	oldFactory := newEmbedClient
+	globalDBPath = ""
+	globalReadOnly = false
+	t.Cleanup(func() {
+		globalDBPath = oldDBPath
+		globalReadOnly = oldReadOnly
+		newEmbedClient = oldFactory
+	})
+	t.Setenv("CORTEX_DB", dbPath)
+	t.Setenv("CORTEX_EMBED", "ollama/nomic-embed-text")
+	newEmbedClient = func(cfg *embed.EmbedConfig) (embed.Embedder, error) {
+		return &mockCommandEmbedder{dims: 8}, nil
+	}
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memA1, err := s.AddMemory(ctx, &store.Memory{Content: "alpha memory one", SourceFile: sourceA})
+	if err != nil {
+		t.Fatalf("AddMemory memA1: %v", err)
+	}
+	memA2, err := s.AddMemory(ctx, &store.Memory{Content: "alpha memory two", SourceFile: sourceA})
+	if err != nil {
+		t.Fatalf("AddMemory memA2: %v", err)
+	}
+	memB, err := s.AddMemory(ctx, &store.Memory{Content: "beta memory one", SourceFile: sourceB})
+	if err != nil {
+		t.Fatalf("AddMemory memB: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close seed store: %v", err)
+	}
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runEmbedSource([]string{sourceA})
+	})
+	if runErr != nil {
+		t.Fatalf("runEmbedSource: %v\nout=%s", runErr, out)
+	}
+	if !strings.Contains(out, "Source: "+sourceA) {
+		t.Fatalf("expected source header, got: %q", out)
+	}
+	if !strings.Contains(out, "Missing embeddings : 2") {
+		t.Fatalf("expected missing embedding count for sourceA, got: %q", out)
+	}
+
+	s, err = store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("Reopen store: %v", err)
+	}
+	defer s.Close()
+
+	for _, id := range []int64{memA1, memA2} {
+		vec, err := s.GetEmbedding(ctx, id)
+		if err != nil || len(vec) == 0 {
+			t.Fatalf("expected embedding for source A memory %d", id)
+		}
+	}
+	if vec, err := s.GetEmbedding(ctx, memB); err == nil && len(vec) > 0 {
+		t.Fatalf("did not expect embedding for source B memory %d", memB)
+	}
+}
 
 func TestParseEmbedArgs_WatchMode(t *testing.T) {
 	opts, err := parseEmbedArgs([]string{"ollama/nomic-embed-text", "--watch", "--interval", "45m", "--batch-size", "12"})

@@ -67,6 +67,8 @@ func main() {
 		exitWithError(runSummarize(args[1:]))
 	case "embed":
 		exitWithError(runEmbed(args[1:]))
+	case "embed-source":
+		exitWithError(runEmbedSource(args[1:]))
 	case "index":
 		exitWithError(runIndex(args[1:]))
 	case "search":
@@ -3479,25 +3481,10 @@ type EmbeddingStats struct {
 
 // runEmbeddingOnImportedMemories runs embedding on recently imported memories.
 func runEmbeddingOnImportedMemories(ctx context.Context, s store.Store, embedFlag string, memoryIDs []int64) (*EmbeddingStats, error) {
-	// Configure embedder
-	embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
+	embedEngine, err := newEmbedEngineForFlag(s, embedFlag)
 	if err != nil {
-		return nil, fmt.Errorf("configuring embedder: %w", err)
+		return nil, err
 	}
-	if embedConfig == nil {
-		return nil, fmt.Errorf("no embedding configuration found")
-	}
-	if err := embedConfig.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid embedding configuration: %w", err)
-	}
-
-	embedder, err := embed.NewClient(embedConfig)
-	if err != nil {
-		return nil, fmt.Errorf("creating embedder: %w", err)
-	}
-
-	// Create embedding engine
-	embedEngine := ingest.NewEmbedEngine(s, embedder)
 
 	// Embed only the memories created by the current import/refresh operation.
 	allowed := make(map[int64]struct{}, len(memoryIDs))
@@ -5707,6 +5694,7 @@ const (
 
 type embedCmdOptions struct {
 	embedFlag    string
+	sourceFile   string
 	batchSize    int
 	forceReembed bool
 	watch        bool
@@ -5722,6 +5710,10 @@ type embedPassSummary struct {
 	result          *ingest.EmbedResult
 	hnswRebuilt     bool
 	hnswVectorCount int
+}
+
+var newEmbedClient = func(cfg *embed.EmbedConfig) (embed.Embedder, error) {
+	return embed.NewClient(cfg)
 }
 
 func runEmbed(args []string) error {
@@ -5747,24 +5739,10 @@ func runEmbed(args []string) error {
 	}
 	defer s.Close()
 
-	// Configure embedder
-	embedConfig, err := embed.ResolveEmbedConfig(opts.embedFlag)
+	embedEngine, err := newEmbedEngineForFlag(s, opts.embedFlag)
 	if err != nil {
-		return fmt.Errorf("configuring embedder: %w", err)
+		return err
 	}
-	if embedConfig == nil {
-		return fmt.Errorf("no embedding configuration found (pass <provider/model> or set CORTEX_EMBED)")
-	}
-	if err := embedConfig.Validate(); err != nil {
-		return fmt.Errorf("invalid embedding configuration: %w", err)
-	}
-
-	embedder, err := embed.NewClient(embedConfig)
-	if err != nil {
-		return fmt.Errorf("creating embedder: %w", err)
-	}
-
-	embedEngine := ingest.NewEmbedEngine(s, embedder)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -5775,6 +5753,91 @@ func runEmbed(args []string) error {
 	}
 
 	return runEmbedLoop(ctx, s, embedEngine, opts)
+}
+
+func runEmbedSource(args []string) error {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
+			fmt.Print(`cortex embed-source — Finish embeddings for one source file
+
+Embeds only active memories whose source_file matches the specified path.
+No other sources are scanned for embedding work. If new embeddings are added,
+the persisted HNSW index is rebuilt from stored embeddings as usual.
+
+Usage:
+  cortex embed-source <path> [provider/model] [--batch-size N]
+
+Flags:
+  --batch-size N       Embedding batch size (default: 10)
+
+Examples:
+  cortex embed-source /path/to/memory/2026-02-21.md
+  cortex embed-source /path/to/memory/2026-02-21.md ollama/nomic-embed-text
+  cortex embed-source /path/to/memory/2026-02-21.md --batch-size 4
+`)
+			return nil
+		}
+	}
+
+	opts, err := parseEmbedSourceArgs(args)
+	if err != nil {
+		return err
+	}
+
+	absPath, err := filepath.Abs(opts.sourceFile)
+	if err != nil {
+		return fmt.Errorf("resolving source path: %w", err)
+	}
+	opts.sourceFile = absPath
+
+	lockPath := getEmbedLockPath()
+	lock, err := acquireEmbedRunLock(lockPath)
+	if err != nil {
+		if errors.Is(err, errEmbedLockHeld) {
+			return fmt.Errorf("another embedding process is already running (%s)", lockPath)
+		}
+		return err
+	}
+	defer lock.Release()
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	existing, err := s.ListMemories(ctx, store.ListOpts{SourceFile: opts.sourceFile, Limit: 100000})
+	if err != nil {
+		return fmt.Errorf("querying source memories: %w", err)
+	}
+	if len(existing) == 0 {
+		return fmt.Errorf("no active memories found for source: %s", opts.sourceFile)
+	}
+
+	pendingIDs, err := s.ListMemoryIDsWithoutEmbeddingsBySourceFile(ctx, opts.sourceFile, 100000)
+	if err != nil {
+		return fmt.Errorf("querying pending embeddings: %w", err)
+	}
+
+	embedEngine, err := newEmbedEngineForFlag(s, opts.embedFlag)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Source: %s\n", opts.sourceFile)
+	fmt.Printf("  Active memories    : %d\n", len(existing))
+	fmt.Printf("  Missing embeddings : %d\n", len(pendingIDs))
+
+	startedAt := time.Now()
+	summary, err := runEmbedPass(ctx, s, embedEngine, opts)
+	if err != nil {
+		return err
+	}
+	printEmbedPassSummary(summary, time.Since(startedAt))
+	return nil
 }
 
 func parseEmbedArgs(args []string) (embedCmdOptions, error) {
@@ -5841,6 +5904,54 @@ func parseEmbedArgs(args []string) (embedCmdOptions, error) {
 	return opts, nil
 }
 
+func parseEmbedSourceArgs(args []string) (embedCmdOptions, error) {
+	opts := embedCmdOptions{
+		batchSize: defaultEmbedBatchSize,
+	}
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--batch-size" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return opts, fmt.Errorf("invalid --batch-size value: %s", args[i])
+			}
+			opts.batchSize = n
+		case strings.HasPrefix(args[i], "--batch-size="):
+			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--batch-size="))
+			if err != nil {
+				return opts, fmt.Errorf("invalid --batch-size value: %s", args[i])
+			}
+			opts.batchSize = n
+		case strings.HasPrefix(args[i], "-"):
+			return opts, fmt.Errorf("unknown flag: %s\nUsage: cortex embed-source <path> [provider/model] [--batch-size N]", args[i])
+		default:
+			if opts.sourceFile == "" {
+				opts.sourceFile = args[i]
+				continue
+			}
+			if opts.embedFlag == "" {
+				opts.embedFlag = args[i]
+				continue
+			}
+			return opts, fmt.Errorf("unexpected argument: %s\nUsage: cortex embed-source <path> [provider/model] [--batch-size N]", args[i])
+		}
+	}
+
+	if opts.sourceFile == "" {
+		return opts, fmt.Errorf("usage: cortex embed-source <path> [provider/model] [--batch-size N]\n       (or set CORTEX_EMBED)")
+	}
+	if opts.batchSize <= 0 {
+		return opts, fmt.Errorf("--batch-size must be > 0")
+	}
+	if opts.embedFlag == "" && os.Getenv("CORTEX_EMBED") == "" {
+		return opts, fmt.Errorf("usage: cortex embed-source <path> [provider/model] [--batch-size N]\n       (or set CORTEX_EMBED)")
+	}
+
+	return opts, nil
+}
+
 func runEmbedLoop(ctx context.Context, s store.Store, embedEngine *ingest.EmbedEngine, opts embedCmdOptions) error {
 	consecutiveFailures := 0
 
@@ -5885,6 +5996,10 @@ func runEmbedLoop(ctx context.Context, s store.Store, embedEngine *ingest.EmbedE
 }
 
 func runEmbedPass(ctx context.Context, s store.Store, embedEngine *ingest.EmbedEngine, opts embedCmdOptions) (*embedPassSummary, error) {
+	if opts.forceReembed && opts.sourceFile != "" {
+		return nil, fmt.Errorf("--force cannot be used with source-scoped embedding")
+	}
+
 	if opts.forceReembed {
 		fmt.Println("Force mode: deleting all existing embeddings for re-generation with context enrichment...")
 		deleted, err := s.DeleteAllEmbeddings(ctx)
@@ -5896,11 +6011,14 @@ func runEmbedPass(ctx context.Context, s store.Store, embedEngine *ingest.EmbedE
 
 	if opts.forceReembed {
 		fmt.Println("Re-generating all embeddings with context-enriched content...")
+	} else if opts.sourceFile != "" {
+		fmt.Printf("Generating embeddings for active memories without embeddings from %s...\n", opts.sourceFile)
 	} else {
 		fmt.Println("Generating embeddings for memories without embeddings...")
 	}
 
 	embedOpts := ingest.DefaultEmbedOptions()
+	embedOpts.SourceFile = opts.sourceFile
 	embedOpts.BatchSize = opts.batchSize
 	embedOpts.AdaptiveBatching = true
 	embedOpts.HealthCheckEvery = 5
@@ -5953,6 +6071,26 @@ func rebuildHNSWIndex(ctx context.Context, s store.Store) (int, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+func newEmbedEngineForFlag(s store.Store, embedFlag string) (*ingest.EmbedEngine, error) {
+	embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
+	if err != nil {
+		return nil, fmt.Errorf("configuring embedder: %w", err)
+	}
+	if embedConfig == nil {
+		return nil, fmt.Errorf("no embedding configuration found (pass <provider/model> or set CORTEX_EMBED)")
+	}
+	if err := embedConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid embedding configuration: %w", err)
+	}
+
+	embedder, err := newEmbedClient(embedConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating embedder: %w", err)
+	}
+
+	return ingest.NewEmbedEngine(s, embedder), nil
 }
 
 func printEmbedPassSummary(summary *embedPassSummary, elapsed time.Duration) {
@@ -9491,6 +9629,7 @@ Maintenance:
   cleanup               Remove garbage memories and headless facts
   optimize              DB maintenance (integrity check, VACUUM, ANALYZE)
   embed <provider/model> Generate or refresh embeddings
+  embed-source <path>   Finish embeddings for one source file
   tag                   Tag memories by project
 
 Connectors:
