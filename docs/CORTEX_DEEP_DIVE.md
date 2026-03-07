@@ -400,9 +400,10 @@ Content-hash dedup: `SHA256(sourcePath + \0 + content)`. Same file reimported = 
 
 ### Graceful Degradation
 
-- No embedder configured → `hybrid` silently falls back to `bm25`
-- Explicit `--mode semantic` without embedder → hard error with remediation hint
-- Query expansion fails → search proceeds without expansion (pre-search only)
+- `hybrid`/`rrf`/`semantic` without `--embed` flag → **auto-resolves embedder** from `embed.provider` in `config.yaml` or `CORTEX_EMBED` env var.
+- No embedder configured anywhere → `hybrid`/`rrf` falls back to BM25 with a notice on stderr.
+- Explicit `--mode semantic` without any embedder → hard error with remediation hint.
+- Query expansion fails → search proceeds without expansion (pre-search only).
 
 ### Ranking
 

@@ -67,6 +67,8 @@ func main() {
 		exitWithError(runSummarize(args[1:]))
 	case "embed":
 		exitWithError(runEmbed(args[1:]))
+	case "embed-source":
+		exitWithError(runEmbedSource(args[1:]))
 	case "index":
 		exitWithError(runIndex(args[1:]))
 	case "search":
@@ -77,6 +79,8 @@ func main() {
 		exitWithError(runAnswer(args[1:]))
 	case "lifecycle":
 		exitWithError(runLifecycle(args[1:]))
+	case "beliefs":
+		exitWithError(runBeliefs(args[1:]))
 	case "stats":
 		exitWithError(runStats(args[1:]))
 	case "list":
@@ -105,6 +109,8 @@ func main() {
 		exitWithError(runUpdate(args[1:]))
 	case "reimport":
 		exitWithError(runReimport(args[1:]))
+	case "refresh-source":
+		exitWithError(runRefreshSource(args[1:]))
 	case "cleanup":
 		exitWithError(runCleanup(args[1:]))
 	case "optimize":
@@ -708,7 +714,7 @@ func runImport(args []string) error {
 	// Run embedding if requested
 	if embedFlag != "" && !opts.DryRun && totalResult.MemoriesNew > 0 {
 		fmt.Println("\nGenerating embeddings...")
-		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag)
+		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag, totalResult.NewMemoryIDs)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Embedding error: %v\n", err)
 		} else {
@@ -904,10 +910,29 @@ func runSearch(args []string) error {
 	}
 	defer s.Close()
 
-	// Create search engine with optional embedder
+	// Create search engine with optional embedder.
+	// For hybrid/rrf/semantic modes, auto-resolve embedder from config/env when
+	// --embed is not explicitly provided so the smartest mode works by default.
 	var engine *search.Engine
-	if embedFlag != "" {
-		// Configure embedder
+	embedExplicit := embedFlag != ""
+	if !embedExplicit && (searchMode == search.ModeHybrid || searchMode == search.ModeRRF || searchMode == search.ModeSemantic) {
+		// Attempt auto-resolution from config/env; errors here are non-fatal.
+		if autoConfig, autoErr := embed.ResolveEmbedConfig(""); autoErr == nil && autoConfig != nil {
+			if autoConfig.Validate() == nil {
+				if embedder, clientErr := embed.NewClient(autoConfig); clientErr == nil {
+					engine = search.NewEngineWithEmbedder(s, embedder)
+					hnswPath := getHNSWPath()
+					if count, err := engine.LoadOrBuildHNSW(context.Background(), hnswPath, 3600); err == nil && count > 0 {
+						if globalVerbose {
+							fmt.Fprintf(os.Stderr, "  HNSW index: %d vectors loaded (auto-resolved from config)\n", count)
+						}
+					}
+				}
+			}
+		}
+	}
+	if engine == nil && embedExplicit {
+		// --embed was explicitly provided: use it and surface errors.
 		embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
 		if err != nil {
 			return fmt.Errorf("configuring embedder: %w", err)
@@ -933,7 +958,8 @@ func runSearch(args []string) error {
 				fmt.Fprintf(os.Stderr, "  HNSW index: %d vectors loaded\n", count)
 			}
 		}
-	} else {
+	}
+	if engine == nil {
 		engine = search.NewEngine(s)
 	}
 
@@ -1380,6 +1406,26 @@ func runLifecycle(args []string) error {
 		report.PolicyRuns.DecayRetire,
 		report.PolicyRuns.ConflictSupersede,
 	)
+
+	// Show per-policy skip stats so operators can diagnose zero-action runs.
+	printSkipStats := func(name string, ss lifecycle.PolicySkipStats) {
+		if ss.Scanned == 0 {
+			return
+		}
+		fmt.Printf("  %s: scanned=%d acted=%d skipped=%d", name, ss.Scanned, ss.Acted, ss.Skipped)
+		if len(ss.SkipReasons) > 0 {
+			reasons := make([]string, 0, len(ss.SkipReasons))
+			for k, v := range ss.SkipReasons {
+				reasons = append(reasons, fmt.Sprintf("%s=%d", k, v))
+			}
+			fmt.Printf(" [%s]", strings.Join(reasons, " "))
+		}
+		fmt.Println()
+	}
+	printSkipStats("reinforce-promote", report.SkipStats.ReinforcePromote)
+	printSkipStats("decay-retire", report.SkipStats.DecayRetire)
+	printSkipStats("conflict-supersede", report.SkipStats.ConflictSupersede)
+
 	show := len(report.Actions)
 	if show > 20 {
 		show = 20
@@ -1403,6 +1449,228 @@ func runLifecycle(args []string) error {
 		fmt.Printf("  ... %d additional actions omitted\n", len(report.Actions)-show)
 	}
 	return nil
+}
+
+type beliefsReport struct {
+	GeneratedAt string                   `json:"generated_at"`
+	Agent       string                   `json:"agent,omitempty"`
+	States      map[string]int64         `json:"states"`
+	Total       int64                    `json:"total"`
+	Policies    cfgresolver.PolicyConfig `json:"policies"`
+}
+
+func runBeliefs(args []string) error {
+	jsonOutput := false
+	agentID := ""
+	positionals := make([]string, 0, len(args))
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--json":
+			jsonOutput = true
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentID = strings.TrimSpace(args[i])
+		case strings.HasPrefix(args[i], "--agent="):
+			agentID = strings.TrimSpace(strings.TrimPrefix(args[i], "--agent="))
+		case args[i] == "--help" || args[i] == "-h":
+			fmt.Println(`cortex beliefs — lifecycle belief stats and manual state overrides
+
+Usage:
+  cortex beliefs [stats] [--json] [--agent <id>]
+  cortex beliefs promote <fact_id> [fact_id...]
+  cortex beliefs retire <fact_id> [fact_id...]
+  cortex beliefs activate <fact_id> [fact_id...]
+  cortex beliefs set <active|core|retired|archive> <fact_id> [fact_id...]
+
+Notes:
+  - archive/archived is an alias for retired
+  - superseded is system-managed and cannot be set directly`)
+			return nil
+		default:
+			positionals = append(positionals, args[i])
+		}
+	}
+
+	if len(positionals) == 0 || strings.EqualFold(positionals[0], "stats") {
+		s, err := store.NewStore(getStoreConfig())
+		if err != nil {
+			return fmt.Errorf("opening store: %w", err)
+		}
+		defer s.Close()
+
+		sqlStore, ok := s.(*store.SQLiteStore)
+		if !ok {
+			return fmt.Errorf("beliefs requires SQLiteStore backend")
+		}
+
+		ctx := context.Background()
+		states := map[string]int64{}
+		order := []string{store.FactStateActive, store.FactStateCore, store.FactStateRetired, store.FactStateSuperseded}
+		var total int64
+		for _, st := range order {
+			n, err := countFactsByState(ctx, sqlStore, st, agentID)
+			if err != nil {
+				return fmt.Errorf("counting state %s: %w", st, err)
+			}
+			states[st] = n
+			total += n
+		}
+
+		policies, err := cfgresolver.ResolvePolicyConfig("")
+		if err != nil {
+			return fmt.Errorf("resolving policies: %w", err)
+		}
+
+		report := beliefsReport{
+			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+			Agent:       agentID,
+			States:      states,
+			Total:       total,
+			Policies:    policies,
+		}
+
+		if jsonOutput || !isTTY() {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(report)
+		}
+
+		title := "Beliefs state counts"
+		if agentID != "" {
+			title = fmt.Sprintf("Beliefs state counts (agent=%s)", agentID)
+		}
+		fmt.Printf("%s:\n", title)
+		for _, st := range order {
+			fmt.Printf("  %-10s %d\n", st, states[st])
+		}
+		fmt.Printf("  %-10s %d\n", "total", total)
+		fmt.Println()
+		fmt.Println("Lifecycle policies:")
+		fmt.Printf("  reinforce-promote: enabled=%t min_reinforcements=%d min_sources=%d target=%s\n",
+			report.Policies.ReinforcePromote.Enabled,
+			report.Policies.ReinforcePromote.MinReinforcements,
+			report.Policies.ReinforcePromote.MinSources,
+			report.Policies.ReinforcePromote.TargetState,
+		)
+		fmt.Printf("  decay-retire:      enabled=%t inactive_days=%d confidence_below=%.2f target=%s\n",
+			report.Policies.DecayRetire.Enabled,
+			report.Policies.DecayRetire.InactiveDays,
+			report.Policies.DecayRetire.ConfidenceBelow,
+			report.Policies.DecayRetire.TargetState,
+		)
+		fmt.Printf("  conflict-supersede: enabled=%t require_strictly_newer=%t min_confidence_delta=%.2f\n",
+			report.Policies.ConflictSupersede.Enabled,
+			report.Policies.ConflictSupersede.RequireStrictlyNewer,
+			report.Policies.ConflictSupersede.MinConfidenceDelta,
+		)
+		return nil
+	}
+
+	sub := strings.ToLower(strings.TrimSpace(positionals[0]))
+	state := ""
+	ids := []string{}
+
+	switch sub {
+	case "promote":
+		state = store.FactStateCore
+		ids = positionals[1:]
+	case "retire":
+		state = store.FactStateRetired
+		ids = positionals[1:]
+	case "activate":
+		state = store.FactStateActive
+		ids = positionals[1:]
+	case "archive", "archived":
+		state = store.FactStateRetired
+		ids = positionals[1:]
+	case "set":
+		if len(positionals) < 3 {
+			return fmt.Errorf("usage: cortex beliefs set <active|core|retired|archive> <fact_id> [fact_id...]")
+		}
+		resolved, err := resolveBeliefTargetState(positionals[1])
+		if err != nil {
+			return err
+		}
+		state = resolved
+		ids = positionals[2:]
+	default:
+		return fmt.Errorf("unknown beliefs subcommand %q", sub)
+	}
+
+	if len(ids) == 0 {
+		return fmt.Errorf("no fact IDs provided")
+	}
+	if globalReadOnly {
+		return fmt.Errorf("belief state updates are not available in --read-only mode")
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	updated, err := updateBeliefStates(context.Background(), s, state, ids)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Updated %d fact(s) to state=%s\n", updated, state)
+	return nil
+}
+
+func resolveBeliefTargetState(raw string) (string, error) {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	switch s {
+	case store.FactStateActive, "activate":
+		return store.FactStateActive, nil
+	case store.FactStateCore, "promote":
+		return store.FactStateCore, nil
+	case store.FactStateRetired, "retire", "archive", "archived":
+		return store.FactStateRetired, nil
+	case store.FactStateSuperseded:
+		return "", fmt.Errorf("state %q is system-managed and cannot be set directly", store.FactStateSuperseded)
+	default:
+		return "", fmt.Errorf("invalid belief state %q (valid: active, core, retired, archive)", raw)
+	}
+}
+
+func updateBeliefStates(ctx context.Context, s store.Store, state string, ids []string) (int, error) {
+	state, err := resolveBeliefTargetState(state)
+	if err != nil {
+		return 0, err
+	}
+
+	updated := 0
+	for _, rawID := range ids {
+		id, err := strconv.ParseInt(strings.TrimSpace(rawID), 10, 64)
+		if err != nil {
+			return updated, fmt.Errorf("invalid fact id %q", rawID)
+		}
+		if err := s.UpdateFactState(ctx, id, state); err != nil {
+			return updated, fmt.Errorf("updating fact %d: %w", id, err)
+		}
+		updated++
+	}
+	return updated, nil
+}
+
+func countFactsByState(ctx context.Context, sqlStore *store.SQLiteStore, state, agentID string) (int64, error) {
+	query := `SELECT COUNT(*) FROM facts WHERE LOWER(state)=?`
+	args := []interface{}{strings.ToLower(strings.TrimSpace(state))}
+	if strings.TrimSpace(agentID) != "" {
+		query += ` AND LOWER(COALESCE(agent_id, '')) = LOWER(?)`
+		args = append(args, strings.TrimSpace(agentID))
+	}
+	var n int64
+	if err := sqlStore.QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return n, nil
 }
 
 func runStats(args []string) error {
@@ -3212,31 +3480,28 @@ type EmbeddingStats struct {
 }
 
 // runEmbeddingOnImportedMemories runs embedding on recently imported memories.
-func runEmbeddingOnImportedMemories(ctx context.Context, s store.Store, embedFlag string) (*EmbeddingStats, error) {
-	// Configure embedder
-	embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
+func runEmbeddingOnImportedMemories(ctx context.Context, s store.Store, embedFlag string, memoryIDs []int64) (*EmbeddingStats, error) {
+	embedEngine, err := newEmbedEngineForFlag(s, embedFlag)
 	if err != nil {
-		return nil, fmt.Errorf("configuring embedder: %w", err)
-	}
-	if embedConfig == nil {
-		return nil, fmt.Errorf("no embedding configuration found")
-	}
-	if err := embedConfig.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid embedding configuration: %w", err)
+		return nil, err
 	}
 
-	embedder, err := embed.NewClient(embedConfig)
-	if err != nil {
-		return nil, fmt.Errorf("creating embedder: %w", err)
+	// Embed only the memories created by the current import/refresh operation.
+	allowed := make(map[int64]struct{}, len(memoryIDs))
+	for _, id := range memoryIDs {
+		allowed[id] = struct{}{}
 	}
 
-	// Create embedding engine
-	embedEngine := ingest.NewEmbedEngine(s, embedder)
-
-	// Embed only recently imported memories (filter for ones without embeddings)
 	opts := ingest.DefaultEmbedOptions()
 	opts.ProgressFn = func(current, total int) {
 		fmt.Printf("  [%d/%d] Embedding memories...\n", current, total)
+	}
+	opts.FilterFn = func(memory *store.Memory) bool {
+		if len(allowed) == 0 {
+			return false
+		}
+		_, ok := allowed[memory.ID]
+		return ok
 	}
 
 	result, err := embedEngine.EmbedMemories(ctx, opts)
@@ -4337,7 +4602,7 @@ func runReimport(args []string) error {
 	// Step 3: Embed (if requested)
 	if embedFlag != "" && totalResult.MemoriesNew > 0 {
 		fmt.Println("Step 3/3: Generating embeddings...")
-		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag)
+		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag, totalResult.NewMemoryIDs)
 		if err != nil {
 			return fmt.Errorf("embedding error: %w", err)
 		}
@@ -4354,6 +4619,255 @@ func runReimport(args []string) error {
 	fmt.Println()
 	fmt.Print(ingest.FormatImportResult(totalResult))
 	fmt.Println("\n✅ Reimport complete!")
+	return nil
+}
+
+// runRefreshSource removes all memories/facts for a single source file and reimports it
+// using the current extraction pipeline. Unlike `reimport`, it is narrowly scoped to
+// exactly one file and does NOT touch the rest of the database.
+func runRefreshSource(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex refresh-source <path> [--dry-run] [--extract] [--no-enrich] [--no-classify] [--embed <model>] [--llm <model>] [--force]")
+	}
+
+	var path string
+	dryRun := false
+	enableExtraction := false
+	noEnrich := false
+	noClassify := false
+	embedFlag := ""
+	llmFlag := ""
+	force := false
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--dry-run" || args[i] == "-n":
+			dryRun = true
+		case args[i] == "--extract":
+			enableExtraction = true
+		case args[i] == "--no-enrich":
+			noEnrich = true
+		case args[i] == "--no-classify":
+			noClassify = true
+		case args[i] == "--embed" && i+1 < len(args):
+			i++
+			embedFlag = args[i]
+		case strings.HasPrefix(args[i], "--embed="):
+			embedFlag = strings.TrimPrefix(args[i], "--embed=")
+		case args[i] == "--llm" && i+1 < len(args):
+			i++
+			llmFlag = args[i]
+		case strings.HasPrefix(args[i], "--llm="):
+			llmFlag = strings.TrimPrefix(args[i], "--llm=")
+		case args[i] == "--force" || args[i] == "-f":
+			force = true
+		case args[i] == "--help" || args[i] == "-h":
+			fmt.Print(`cortex refresh-source — Safely refresh a single source file
+
+Removes all memories and facts derived from the given file, then reimports
+it using the current extraction pipeline. Only the specified file is touched;
+the rest of the database is left intact.
+
+Unlike ` + "`cortex reimport`" + `, this command is scoped to a single file and
+does not wipe or rebuild the database.
+
+Usage:
+  cortex refresh-source <path> [flags]
+
+Flags:
+  --dry-run, -n        Preview what would be removed/imported, no writes
+  --extract            Run fact extraction on newly imported memories
+  --no-enrich          Skip LLM enrichment (only with --extract)
+  --no-classify        Skip fact classification (only with --extract)
+  --embed <model>      Generate embeddings for new memories
+  --llm <model>        LLM for extraction/enrichment
+  --force, -f          Skip confirmation prompt
+
+Examples:
+  cortex refresh-source /path/to/memory/2026-01-28.md
+  cortex refresh-source /path/to/memory/2026-01-28.md --dry-run
+  cortex refresh-source /path/to/memory/2026-01-28.md --extract --force
+`)
+			return nil
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		default:
+			if path != "" {
+				return fmt.Errorf("refresh-source accepts exactly one file path; got extra argument: %s", args[i])
+			}
+			path = args[i]
+		}
+	}
+
+	if path == "" {
+		return fmt.Errorf("no path specified")
+	}
+
+	// Resolve to absolute path (this is how source_file is stored in the DB)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolving path: %w", err)
+	}
+
+	// Fail clearly if the file is missing — we refuse to operate on ghosts
+	if _, statErr := os.Stat(absPath); os.IsNotExist(statErr) {
+		return fmt.Errorf("source file not found: %s\n(refresh-source will not purge a file that no longer exists on disk; use `cortex cleanup` for orphaned memories)", absPath)
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Query existing memories for this source — for reporting and confirmation
+	existing, err := s.ListMemories(ctx, store.ListOpts{SourceFile: absPath, Limit: 100000})
+	if err != nil {
+		return fmt.Errorf("querying existing memories: %w", err)
+	}
+
+	// Count associated facts for the report
+	var existingFactCount int64
+	if len(existing) > 0 {
+		memIDs := make([]int64, len(existing))
+		for i, m := range existing {
+			memIDs[i] = m.ID
+		}
+		existingFacts, err := s.GetFactsByMemoryIDs(ctx, memIDs)
+		if err != nil {
+			return fmt.Errorf("querying existing facts: %w", err)
+		}
+		existingFactCount = int64(len(existingFacts))
+	}
+
+	fmt.Printf("Source: %s\n", absPath)
+	fmt.Printf("  Existing memories : %d\n", len(existing))
+	fmt.Printf("  Existing facts    : %d\n", existingFactCount)
+
+	if dryRun {
+		fmt.Println("\n[dry-run] No changes made.")
+		fmt.Println("  Would remove the memories/facts above and reimport from disk.")
+		return nil
+	}
+
+	// Confirmation prompt when there are existing memories and --force not set
+	if !force && len(existing) > 0 {
+		fmt.Printf("\nThis will remove %d memories and %d facts for this source, then reimport.\n", len(existing), existingFactCount)
+		fmt.Print("Continue? [y/N] ")
+		var answer string
+		fmt.Scanln(&answer)
+		answer = strings.TrimSpace(strings.ToLower(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Println("Aborted.")
+			return nil
+		}
+	}
+
+	// Step 1: Remove existing memories + facts for this source
+	fmt.Printf("\nStep 1/3: Removing existing memories for source...\n")
+	removed, err := s.DeleteMemoriesBySourceFile(ctx, absPath)
+	if err != nil {
+		return fmt.Errorf("removing memories for source: %w", err)
+	}
+	fmt.Printf("  ✓ Removed %d memories (%d facts)\n", removed, existingFactCount)
+
+	// Step 2: Reimport from disk
+	fmt.Println("Step 2/3: Reimporting from disk...")
+	engine := ingest.NewEngine(s)
+	opts := ingest.ImportOptions{
+		ProgressFn: func(current, total int, file string) {
+			fmt.Printf("  [%d/%d] %s\n", current, total, file)
+		},
+	}
+
+	result, err := engine.ImportFile(ctx, absPath, opts)
+	if err != nil {
+		return fmt.Errorf("reimporting %s: %w", absPath, err)
+	}
+	fmt.Printf("  ✓ Imported %d new memories (%d unchanged)\n", result.MemoriesNew, result.MemoriesUnchanged)
+	if removed > 0 && result.MemoriesNew == 0 {
+		return fmt.Errorf("refresh-source removed %d existing memories for %s but recreated 0 new ones; aborting success path", removed, absPath)
+	}
+
+	// Run extraction if requested
+	if enableExtraction && result.MemoriesNew > 0 {
+		fmt.Println("  Extracting facts...")
+		extractionStats, err := runExtractionOnImportedMemories(ctx, s, llmFlag, result.NewMemoryIDs, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Extraction error: %v\n", err)
+		} else {
+			fmt.Printf("  ✓ Extracted %d facts\n", extractionStats.FactsExtracted)
+		}
+
+		if !noEnrich {
+			enrichLLM := llmFlag
+			if enrichLLM == "" {
+				if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+					enrichLLM = resolvedCfg.EffectiveLLMModel("enrich", extract.DefaultEnrichModel).Value
+				}
+				if enrichLLM == "" {
+					enrichLLM = extract.DefaultEnrichModel
+				}
+			}
+			if _, err := tryCreateProvider(enrichLLM); err != nil {
+				fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key). Pass --no-enrich to silence this.\n")
+			} else {
+				fmt.Println("  Running LLM enrichment...")
+				enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM, result.NewMemoryIDs)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  Enrichment error: %v\n", err)
+				} else if enrichStats.NewFacts > 0 {
+					fmt.Printf("  🧠 Enrichment: +%d new facts from LLM\n", enrichStats.NewFacts)
+				}
+			}
+		}
+
+		if !noClassify && !noEnrich {
+			classifyLLM := llmFlag
+			if classifyLLM == "" {
+				if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+					classifyLLM = resolvedCfg.EffectiveLLMModel("classify", extract.DefaultClassifyModel).Value
+				}
+				if classifyLLM == "" {
+					classifyLLM = extract.DefaultClassifyModel
+				}
+			}
+			if _, err := tryCreateProvider(classifyLLM); err != nil {
+				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key). Pass --no-classify to silence this.\n")
+			} else {
+				fmt.Println("  Classifying facts...")
+				classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM, result.NewMemoryIDs)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  Classification error: %v\n", err)
+				} else if classifyStats.Reclassified > 0 {
+					fmt.Printf("  🏷️  Classified: %d/%d kv facts reclassified\n",
+						classifyStats.Reclassified, classifyStats.Total)
+				}
+			}
+		}
+	}
+
+	// Step 3: Embed
+	if embedFlag != "" && result.MemoriesNew > 0 {
+		fmt.Println("Step 3/3: Generating embeddings...")
+		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag, result.NewMemoryIDs)
+		if err != nil {
+			return fmt.Errorf("embedding error: %w", err)
+		}
+		fmt.Printf("  ✓ Generated %d embeddings\n", embedStats.EmbeddingsAdded)
+		if embedStats.HNSWRebuilt {
+			fmt.Printf("  ✓ Rebuilt HNSW index (%d vectors)\n", embedStats.HNSWVectorCount)
+		}
+	} else if embedFlag == "" {
+		fmt.Println("Step 3/3: Skipped (no --embed flag)")
+	} else {
+		fmt.Println("Step 3/3: Skipped (no new memories)")
+	}
+
+	fmt.Printf("\n✅ Refresh complete: removed %d old, imported %d new memories from %s\n",
+		removed, result.MemoriesNew, filepath.Base(absPath))
 	return nil
 }
 
@@ -5180,6 +5694,7 @@ const (
 
 type embedCmdOptions struct {
 	embedFlag    string
+	sourceFile   string
 	batchSize    int
 	forceReembed bool
 	watch        bool
@@ -5195,6 +5710,10 @@ type embedPassSummary struct {
 	result          *ingest.EmbedResult
 	hnswRebuilt     bool
 	hnswVectorCount int
+}
+
+var newEmbedClient = func(cfg *embed.EmbedConfig) (embed.Embedder, error) {
+	return embed.NewClient(cfg)
 }
 
 func runEmbed(args []string) error {
@@ -5220,24 +5739,10 @@ func runEmbed(args []string) error {
 	}
 	defer s.Close()
 
-	// Configure embedder
-	embedConfig, err := embed.ResolveEmbedConfig(opts.embedFlag)
+	embedEngine, err := newEmbedEngineForFlag(s, opts.embedFlag)
 	if err != nil {
-		return fmt.Errorf("configuring embedder: %w", err)
+		return err
 	}
-	if embedConfig == nil {
-		return fmt.Errorf("no embedding configuration found (pass <provider/model> or set CORTEX_EMBED)")
-	}
-	if err := embedConfig.Validate(); err != nil {
-		return fmt.Errorf("invalid embedding configuration: %w", err)
-	}
-
-	embedder, err := embed.NewClient(embedConfig)
-	if err != nil {
-		return fmt.Errorf("creating embedder: %w", err)
-	}
-
-	embedEngine := ingest.NewEmbedEngine(s, embedder)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -5248,6 +5753,91 @@ func runEmbed(args []string) error {
 	}
 
 	return runEmbedLoop(ctx, s, embedEngine, opts)
+}
+
+func runEmbedSource(args []string) error {
+	for _, arg := range args {
+		if arg == "--help" || arg == "-h" {
+			fmt.Print(`cortex embed-source — Finish embeddings for one source file
+
+Embeds only active memories whose source_file matches the specified path.
+No other sources are scanned for embedding work. If new embeddings are added,
+the persisted HNSW index is rebuilt from stored embeddings as usual.
+
+Usage:
+  cortex embed-source <path> [provider/model] [--batch-size N]
+
+Flags:
+  --batch-size N       Embedding batch size (default: 10)
+
+Examples:
+  cortex embed-source /path/to/memory/2026-02-21.md
+  cortex embed-source /path/to/memory/2026-02-21.md ollama/nomic-embed-text
+  cortex embed-source /path/to/memory/2026-02-21.md --batch-size 4
+`)
+			return nil
+		}
+	}
+
+	opts, err := parseEmbedSourceArgs(args)
+	if err != nil {
+		return err
+	}
+
+	absPath, err := filepath.Abs(opts.sourceFile)
+	if err != nil {
+		return fmt.Errorf("resolving source path: %w", err)
+	}
+	opts.sourceFile = absPath
+
+	lockPath := getEmbedLockPath()
+	lock, err := acquireEmbedRunLock(lockPath)
+	if err != nil {
+		if errors.Is(err, errEmbedLockHeld) {
+			return fmt.Errorf("another embedding process is already running (%s)", lockPath)
+		}
+		return err
+	}
+	defer lock.Release()
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	existing, err := s.ListMemories(ctx, store.ListOpts{SourceFile: opts.sourceFile, Limit: 100000})
+	if err != nil {
+		return fmt.Errorf("querying source memories: %w", err)
+	}
+	if len(existing) == 0 {
+		return fmt.Errorf("no active memories found for source: %s", opts.sourceFile)
+	}
+
+	pendingIDs, err := s.ListMemoryIDsWithoutEmbeddingsBySourceFile(ctx, opts.sourceFile, 100000)
+	if err != nil {
+		return fmt.Errorf("querying pending embeddings: %w", err)
+	}
+
+	embedEngine, err := newEmbedEngineForFlag(s, opts.embedFlag)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Source: %s\n", opts.sourceFile)
+	fmt.Printf("  Active memories    : %d\n", len(existing))
+	fmt.Printf("  Missing embeddings : %d\n", len(pendingIDs))
+
+	startedAt := time.Now()
+	summary, err := runEmbedPass(ctx, s, embedEngine, opts)
+	if err != nil {
+		return err
+	}
+	printEmbedPassSummary(summary, time.Since(startedAt))
+	return nil
 }
 
 func parseEmbedArgs(args []string) (embedCmdOptions, error) {
@@ -5314,6 +5904,54 @@ func parseEmbedArgs(args []string) (embedCmdOptions, error) {
 	return opts, nil
 }
 
+func parseEmbedSourceArgs(args []string) (embedCmdOptions, error) {
+	opts := embedCmdOptions{
+		batchSize: defaultEmbedBatchSize,
+	}
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--batch-size" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return opts, fmt.Errorf("invalid --batch-size value: %s", args[i])
+			}
+			opts.batchSize = n
+		case strings.HasPrefix(args[i], "--batch-size="):
+			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--batch-size="))
+			if err != nil {
+				return opts, fmt.Errorf("invalid --batch-size value: %s", args[i])
+			}
+			opts.batchSize = n
+		case strings.HasPrefix(args[i], "-"):
+			return opts, fmt.Errorf("unknown flag: %s\nUsage: cortex embed-source <path> [provider/model] [--batch-size N]", args[i])
+		default:
+			if opts.sourceFile == "" {
+				opts.sourceFile = args[i]
+				continue
+			}
+			if opts.embedFlag == "" {
+				opts.embedFlag = args[i]
+				continue
+			}
+			return opts, fmt.Errorf("unexpected argument: %s\nUsage: cortex embed-source <path> [provider/model] [--batch-size N]", args[i])
+		}
+	}
+
+	if opts.sourceFile == "" {
+		return opts, fmt.Errorf("usage: cortex embed-source <path> [provider/model] [--batch-size N]\n       (or set CORTEX_EMBED)")
+	}
+	if opts.batchSize <= 0 {
+		return opts, fmt.Errorf("--batch-size must be > 0")
+	}
+	if opts.embedFlag == "" && os.Getenv("CORTEX_EMBED") == "" {
+		return opts, fmt.Errorf("usage: cortex embed-source <path> [provider/model] [--batch-size N]\n       (or set CORTEX_EMBED)")
+	}
+
+	return opts, nil
+}
+
 func runEmbedLoop(ctx context.Context, s store.Store, embedEngine *ingest.EmbedEngine, opts embedCmdOptions) error {
 	consecutiveFailures := 0
 
@@ -5358,6 +5996,10 @@ func runEmbedLoop(ctx context.Context, s store.Store, embedEngine *ingest.EmbedE
 }
 
 func runEmbedPass(ctx context.Context, s store.Store, embedEngine *ingest.EmbedEngine, opts embedCmdOptions) (*embedPassSummary, error) {
+	if opts.forceReembed && opts.sourceFile != "" {
+		return nil, fmt.Errorf("--force cannot be used with source-scoped embedding")
+	}
+
 	if opts.forceReembed {
 		fmt.Println("Force mode: deleting all existing embeddings for re-generation with context enrichment...")
 		deleted, err := s.DeleteAllEmbeddings(ctx)
@@ -5369,11 +6011,14 @@ func runEmbedPass(ctx context.Context, s store.Store, embedEngine *ingest.EmbedE
 
 	if opts.forceReembed {
 		fmt.Println("Re-generating all embeddings with context-enriched content...")
+	} else if opts.sourceFile != "" {
+		fmt.Printf("Generating embeddings for active memories without embeddings from %s...\n", opts.sourceFile)
 	} else {
 		fmt.Println("Generating embeddings for memories without embeddings...")
 	}
 
 	embedOpts := ingest.DefaultEmbedOptions()
+	embedOpts.SourceFile = opts.sourceFile
 	embedOpts.BatchSize = opts.batchSize
 	embedOpts.AdaptiveBatching = true
 	embedOpts.HealthCheckEvery = 5
@@ -5426,6 +6071,26 @@ func rebuildHNSWIndex(ctx context.Context, s store.Store) (int, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+func newEmbedEngineForFlag(s store.Store, embedFlag string) (*ingest.EmbedEngine, error) {
+	embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
+	if err != nil {
+		return nil, fmt.Errorf("configuring embedder: %w", err)
+	}
+	if embedConfig == nil {
+		return nil, fmt.Errorf("no embedding configuration found (pass <provider/model> or set CORTEX_EMBED)")
+	}
+	if err := embedConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid embedding configuration: %w", err)
+	}
+
+	embedder, err := newEmbedClient(embedConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating embedder: %w", err)
+	}
+
+	return ingest.NewEmbedEngine(s, embedder), nil
 }
 
 func printEmbedPassSummary(summary *embedPassSummary, elapsed time.Duration) {
@@ -8385,12 +9050,41 @@ func runDoctorChecks() doctorReport {
 				Status:  "pass",
 				Details: fmt.Sprintf("llm_provider: %s (from: %s)", model.Value, model.From),
 			})
+		} else if provider := strings.TrimSpace(resolvedCfg.LLMProvider.Value); provider != "" {
+			from := strings.TrimSpace(resolvedCfg.LLMProvider.From)
+			if from == "" {
+				from = string(resolvedCfg.LLMProvider.Source)
+			}
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "resolved_config",
+				Status:  "pass",
+				Details: fmt.Sprintf("llm_provider: %s (from: %s; provider-only)", provider, from),
+			})
 		} else {
 			addDoctorCheck(&report, doctorCheck{
 				Name:    "resolved_config",
 				Status:  "warn",
 				Details: "llm_provider not resolved",
 				Hint:    "Set llm.provider in ~/.cortex/config.yaml, CORTEX_LLM, or --llm.",
+			})
+		}
+
+		if embedProvider := strings.TrimSpace(resolvedCfg.EmbedProvider.Value); embedProvider != "" {
+			from := strings.TrimSpace(resolvedCfg.EmbedProvider.From)
+			if from == "" {
+				from = string(resolvedCfg.EmbedProvider.Source)
+			}
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "embed_config",
+				Status:  "pass",
+				Details: fmt.Sprintf("embed_provider: %s (from: %s)", embedProvider, from),
+			})
+		} else if stats != nil && stats.EmbeddingCount > 0 {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "embed_config",
+				Status:  "warn",
+				Details: "embeddings exist, but no embed provider is configured for new query embeddings",
+				Hint:    "Set embed.provider in ~/.cortex/config.yaml or CORTEX_EMBED (for example ollama/nomic-embed-text) so hybrid/semantic search can use the stored vectors.",
 			})
 		}
 	}
@@ -8815,12 +9509,12 @@ func execCommand(name string, args ...string) error {
 
 // cortexCommands is the authoritative list of top-level commands for completion.
 var cortexCommands = []string{
-	"import", "reimport", "search", "query", "list", "export", "update", "demo",
+	"import", "reimport", "refresh-source", "search", "query", "list", "export", "update", "demo",
 	"extract", "classify", "reinforce", "supersede", "fact-history",
 	"stats", "stale", "conflicts", "agents", "projects",
 	"graph", "cluster",
 	"reason", "bench",
-	"cleanup", "optimize", "embed", "tag", "answer", "lifecycle",
+	"cleanup", "optimize", "embed", "tag", "answer", "lifecycle", "beliefs",
 	"connect",
 	"mcp", "doctor", "completion", "version", "help",
 }
@@ -8897,10 +9591,12 @@ Usage:
 Memory:
   import <path>         Import memories from files or directories
   reimport <path>       Wipe database and reimport from scratch
+  refresh-source <path> Refresh one source file without touching the rest of the DB
   search <query>        Search memories (keyword, semantic, hybrid, or rrf)
   query                 Filter facts by metadata (--where clauses)
   answer <query>        Search + synthesize short answer with citations
   lifecycle run         Apply built-in lifecycle policies to facts
+  beliefs               Belief lifecycle stats + manual state overrides
   list                  List memories or facts
   export                Export memory store (json, markdown, csv)
   update <id>           Update a memory's content
@@ -8933,6 +9629,7 @@ Maintenance:
   cleanup               Remove garbage memories and headless facts
   optimize              DB maintenance (integrity check, VACUUM, ANALYZE)
   embed <provider/model> Generate or refresh embeddings
+  embed-source <path>   Finish embeddings for one source file
   tag                   Tag memories by project
 
 Connectors:

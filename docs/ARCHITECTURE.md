@@ -94,7 +94,8 @@ Three search modes, composable.
 - **Semantic**: Cosine similarity on embedding vectors (requires embedder)
 - **Hybrid**: BM25 + semantic with reciprocal rank fusion (RRF)
 - **Query expansion**: Pre-search LLM call to broaden query (Gemini free tier). Runs *before* retrieval — no LLM in the search path itself.
-- **Graceful degradation**: Hybrid without embedder → silent fallback to BM25. Semantic without embedder → hard error with remediation hint.
+- **Auto-resolve embedder**: Hybrid/RRF/semantic modes automatically resolve the embedder from `config.yaml` or environment (CORTEX_EMBED) when `--embed` is not passed explicitly. Falls back to BM25 if no embedder is configured at all.
+- **Graceful degradation**: Hybrid without any embedder available → falls back to BM25 with a notice. Semantic without embedder → hard error with remediation hint.
 - **Confidence decay**: Results weighted by Ebbinghaus decay factor per fact type
 - **Agent scoping**: `--agent` filters to single agent's memories
 

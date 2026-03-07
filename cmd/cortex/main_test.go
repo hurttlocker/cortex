@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/connect"
+	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/observe"
 	"github.com/hurttlocker/cortex/internal/store"
 )
@@ -814,6 +815,163 @@ func TestOutputResolveBatchTTY_VerboseShowsAll(t *testing.T) {
 }
 
 // ==================== embed watch parsing + locking ====================
+
+type mockCommandEmbedder struct {
+	dims int
+}
+
+func (m *mockCommandEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	batch, err := m.EmbedBatch(ctx, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	return batch[0], nil
+}
+
+func (m *mockCommandEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	result := make([][]float32, len(texts))
+	for i, text := range texts {
+		vec := make([]float32, m.dims)
+		vec[0] = float32(len(text))
+		result[i] = vec
+	}
+	return result, nil
+}
+
+func (m *mockCommandEmbedder) Dimensions() int { return m.dims }
+
+func TestRunEmbedSource_Help(t *testing.T) {
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runEmbedSource([]string{"--help"})
+	})
+	if runErr != nil {
+		t.Fatalf("runEmbedSource --help: %v", runErr)
+	}
+	if !strings.Contains(out, "cortex embed-source") {
+		t.Fatalf("expected embed-source help output, got: %q", out)
+	}
+	if !strings.Contains(out, "Embeds only active memories") {
+		t.Fatalf("expected scoped description in help, got: %q", out)
+	}
+}
+
+func TestParseEmbedSourceArgs(t *testing.T) {
+	opts, err := parseEmbedSourceArgs([]string{"notes.md", "ollama/nomic-embed-text", "--batch-size", "7"})
+	if err != nil {
+		t.Fatalf("parseEmbedSourceArgs: %v", err)
+	}
+	if opts.sourceFile != "notes.md" {
+		t.Fatalf("sourceFile = %q, want notes.md", opts.sourceFile)
+	}
+	if opts.embedFlag != "ollama/nomic-embed-text" {
+		t.Fatalf("embedFlag = %q, want ollama/nomic-embed-text", opts.embedFlag)
+	}
+	if opts.batchSize != 7 {
+		t.Fatalf("batchSize = %d, want 7", opts.batchSize)
+	}
+}
+
+func TestParseEmbedSourceArgs_EnvFallback(t *testing.T) {
+	t.Setenv("CORTEX_EMBED", "ollama/nomic-embed-text")
+	opts, err := parseEmbedSourceArgs([]string{"notes.md"})
+	if err != nil {
+		t.Fatalf("parseEmbedSourceArgs env fallback: %v", err)
+	}
+	if opts.sourceFile != "notes.md" {
+		t.Fatalf("sourceFile = %q, want notes.md", opts.sourceFile)
+	}
+	if opts.embedFlag != "" {
+		t.Fatalf("embedFlag = %q, want empty when using env fallback", opts.embedFlag)
+	}
+}
+
+func TestRunEmbedSource_EmbedsOnlyRequestedSource(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	sourceA := filepath.Join(tmpDir, "2026-02-21.md")
+	sourceB := filepath.Join(tmpDir, "2026-02-22.md")
+
+	if err := os.WriteFile(sourceA, []byte("source a"), 0600); err != nil {
+		t.Fatalf("write sourceA: %v", err)
+	}
+	if err := os.WriteFile(sourceB, []byte("source b"), 0600); err != nil {
+		t.Fatalf("write sourceB: %v", err)
+	}
+
+	oldDBPath := globalDBPath
+	oldReadOnly := globalReadOnly
+	oldFactory := newEmbedClient
+	globalDBPath = ""
+	globalReadOnly = false
+	t.Cleanup(func() {
+		globalDBPath = oldDBPath
+		globalReadOnly = oldReadOnly
+		newEmbedClient = oldFactory
+	})
+	t.Setenv("CORTEX_DB", dbPath)
+	t.Setenv("CORTEX_EMBED", "ollama/nomic-embed-text")
+	newEmbedClient = func(cfg *embed.EmbedConfig) (embed.Embedder, error) {
+		return &mockCommandEmbedder{dims: 8}, nil
+	}
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memA1, err := s.AddMemory(ctx, &store.Memory{Content: "alpha memory one", SourceFile: sourceA})
+	if err != nil {
+		t.Fatalf("AddMemory memA1: %v", err)
+	}
+	memA2, err := s.AddMemory(ctx, &store.Memory{Content: "alpha memory two", SourceFile: sourceA})
+	if err != nil {
+		t.Fatalf("AddMemory memA2: %v", err)
+	}
+	memB, err := s.AddMemory(ctx, &store.Memory{Content: "beta memory one", SourceFile: sourceB})
+	if err != nil {
+		t.Fatalf("AddMemory memB: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close seed store: %v", err)
+	}
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runEmbedSource([]string{sourceA})
+	})
+	if runErr != nil {
+		t.Fatalf("runEmbedSource: %v\nout=%s", runErr, out)
+	}
+	if !strings.Contains(out, "Source: "+sourceA) {
+		t.Fatalf("expected source header, got: %q", out)
+	}
+	if !strings.Contains(out, "Missing embeddings : 2") {
+		t.Fatalf("expected missing embedding count for sourceA, got: %q", out)
+	}
+
+	s, err = store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("Reopen store: %v", err)
+	}
+	defer s.Close()
+
+	for _, id := range []int64{memA1, memA2} {
+		vec, err := s.GetEmbedding(ctx, id)
+		if err != nil || len(vec) == 0 {
+			t.Fatalf("expected embedding for source A memory %d", id)
+		}
+	}
+	if vec, err := s.GetEmbedding(ctx, memB); err == nil && len(vec) > 0 {
+		t.Fatalf("did not expect embedding for source B memory %d", memB)
+	}
+}
 
 func TestParseEmbedArgs_WatchMode(t *testing.T) {
 	opts, err := parseEmbedArgs([]string{"ollama/nomic-embed-text", "--watch", "--interval", "45m", "--batch-size", "12"})
@@ -1728,6 +1886,64 @@ func TestRunDoctor_JSONHealthyDB(t *testing.T) {
 	}
 }
 
+func TestRunDoctor_ResolvedConfigProviderOnlyPasses(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	home := filepath.Join(tmpDir, "home")
+	cfgDir := filepath.Join(home, ".cortex")
+	if err := os.MkdirAll(cfgDir, 0755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	cfg := []byte("llm:\n  provider: openrouter\n")
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), cfg, 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	t.Setenv("CORTEX_LLM", "")
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runDoctor([]string{"--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runDoctor --json failed: %v\nout=%s", runErr, out)
+	}
+
+	var report doctorReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode doctor report: %v\nout=%q", err, out)
+	}
+
+	check, ok := findDoctorCheck(report, "resolved_config")
+	if !ok {
+		t.Fatalf("expected resolved_config check in report: %+v", report)
+	}
+	if check.Status != "pass" {
+		t.Fatalf("expected resolved_config status=pass for provider-only config, got %+v", check)
+	}
+	if !strings.Contains(strings.ToLower(check.Details), "openrouter") {
+		t.Fatalf("expected resolved_config details to include provider, got %+v", check)
+	}
+}
+
 func TestRunDoctor_QuietSuppressesPassingChecks(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "cortex.db")
@@ -1755,6 +1971,141 @@ func TestRunDoctor_QuietSuppressesPassingChecks(t *testing.T) {
 	}
 	if !strings.Contains(out, "Summary:") {
 		t.Fatalf("expected summary line in output, got: %s", out)
+	}
+}
+
+// ==================== beliefs command ====================
+
+func TestRunBeliefs_JSONStats(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memID, err := s.AddMemory(ctx, &store.Memory{Content: "beliefs stats seed", SourceFile: "beliefs.md"})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	fActive, _ := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "A", Predicate: "is", Object: "active", FactType: "state", Confidence: 0.9})
+	fCore, _ := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "B", Predicate: "is", Object: "core", FactType: "state", Confidence: 0.9})
+	if err := s.UpdateFactState(ctx, fCore, store.FactStateCore); err != nil {
+		t.Fatalf("UpdateFactState core: %v", err)
+	}
+	fRet, _ := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "C", Predicate: "is", Object: "retired", FactType: "state", Confidence: 0.9})
+	if err := s.UpdateFactState(ctx, fRet, store.FactStateRetired); err != nil {
+		t.Fatalf("UpdateFactState retired: %v", err)
+	}
+	fOld, _ := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "D", Predicate: "is", Object: "old", FactType: "state", Confidence: 0.7})
+	fNew, _ := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "D", Predicate: "is", Object: "new", FactType: "state", Confidence: 0.95})
+	if err := s.SupersedeFact(ctx, fOld, fNew, "test"); err != nil {
+		t.Fatalf("SupersedeFact: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	_ = fActive
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runBeliefs([]string{"--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runBeliefs --json: %v\nout=%s", runErr, out)
+	}
+
+	var report beliefsReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode beliefs report: %v\nout=%q", err, out)
+	}
+	if report.States[store.FactStateActive] != 2 {
+		t.Fatalf("active count = %d, want 2", report.States[store.FactStateActive])
+	}
+	if report.States[store.FactStateCore] != 1 {
+		t.Fatalf("core count = %d, want 1", report.States[store.FactStateCore])
+	}
+	if report.States[store.FactStateRetired] != 1 {
+		t.Fatalf("retired count = %d, want 1", report.States[store.FactStateRetired])
+	}
+	if report.States[store.FactStateSuperseded] != 1 {
+		t.Fatalf("superseded count = %d, want 1", report.States[store.FactStateSuperseded])
+	}
+	if report.Total != 5 {
+		t.Fatalf("total = %d, want 5", report.Total)
+	}
+}
+
+func TestRunBeliefs_StateOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memID, err := s.AddMemory(ctx, &store.Memory{Content: "beliefs override seed", SourceFile: "beliefs.md"})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	factID, err := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "Q", Predicate: "focus", Object: "cortex", FactType: "state", Confidence: 0.9})
+	if err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	if err := runBeliefs([]string{"promote", fmt.Sprintf("%d", factID)}); err != nil {
+		t.Fatalf("beliefs promote: %v", err)
+	}
+
+	s2, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore reopen: %v", err)
+	}
+	f, err := s2.GetFact(ctx, factID)
+	if err != nil {
+		t.Fatalf("GetFact: %v", err)
+	}
+	if f.State != store.FactStateCore {
+		t.Fatalf("state after promote = %q, want %q", f.State, store.FactStateCore)
+	}
+	if err := s2.Close(); err != nil {
+		t.Fatalf("close s2: %v", err)
+	}
+
+	if err := runBeliefs([]string{"archive", fmt.Sprintf("%d", factID)}); err != nil {
+		t.Fatalf("beliefs archive: %v", err)
+	}
+
+	s3, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore reopen #2: %v", err)
+	}
+	f, err = s3.GetFact(ctx, factID)
+	if err != nil {
+		t.Fatalf("GetFact #2: %v", err)
+	}
+	if f.State != store.FactStateRetired {
+		t.Fatalf("state after archive = %q, want %q", f.State, store.FactStateRetired)
+	}
+	if err := s3.Close(); err != nil {
+		t.Fatalf("close s3: %v", err)
 	}
 }
 

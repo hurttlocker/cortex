@@ -616,3 +616,43 @@ func TestEmbed_OpenAIProvider(t *testing.T) {
 		t.Fatalf("Embed failed: %v", err)
 	}
 }
+
+// TestResolveEmbedConfig_NoConfigReturnsNil verifies that when no config file or
+// env var provides an embed provider, ResolveEmbedConfig("") returns nil without error.
+// This is the base case for hybrid auto-resolve: if nil, fall back gracefully.
+func TestResolveEmbedConfig_NoConfigReturnsNil(t *testing.T) {
+	// Isolate from the caller's real ~/.cortex/config.yaml and env.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CORTEX_EMBED", "")
+	t.Setenv("CORTEX_EMBED_ENDPOINT", "")
+	t.Setenv("CORTEX_EMBED_API_KEY", "")
+
+	cfg, err := ResolveEmbedConfig("")
+	if err != nil {
+		t.Fatalf("ResolveEmbedConfig with no config should not error, got: %v", err)
+	}
+	if cfg != nil {
+		t.Errorf("ResolveEmbedConfig with no config should return nil, got: %+v", cfg)
+	}
+}
+
+// TestResolveEmbedConfig_EnvVarResolution verifies that CORTEX_EMBED env var is
+// picked up when no CLI flag is passed — the mechanism hybrid auto-resolve relies on.
+func TestResolveEmbedConfig_EnvVarResolution(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CORTEX_EMBED", "ollama/nomic-embed-text")
+
+	cfg, err := ResolveEmbedConfig("")
+	if err != nil {
+		t.Fatalf("ResolveEmbedConfig with CORTEX_EMBED set should not error, got: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("ResolveEmbedConfig with CORTEX_EMBED should return a config, got nil")
+	}
+	if cfg.Provider != "ollama" {
+		t.Errorf("expected provider ollama, got %q", cfg.Provider)
+	}
+	if cfg.Model != "nomic-embed-text" {
+		t.Errorf("expected model nomic-embed-text, got %q", cfg.Model)
+	}
+}

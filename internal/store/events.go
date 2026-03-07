@@ -389,6 +389,83 @@ func (s *SQLiteStore) GetAttributeConflictsLimit(ctx context.Context, limit int)
 	return s.GetAttributeConflictsLimitWithSuperseded(ctx, limit, false)
 }
 
+// multivaluedPredicateDenylist contains predicates that are inherently multi-valued
+// (append-only / accumulate-by-design) and should never be flagged as attribute conflicts.
+// These predicates represent reinforcing evidence, tags, or references — not single-valued
+// attributes where two values would genuinely contradict each other.
+var multivaluedPredicateDenylist = []string{
+	"reinforce",
+	"reinforced",
+	"reinforces",
+	"references",
+	"referenced by",
+	"tagged",
+	"tagged as",
+	"has tag",
+	"tag",
+	"cited by",
+	"cites",
+	"related to",
+	"supports",
+	"corroborates",
+	"http",
+	"https",
+	"url",
+	"urls",
+	"link",
+	"links",
+	"timestamp",
+	"current time",
+	"session id",
+	"session key",
+	"message id",
+	"sender_id",
+	"channel",
+	"username",
+	"label",
+	"tag",
+	"assistant",
+	"user",
+	"system",
+}
+
+// IsMultivaluedPredicate returns true if the predicate is known to be multi-valued
+// and should not trigger attribute-conflict detection.
+func IsMultivaluedPredicate(predicate string) bool {
+	p := strings.ToLower(strings.TrimSpace(predicate))
+	for _, deny := range multivaluedPredicateDenylist {
+		if p == deny {
+			return true
+		}
+	}
+	return false
+}
+
+// genericConflictSubjectDenylist contains section-bucket subjects that are useful
+// for grouping notes but should not be treated as entities with single-valued attributes.
+var genericConflictSubjectDenylist = []string{
+	"conversation",
+	"completed today",
+	"in progress",
+	"blocked",
+	"stats",
+	"system health",
+	"notes",
+	"active projects",
+	"major technical outcomes",
+}
+
+var genericConflictSubjectPrefixDenylist = []string{
+	"completed today >%",
+	"in progress >%",
+	"blocked >%",
+	"stats >%",
+	"system health >%",
+	"notes >%",
+	"active projects >%",
+	"major technical outcomes >%",
+}
+
 // GetAttributeConflictsLimitWithSuperseded includes superseded facts when requested.
 func (s *SQLiteStore) GetAttributeConflictsLimitWithSuperseded(ctx context.Context, limit int, includeSuperseded bool) ([]Conflict, error) {
 	if limit <= 0 {
@@ -400,18 +477,61 @@ func (s *SQLiteStore) GetAttributeConflictsLimitWithSuperseded(ctx context.Conte
 		supersededClause = ""
 	}
 
+	// Build SQL exclusion clauses for known noisy predicates and generic section-bucket
+	// subjects. These patterns create false conflicts because they are list containers
+	// or metadata, not single-valued attributes.
+	denyPlaceholders := make([]string, len(multivaluedPredicateDenylist))
+	denyArgs := make([]any, len(multivaluedPredicateDenylist))
+	for i, p := range multivaluedPredicateDenylist {
+		denyPlaceholders[i] = "?"
+		denyArgs[i] = p
+	}
+	denyClause := fmt.Sprintf("AND LOWER(f.predicate) NOT IN (%s)", strings.Join(denyPlaceholders, ","))
+
+	subjPlaceholders := make([]string, len(genericConflictSubjectDenylist))
+	subjArgs := make([]any, len(genericConflictSubjectDenylist))
+	for i, subj := range genericConflictSubjectDenylist {
+		subjPlaceholders[i] = "?"
+		subjArgs[i] = subj
+	}
+	subjDenyClause := fmt.Sprintf("AND LOWER(f.subject) NOT IN (%s)", strings.Join(subjPlaceholders, ","))
+
+	prefixClauses := make([]string, len(genericConflictSubjectPrefixDenylist))
+	prefixArgs := make([]any, len(genericConflictSubjectPrefixDenylist))
+	for i, pattern := range genericConflictSubjectPrefixDenylist {
+		prefixClauses[i] = "LOWER(f.subject) NOT LIKE ?"
+		prefixArgs[i] = pattern
+	}
+	prefixDenyClause := ""
+	if len(prefixClauses) > 0 {
+		prefixDenyClause = "AND " + strings.Join(prefixClauses, " AND ")
+	}
+
+	// Principled entity-length filter: subjects longer than entitySubjectMaxLen chars
+	// are almost never real entity names — they're document section titles or descriptive
+	// phrases. Filtering them here covers historical DB rows that predate the extraction
+	// governor's MaxSubjectLength=40 cap. This replaces the need to grow the ad-hoc
+	// subject denylist with ever-more specific titles.
+	const entitySubjectMaxLen = 40
+	entityLenClause := fmt.Sprintf("AND LENGTH(f.subject) <= %d", entitySubjectMaxLen)
+
 	pairQuery := fmt.Sprintf(`SELECT LOWER(f.subject), LOWER(f.predicate), COUNT(DISTINCT f.object) as obj_count
 		 FROM facts f
 		 JOIN memories m ON f.memory_id = m.id AND m.deleted_at IS NULL
 		 WHERE f.subject != '' AND f.subject IS NOT NULL
 		   AND f.confidence > 0
 		   %s
+		   %s
+		   %s
+		   %s
+		   %s
 		 GROUP BY LOWER(f.subject), LOWER(f.predicate)
 		 HAVING COUNT(DISTINCT f.object) > 1
 		 ORDER BY obj_count DESC
-		 LIMIT ?`, supersededClause)
+		 LIMIT ?`, supersededClause, denyClause, subjDenyClause, prefixDenyClause, entityLenClause)
 
-	pairRows, err := s.db.QueryContext(ctx, pairQuery, limit)
+	pairQueryArgs := append(append(append(denyArgs, subjArgs...), prefixArgs...), limit)
+	pairRows, err := s.db.QueryContext(ctx, pairQuery, pairQueryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("finding conflicting pairs: %w", err)
 	}

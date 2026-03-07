@@ -177,7 +177,8 @@ func TestEmbedMemories_BatchSizeRespected(t *testing.T) {
 		// Make each content unique to avoid dedup hash collision.
 		memories[i].Content += " " + string(rune('A'+i))
 	}
-	if _, err := s.AddMemoryBatch(ctx, memories); err != nil {
+	ids, err := s.AddMemoryBatch(ctx, memories)
+	if err != nil {
 		t.Fatalf("AddMemoryBatch: %v", err)
 	}
 
@@ -197,5 +198,80 @@ func TestEmbedMemories_BatchSizeRespected(t *testing.T) {
 	// With 7 memories and batch size 3 → 3 batches: [3, 3, 1]
 	if embedder.calls != 3 {
 		t.Errorf("embedder.calls = %d, want 3", embedder.calls)
+	}
+
+	// Reset embeddings and verify filter restricts work to only two selected IDs.
+	if _, err := s.DeleteAllEmbeddings(ctx); err != nil {
+		t.Fatalf("DeleteAllEmbeddings: %v", err)
+	}
+	selected := map[int64]struct{}{ids[1]: {}, ids[5]: {}}
+	filteredOpts := EmbedOptions{
+		BatchSize: 3,
+		FilterFn: func(memory *store.Memory) bool {
+			_, ok := selected[memory.ID]
+			return ok
+		},
+	}
+	result2, err := engine.EmbedMemories(ctx, filteredOpts)
+	if err != nil {
+		t.Fatalf("EmbedMemories filtered: %v", err)
+	}
+	if result2.EmbeddingsAdded != 2 {
+		t.Errorf("filtered EmbeddingsAdded = %d, want 2", result2.EmbeddingsAdded)
+	}
+	for _, id := range ids {
+		vec, err := s.GetEmbedding(ctx, id)
+		if _, ok := selected[id]; ok {
+			if err != nil || len(vec) == 0 {
+				t.Fatalf("expected embedding for selected memory %d", id)
+			}
+		} else if err == nil && len(vec) > 0 {
+			t.Fatalf("did not expect embedding for unselected memory %d", id)
+		}
+	}
+}
+
+func TestEmbedMemories_SourceFileScope(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	sourceA := "/tmp/source-a.md"
+	sourceB := "/tmp/source-b.md"
+	memories := []*store.Memory{
+		{Content: "source A memory one", SourceFile: sourceA},
+		{Content: "source A memory two", SourceFile: sourceA},
+		{Content: "source B memory one", SourceFile: sourceB},
+	}
+	ids, err := s.AddMemoryBatch(ctx, memories)
+	if err != nil {
+		t.Fatalf("AddMemoryBatch: %v", err)
+	}
+
+	embedder := newMockEmbedder(384)
+	engine := NewEmbedEngine(s, embedder)
+
+	result, err := engine.EmbedMemories(ctx, EmbedOptions{
+		BatchSize:  2,
+		SourceFile: sourceA,
+	})
+	if err != nil {
+		t.Fatalf("EmbedMemories source scope: %v", err)
+	}
+
+	if result.MemoriesProcessed != 2 {
+		t.Fatalf("MemoriesProcessed = %d, want 2", result.MemoriesProcessed)
+	}
+	if result.EmbeddingsAdded != 2 {
+		t.Fatalf("EmbeddingsAdded = %d, want 2", result.EmbeddingsAdded)
+	}
+
+	for _, id := range ids[:2] {
+		vec, err := s.GetEmbedding(ctx, id)
+		if err != nil || len(vec) == 0 {
+			t.Fatalf("expected embedding for source A memory %d", id)
+		}
+	}
+	if vec, err := s.GetEmbedding(ctx, ids[2]); err == nil && len(vec) > 0 {
+		t.Fatalf("did not expect embedding for source B memory %d", ids[2])
 	}
 }

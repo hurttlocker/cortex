@@ -136,3 +136,113 @@ func TestRunner_Apply_Writes(t *testing.T) {
 		t.Fatalf("expected loser state superseded, got %s", fLoser.State)
 	}
 }
+
+// TestRunner_SkipStats_ZeroAction verifies that when no facts meet policy thresholds,
+// the skip stats explain why (scanned > 0, acted = 0, skipped > 0 with reason keys).
+func TestRunner_SkipStats_ZeroAction(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	si, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer si.Close()
+	s := si.(*store.SQLiteStore)
+	ctx := context.Background()
+
+	// Add a single fresh fact with high confidence — should be skipped by both
+	// reinforce-promote (insufficient reinforcements) and decay-retire (too fresh / too confident).
+	m1, _ := s.AddMemory(ctx, &store.Memory{Content: "fresh", SourceFile: "fresh.md"})
+	_, _ = s.AddFact(ctx, &store.Fact{
+		MemoryID: m1, Subject: "server", Predicate: "status", Object: "online",
+		FactType: "state", Confidence: 0.9,
+	})
+
+	p := cfgresolver.DefaultPolicyConfig()
+	// Require high reinforcement so it definitely won't fire.
+	p.ReinforcePromote.MinReinforcements = 10
+	p.ReinforcePromote.MinSources = 5
+	// Require old + low confidence for decay.
+	p.DecayRetire.InactiveDays = 90
+	p.DecayRetire.ConfidenceBelow = 0.20
+	p.ConflictSupersede.Enabled = false
+
+	r, err := NewRunner(s, p)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	report, err := r.Run(ctx, true)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(report.Actions) != 0 {
+		t.Fatalf("expected 0 actions, got %d: %+v", len(report.Actions), report.Actions)
+	}
+
+	// reinforce-promote skip stats: should have scanned=1, acted=0, skipped=1.
+	rp := report.SkipStats.ReinforcePromote
+	if rp.Scanned == 0 {
+		t.Errorf("reinforce-promote: expected scanned>0, got 0")
+	}
+	if rp.Acted != 0 {
+		t.Errorf("reinforce-promote: expected acted=0, got %d", rp.Acted)
+	}
+	if rp.Skipped == 0 {
+		t.Errorf("reinforce-promote: expected skipped>0, got 0")
+	}
+	if len(rp.SkipReasons) == 0 {
+		t.Errorf("reinforce-promote: expected non-empty skip reasons, got none")
+	}
+
+	// decay-retire skip stats: should have scanned=1, acted=0, reason=too_fresh or confidence_too_high.
+	dr := report.SkipStats.DecayRetire
+	if dr.Scanned == 0 {
+		t.Errorf("decay-retire: expected scanned>0, got 0")
+	}
+	if dr.Acted != 0 {
+		t.Errorf("decay-retire: expected acted=0, got %d", dr.Acted)
+	}
+	if dr.Skipped == 0 {
+		t.Errorf("decay-retire: expected skipped>0, got 0")
+	}
+	if len(dr.SkipReasons) == 0 {
+		t.Errorf("decay-retire: expected non-empty skip reasons, got none")
+	}
+}
+
+// TestRunner_SkipStats_ActedCount verifies skip stats are populated when actions fire.
+func TestRunner_SkipStats_ActedCount(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	si, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer si.Close()
+	s := si.(*store.SQLiteStore)
+	_, decayID, _, _ := seedLifecycleData(t, s)
+	_ = decayID
+
+	r, err := NewRunner(s, testPolicies())
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	report, err := r.Run(context.Background(), true)
+	if err != nil {
+		t.Fatalf("Run dry-run: %v", err)
+	}
+
+	// At least one policy should have acted on something.
+	totalActed := report.SkipStats.ReinforcePromote.Acted +
+		report.SkipStats.DecayRetire.Acted +
+		report.SkipStats.ConflictSupersede.Acted
+	if totalActed == 0 {
+		t.Errorf("expected at least one acted entry across all policies, got 0; report=%+v", report)
+	}
+	// SkipStats.Scanned should match report.Scanned.
+	totalScanned := report.SkipStats.ReinforcePromote.Scanned +
+		report.SkipStats.DecayRetire.Scanned +
+		report.SkipStats.ConflictSupersede.Scanned
+	if totalScanned != report.Scanned {
+		t.Errorf("total skip-stats scanned (%d) != report.Scanned (%d)", totalScanned, report.Scanned)
+	}
+}

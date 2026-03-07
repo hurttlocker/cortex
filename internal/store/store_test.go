@@ -716,6 +716,54 @@ func TestSearchEmbedding_MinSimilarity(t *testing.T) {
 	}
 }
 
+func TestListMemoryIDsWithoutEmbeddingsBySourceFile(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	sourceA := "/tmp/source-a.md"
+	sourceB := "/tmp/source-b.md"
+
+	idA1, err := s.AddMemory(ctx, &Memory{Content: "source a needs embedding", SourceFile: sourceA})
+	if err != nil {
+		t.Fatalf("AddMemory idA1: %v", err)
+	}
+	idA2, err := s.AddMemory(ctx, &Memory{Content: "source a already embedded", SourceFile: sourceA})
+	if err != nil {
+		t.Fatalf("AddMemory idA2: %v", err)
+	}
+	idADeleted, err := s.AddMemory(ctx, &Memory{Content: "source a deleted", SourceFile: sourceA})
+	if err != nil {
+		t.Fatalf("AddMemory idADeleted: %v", err)
+	}
+	idB1, err := s.AddMemory(ctx, &Memory{Content: "source b needs embedding", SourceFile: sourceB})
+	if err != nil {
+		t.Fatalf("AddMemory idB1: %v", err)
+	}
+
+	if err := s.AddEmbedding(ctx, idA2, makeVector(384, 1, 0, 0)); err != nil {
+		t.Fatalf("AddEmbedding idA2: %v", err)
+	}
+	if err := s.DeleteMemory(ctx, idADeleted); err != nil {
+		t.Fatalf("DeleteMemory idADeleted: %v", err)
+	}
+
+	ids, err := s.ListMemoryIDsWithoutEmbeddingsBySourceFile(ctx, sourceA, 100)
+	if err != nil {
+		t.Fatalf("ListMemoryIDsWithoutEmbeddingsBySourceFile sourceA: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != idA1 {
+		t.Fatalf("sourceA ids = %v, want [%d]", ids, idA1)
+	}
+
+	ids, err = s.ListMemoryIDsWithoutEmbeddingsBySourceFile(ctx, sourceB, 100)
+	if err != nil {
+		t.Fatalf("ListMemoryIDsWithoutEmbeddingsBySourceFile sourceB: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != idB1 {
+		t.Fatalf("sourceB ids = %v, want [%d]", ids, idB1)
+	}
+}
+
 // --- Events ---
 
 func TestLogEvent(t *testing.T) {
