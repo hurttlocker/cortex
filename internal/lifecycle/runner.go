@@ -22,6 +22,17 @@ type Action struct {
 	Applied   bool   `json:"applied"`
 }
 
+// PolicySkipStats tracks why candidates were skipped in a lifecycle policy pass.
+// Populated even in dry-run mode to give operator visibility into why nothing acted.
+type PolicySkipStats struct {
+	Scanned int `json:"scanned"`
+	Acted   int `json:"acted"`
+	Skipped int `json:"skipped"`
+	// SkipReasons is a map of reason-key → count, e.g.
+	// "reinforce_promote": {"needs_reinforcements":12, "needs_sources":4}
+	SkipReasons map[string]int `json:"skip_reasons,omitempty"`
+}
+
 type Report struct {
 	DryRun     bool     `json:"dry_run"`
 	Scanned    int      `json:"scanned"`
@@ -32,6 +43,13 @@ type Report struct {
 		DecayRetire       int `json:"decay_retire"`
 		ConflictSupersede int `json:"conflict_supersede"`
 	} `json:"policy_runs"`
+	// SkipStats provides per-policy visibility into why candidates were not acted upon.
+	// Useful for diagnosing zero-action lifecycle runs on realistic data.
+	SkipStats struct {
+		ReinforcePromote  PolicySkipStats `json:"reinforce_promote"`
+		DecayRetire       PolicySkipStats `json:"decay_retire"`
+		ConflictSupersede PolicySkipStats `json:"conflict_supersede"`
+	} `json:"skip_stats"`
 }
 
 type Runner struct {
@@ -57,33 +75,36 @@ func (r *Runner) Run(ctx context.Context, dryRun bool) (*Report, error) {
 	}
 
 	if r.policies.ReinforcePromote.Enabled {
-		actions, scanned, err := r.applyReinforcePromote(ctx, dryRun)
+		actions, stats, err := r.applyReinforcePromote(ctx, dryRun)
 		if err != nil {
 			return nil, err
 		}
-		report.Scanned += scanned
+		report.Scanned += stats.Scanned
 		report.PolicyRuns.ReinforcePromote = len(actions)
 		report.Actions = append(report.Actions, actions...)
+		report.SkipStats.ReinforcePromote = stats
 	}
 
 	if r.policies.DecayRetire.Enabled {
-		actions, scanned, err := r.applyDecayRetire(ctx, dryRun)
+		actions, stats, err := r.applyDecayRetire(ctx, dryRun)
 		if err != nil {
 			return nil, err
 		}
-		report.Scanned += scanned
+		report.Scanned += stats.Scanned
 		report.PolicyRuns.DecayRetire = len(actions)
 		report.Actions = append(report.Actions, actions...)
+		report.SkipStats.DecayRetire = stats
 	}
 
 	if r.policies.ConflictSupersede.Enabled {
-		actions, scanned, err := r.applyConflictSupersede(ctx, dryRun)
+		actions, stats, err := r.applyConflictSupersede(ctx, dryRun)
 		if err != nil {
 			return nil, err
 		}
-		report.Scanned += scanned
+		report.Scanned += stats.Scanned
 		report.PolicyRuns.ConflictSupersede = len(actions)
 		report.Actions = append(report.Actions, actions...)
+		report.SkipStats.ConflictSupersede = stats
 	}
 
 	for _, a := range report.Actions {
@@ -94,9 +115,10 @@ func (r *Runner) Run(ctx context.Context, dryRun bool) (*Report, error) {
 	return report, nil
 }
 
-func (r *Runner) applyReinforcePromote(ctx context.Context, dryRun bool) ([]Action, int, error) {
+func (r *Runner) applyReinforcePromote(ctx context.Context, dryRun bool) ([]Action, PolicySkipStats, error) {
 	cfg := r.policies.ReinforcePromote
 	actions := []Action{}
+	stats := PolicySkipStats{SkipReasons: make(map[string]int)}
 	rows, err := r.sqlite.GetDB().QueryContext(ctx, `
 		WITH source_counts AS (
 			SELECT LOWER(subject) AS lsub, LOWER(predicate) AS lpred, LOWER(object) AS lobj,
@@ -116,18 +138,29 @@ func (r *Runner) applyReinforcePromote(ctx context.Context, dryRun bool) ([]Acti
 		 AND LOWER(f.object) = sc.lobj
 		WHERE f.superseded_by IS NULL AND LOWER(f.state) = 'active'`)
 	if err != nil {
-		return nil, 0, fmt.Errorf("query reinforce-promote candidates: %w", err)
+		return nil, stats, fmt.Errorf("query reinforce-promote candidates: %w", err)
 	}
-	scanned := 0
 	for rows.Next() {
 		var factID int64
 		var state string
 		var reinforcementCount, sourceCount int
 		if err := rows.Scan(&factID, &state, &reinforcementCount, &sourceCount); err != nil {
-			return nil, scanned, fmt.Errorf("scan reinforce-promote row: %w", err)
+			return nil, stats, fmt.Errorf("scan reinforce-promote row: %w", err)
 		}
-		scanned++
-		if reinforcementCount < cfg.MinReinforcements || sourceCount < cfg.MinSources {
+		stats.Scanned++
+		if reinforcementCount < cfg.MinReinforcements && sourceCount < cfg.MinSources {
+			stats.SkipReasons["needs_reinforcements_and_sources"]++
+			stats.Skipped++
+			continue
+		}
+		if reinforcementCount < cfg.MinReinforcements {
+			stats.SkipReasons["needs_reinforcements"]++
+			stats.Skipped++
+			continue
+		}
+		if sourceCount < cfg.MinSources {
+			stats.SkipReasons["needs_sources"]++
+			stats.Skipped++
 			continue
 		}
 		act := Action{
@@ -140,13 +173,14 @@ func (r *Runner) applyReinforcePromote(ctx context.Context, dryRun bool) ([]Acti
 			Applied:   false,
 		}
 		actions = append(actions, act)
+		stats.Acted++
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return nil, scanned, err
+		return nil, stats, err
 	}
 	if err := rows.Close(); err != nil {
-		return nil, scanned, fmt.Errorf("close reinforce-promote rows: %w", err)
+		return nil, stats, fmt.Errorf("close reinforce-promote rows: %w", err)
 	}
 	if !dryRun {
 		for i := range actions {
@@ -157,12 +191,13 @@ func (r *Runner) applyReinforcePromote(ctx context.Context, dryRun bool) ([]Acti
 			}
 		}
 	}
-	return actions, scanned, nil
+	return actions, stats, nil
 }
 
-func (r *Runner) applyDecayRetire(ctx context.Context, dryRun bool) ([]Action, int, error) {
+func (r *Runner) applyDecayRetire(ctx context.Context, dryRun bool) ([]Action, PolicySkipStats, error) {
 	cfg := r.policies.DecayRetire
 	actions := []Action{}
+	stats := PolicySkipStats{SkipReasons: make(map[string]int)}
 	rows, err := r.sqlite.GetDB().QueryContext(ctx, `
 		SELECT f.id, f.state, f.confidence,
 		       COALESCE(MAX(a.created_at), f.last_reinforced) AS last_access
@@ -172,24 +207,37 @@ func (r *Runner) applyDecayRetire(ctx context.Context, dryRun bool) ([]Action, i
 		  AND LOWER(f.state) IN ('active','core')
 		GROUP BY f.id, f.state, f.confidence, f.last_reinforced`)
 	if err != nil {
-		return nil, 0, fmt.Errorf("query decay-retire candidates: %w", err)
+		return nil, stats, fmt.Errorf("query decay-retire candidates: %w", err)
 	}
-	scanned := 0
 	for rows.Next() {
 		var factID int64
 		var state string
 		var confidence float64
 		var lastAccessRaw string
 		if err := rows.Scan(&factID, &state, &confidence, &lastAccessRaw); err != nil {
-			return nil, scanned, fmt.Errorf("scan decay-retire row: %w", err)
+			return nil, stats, fmt.Errorf("scan decay-retire row: %w", err)
 		}
 		lastAccess, err := parseSQLiteTime(lastAccessRaw)
 		if err != nil {
-			return nil, scanned, fmt.Errorf("parse decay-retire last_access %q: %w", lastAccessRaw, err)
+			return nil, stats, fmt.Errorf("parse decay-retire last_access %q: %w", lastAccessRaw, err)
 		}
-		scanned++
+		stats.Scanned++
 		days := int(r.now.Sub(lastAccess).Hours() / 24)
-		if days < cfg.InactiveDays || confidence >= cfg.ConfidenceBelow {
+		tooFresh := days < cfg.InactiveDays
+		confTooHigh := confidence >= cfg.ConfidenceBelow
+		if tooFresh && confTooHigh {
+			stats.SkipReasons["too_fresh_and_high_confidence"]++
+			stats.Skipped++
+			continue
+		}
+		if tooFresh {
+			stats.SkipReasons["too_fresh"]++
+			stats.Skipped++
+			continue
+		}
+		if confTooHigh {
+			stats.SkipReasons["confidence_too_high"]++
+			stats.Skipped++
 			continue
 		}
 		act := Action{
@@ -202,13 +250,14 @@ func (r *Runner) applyDecayRetire(ctx context.Context, dryRun bool) ([]Action, i
 			Applied:   false,
 		}
 		actions = append(actions, act)
+		stats.Acted++
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return nil, scanned, err
+		return nil, stats, err
 	}
 	if err := rows.Close(); err != nil {
-		return nil, scanned, fmt.Errorf("close decay-retire rows: %w", err)
+		return nil, stats, fmt.Errorf("close decay-retire rows: %w", err)
 	}
 	if !dryRun {
 		for i := range actions {
@@ -219,16 +268,17 @@ func (r *Runner) applyDecayRetire(ctx context.Context, dryRun bool) ([]Action, i
 			}
 		}
 	}
-	return actions, scanned, nil
+	return actions, stats, nil
 }
 
-func (r *Runner) applyConflictSupersede(ctx context.Context, dryRun bool) ([]Action, int, error) {
+func (r *Runner) applyConflictSupersede(ctx context.Context, dryRun bool) ([]Action, PolicySkipStats, error) {
 	cfg := r.policies.ConflictSupersede
 	conflicts, err := r.st.GetAttributeConflictsLimitWithSuperseded(ctx, 1000, false)
 	if err != nil {
-		return nil, 0, fmt.Errorf("get attribute conflicts: %w", err)
+		return nil, PolicySkipStats{}, fmt.Errorf("get attribute conflicts: %w", err)
 	}
 
+	stats := PolicySkipStats{Scanned: len(conflicts), SkipReasons: make(map[string]int)}
 	actions := make([]Action, 0)
 	supersededLosers := map[int64]struct{}{}
 	for _, c := range conflicts {
@@ -239,6 +289,8 @@ func (r *Runner) applyConflictSupersede(ctx context.Context, dryRun bool) ([]Act
 			confDelta = -confDelta
 		}
 		if confDelta < cfg.MinConfidenceDelta {
+			stats.SkipReasons["confidence_delta_too_small"]++
+			stats.Skipped++
 			continue
 		}
 
@@ -249,9 +301,13 @@ func (r *Runner) applyConflictSupersede(ctx context.Context, dryRun bool) ([]Act
 			loser = f1
 		}
 		if cfg.RequireStrictlyNewer && !winner.CreatedAt.After(loser.CreatedAt) {
+			stats.SkipReasons["not_strictly_newer"]++
+			stats.Skipped++
 			continue
 		}
 		if _, exists := supersededLosers[loser.ID]; exists {
+			stats.SkipReasons["already_superseded"]++
+			stats.Skipped++
 			continue
 		}
 
@@ -272,8 +328,9 @@ func (r *Runner) applyConflictSupersede(ctx context.Context, dryRun bool) ([]Act
 			}
 		}
 		actions = append(actions, act)
+		stats.Acted++
 	}
-	return actions, len(conflicts), nil
+	return actions, stats, nil
 }
 
 func newerSuffix(required bool) string {

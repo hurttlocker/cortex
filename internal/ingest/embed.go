@@ -16,6 +16,7 @@ type EmbedOptions struct {
 	HealthCheckEvery  int                                             // Run health check every N batches (default: 5, 0 = disabled)
 	ProgressFn        func(current, total int)                        // Progress callback
 	VerboseProgressFn func(current, total, batchSize int, msg string) // Detailed progress
+	SourceFile        string                                          // Optional source_file scope for SQL-side filtering
 	FilterFn          func(memory *store.Memory) bool                 // Optional filter for which memories to embed
 }
 
@@ -62,7 +63,7 @@ func (e *EmbedEngine) EmbedMemories(ctx context.Context, opts EmbedOptions) (*Em
 	result := &EmbedResult{}
 
 	// Get all memories that don't have embeddings yet
-	memories, err := e.getMemoriesWithoutEmbeddings(ctx, opts.FilterFn)
+	memories, err := e.getMemoriesWithoutEmbeddings(ctx, opts.SourceFile, opts.FilterFn)
 	if err != nil {
 		return nil, fmt.Errorf("getting memories without embeddings: %w", err)
 	}
@@ -297,9 +298,17 @@ func (e *EmbedEngine) processBatch(ctx context.Context, memories []*store.Memory
 }
 
 // getMemoriesWithoutEmbeddings retrieves all memories that don't have embeddings yet.
-func (e *EmbedEngine) getMemoriesWithoutEmbeddings(ctx context.Context, filterFn func(*store.Memory) bool) ([]*store.Memory, error) {
+func (e *EmbedEngine) getMemoriesWithoutEmbeddings(ctx context.Context, sourceFile string, filterFn func(*store.Memory) bool) ([]*store.Memory, error) {
 	// Get IDs of memories without embeddings efficiently (no N+1 queries)
-	ids, err := e.store.ListMemoryIDsWithoutEmbeddings(ctx, 10000) // Reasonable batch limit
+	var (
+		ids []int64
+		err error
+	)
+	if sourceFile != "" {
+		ids, err = e.store.ListMemoryIDsWithoutEmbeddingsBySourceFile(ctx, sourceFile, 10000)
+	} else {
+		ids, err = e.store.ListMemoryIDsWithoutEmbeddings(ctx, 10000) // Reasonable batch limit
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -208,6 +208,7 @@ type Store interface {
 	GetMemory(ctx context.Context, id int64) (*Memory, error)
 	ListMemories(ctx context.Context, opts ListOpts) ([]*Memory, error)
 	DeleteMemory(ctx context.Context, id int64) error
+	DeleteMemoriesBySourceFile(ctx context.Context, sourceFile string) (int64, error)
 	UpdateMemory(ctx context.Context, id int64, content string) error
 	UpdateMemoryMetadata(ctx context.Context, id int64, meta *Metadata) error
 
@@ -243,6 +244,7 @@ type Store interface {
 	GetEmbedding(ctx context.Context, memoryID int64) ([]float32, error)
 	DeleteAllEmbeddings(ctx context.Context) (int64, error)
 	ListMemoryIDsWithoutEmbeddings(ctx context.Context, limit int) ([]int64, error)
+	ListMemoryIDsWithoutEmbeddingsBySourceFile(ctx context.Context, sourceFile string, limit int) ([]int64, error)
 	ListMemoryIDsWithEmbeddings(ctx context.Context, limit int) ([]int64, error)
 	GetMemoriesByIDs(ctx context.Context, ids []int64) ([]*Memory, error)
 	GetEmbeddingDimensions(ctx context.Context) (int, error)

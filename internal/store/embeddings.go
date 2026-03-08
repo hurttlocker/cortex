@@ -169,17 +169,32 @@ func bytesToFloat32(buf []byte) []float32 {
 // ListMemoryIDsWithoutEmbeddings retrieves memory IDs that don't have embeddings yet.
 // This is used to efficiently find memories that need embedding without N+1 queries.
 func (s *SQLiteStore) ListMemoryIDsWithoutEmbeddings(ctx context.Context, limit int) ([]int64, error) {
+	return s.listMemoryIDsWithoutEmbeddings(ctx, "", limit)
+}
+
+// ListMemoryIDsWithoutEmbeddingsBySourceFile retrieves memory IDs without embeddings
+// for one active source_file only.
+func (s *SQLiteStore) ListMemoryIDsWithoutEmbeddingsBySourceFile(ctx context.Context, sourceFile string, limit int) ([]int64, error) {
+	return s.listMemoryIDsWithoutEmbeddings(ctx, sourceFile, limit)
+}
+
+func (s *SQLiteStore) listMemoryIDsWithoutEmbeddings(ctx context.Context, sourceFile string, limit int) ([]int64, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
 
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT m.id FROM memories m 
-		 LEFT JOIN embeddings e ON m.id = e.memory_id 
-		 WHERE m.deleted_at IS NULL AND e.memory_id IS NULL 
-		 LIMIT ?`,
-		limit,
-	)
+	query := `SELECT m.id FROM memories m
+		 LEFT JOIN embeddings e ON m.id = e.memory_id
+		 WHERE m.deleted_at IS NULL AND e.memory_id IS NULL`
+	args := make([]interface{}, 0, 2)
+	if sourceFile != "" {
+		query += " AND m.source_file = ?"
+		args = append(args, sourceFile)
+	}
+	query += " LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing memory IDs without embeddings: %w", err)
 	}
