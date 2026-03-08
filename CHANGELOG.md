@@ -26,6 +26,9 @@ Patch release that packages the merged operator/trust hardening lane into a cohe
 #### Included PRs
 - **#302** — feat: harden Cortex search, lifecycle, and conflict trust signals
 
+#### Not shipped in v1.2.4
+- **#308** (`feat(beliefs): add read-only conviction inspect operator surface`) remains open/queued and is intentionally excluded from this release cut.
+
 ## [1.2.3] - 2026-03-05
 
 ### 🩹 v1.2.3 — Reason Output Quality Patch
