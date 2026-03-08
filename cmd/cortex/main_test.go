@@ -2109,6 +2109,132 @@ func TestRunBeliefs_StateOverrides(t *testing.T) {
 	}
 }
 
+func TestRunBeliefs_InspectJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		t.Fatalf("expected SQLiteStore")
+	}
+	ctx := context.Background()
+	memID1, err := s.AddMemory(ctx, &store.Memory{Content: "belief inspect one", SourceFile: "beliefs.md"})
+	if err != nil {
+		t.Fatalf("AddMemory #1: %v", err)
+	}
+	memID2, err := s.AddMemory(ctx, &store.Memory{Content: "belief inspect two", SourceFile: "beliefs.md"})
+	if err != nil {
+		t.Fatalf("AddMemory #2: %v", err)
+	}
+	factID, err := s.AddFact(ctx, &store.Fact{MemoryID: memID1, Subject: "Q", Predicate: "focus", Object: "cortex", FactType: "state", Confidence: 0.9})
+	if err != nil {
+		t.Fatalf("AddFact #1: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{MemoryID: memID2, Subject: "Q", Predicate: "focus", Object: "cortex", FactType: "state", Confidence: 0.8}); err != nil {
+		t.Fatalf("AddFact #2: %v", err)
+	}
+	if err := sqlStore.RecordFactAccess(ctx, factID, "mister", store.AccessTypeReinforce); err != nil {
+		t.Fatalf("RecordFactAccess reinforce: %v", err)
+	}
+	if err := sqlStore.RecordFactAccess(ctx, factID, "hawk", store.AccessTypeReference); err != nil {
+		t.Fatalf("RecordFactAccess reference: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runBeliefs([]string{"inspect", "--json", "--limit", "5"})
+	})
+	if runErr != nil {
+		t.Fatalf("runBeliefs inspect --json: %v\nout=%s", runErr, out)
+	}
+
+	var report beliefsInspectReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode beliefs inspect report: %v\nout=%q", err, out)
+	}
+	if len(report.Facts) == 0 {
+		t.Fatalf("expected at least one belief inspect row")
+	}
+	if report.Facts[0].ConvictionScore < 0 || report.Facts[0].ConvictionScore > 1 {
+		t.Fatalf("conviction score out of range: %.3f", report.Facts[0].ConvictionScore)
+	}
+	if report.Thresholds.MinReinforcements <= 0 {
+		t.Fatalf("expected positive reinforcement threshold, got %d", report.Thresholds.MinReinforcements)
+	}
+}
+
+func TestRunBeliefs_InspectStateFilter(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memID, err := s.AddMemory(ctx, &store.Memory{Content: "belief inspect filter", SourceFile: "beliefs.md"})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	activeID, err := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "A", Predicate: "state", Object: "active", FactType: "state", Confidence: 0.7})
+	if err != nil {
+		t.Fatalf("AddFact active: %v", err)
+	}
+	retiredID, err := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "B", Predicate: "state", Object: "retired", FactType: "state", Confidence: 0.6})
+	if err != nil {
+		t.Fatalf("AddFact retired: %v", err)
+	}
+	if err := s.UpdateFactState(ctx, retiredID, store.FactStateRetired); err != nil {
+		t.Fatalf("UpdateFactState retired: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	_ = activeID
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runBeliefs([]string{"inspect", "--state", "retired", "--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runBeliefs inspect retired --json: %v\nout=%s", runErr, out)
+	}
+
+	var report beliefsInspectReport
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode beliefs inspect report: %v\nout=%q", err, out)
+	}
+	if len(report.Facts) == 0 {
+		t.Fatalf("expected retired facts in report")
+	}
+	for _, row := range report.Facts {
+		if row.State != store.FactStateRetired {
+			t.Fatalf("expected only retired state rows, got %q", row.State)
+		}
+	}
+}
+
 // ==================== agents command ====================
 
 func TestRunAgents_UnknownArgument(t *testing.T) {

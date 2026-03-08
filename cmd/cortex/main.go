@@ -1451,17 +1451,75 @@ func runLifecycle(args []string) error {
 	return nil
 }
 
+type beliefConvictionWeights struct {
+	Confidence      float64 `json:"confidence"`
+	Reinforcements  float64 `json:"reinforcements"`
+	SourceDiversity float64 `json:"source_diversity"`
+	Recency         float64 `json:"recency"`
+}
+
+var defaultBeliefConvictionWeights = beliefConvictionWeights{
+	Confidence:      0.4,
+	Reinforcements:  0.3,
+	SourceDiversity: 0.2,
+	Recency:         0.1,
+}
+
 type beliefsReport struct {
-	GeneratedAt string                   `json:"generated_at"`
-	Agent       string                   `json:"agent,omitempty"`
-	States      map[string]int64         `json:"states"`
-	Total       int64                    `json:"total"`
-	Policies    cfgresolver.PolicyConfig `json:"policies"`
+	GeneratedAt       string                   `json:"generated_at"`
+	Agent             string                   `json:"agent,omitempty"`
+	States            map[string]int64         `json:"states"`
+	Total             int64                    `json:"total"`
+	Policies          cfgresolver.PolicyConfig `json:"policies"`
+	ConvictionWeights beliefConvictionWeights  `json:"conviction_weights"`
+}
+
+type beliefInspectThresholds struct {
+	MinReinforcements int     `json:"min_reinforcements"`
+	MinSources        int     `json:"min_sources"`
+	InactiveDays      int     `json:"inactive_days"`
+	ConfidenceBelow   float64 `json:"confidence_below"`
+}
+
+type beliefConvictionComponents struct {
+	Confidence      float64 `json:"confidence"`
+	Reinforcements  float64 `json:"reinforcements"`
+	SourceDiversity float64 `json:"source_diversity"`
+	Recency         float64 `json:"recency"`
+}
+
+type beliefInspectEntry struct {
+	FactID          int64                      `json:"fact_id"`
+	State           string                     `json:"state"`
+	Agent           string                     `json:"agent,omitempty"`
+	Subject         string                     `json:"subject"`
+	Predicate       string                     `json:"predicate"`
+	Object          string                     `json:"object"`
+	Confidence      float64                    `json:"confidence"`
+	Reinforcements  int                        `json:"reinforcements"`
+	SourceCount     int                        `json:"source_count"`
+	DaysSinceSeen   int                        `json:"days_since_seen"`
+	ConvictionScore float64                    `json:"conviction_score"`
+	PromoteReady    bool                       `json:"promote_ready"`
+	RetireCandidate bool                       `json:"retire_candidate"`
+	ScoreComponents beliefConvictionComponents `json:"score_components"`
+}
+
+type beliefsInspectReport struct {
+	GeneratedAt string                  `json:"generated_at"`
+	Agent       string                  `json:"agent,omitempty"`
+	State       string                  `json:"state,omitempty"`
+	Limit       int                     `json:"limit"`
+	Weights     beliefConvictionWeights `json:"weights"`
+	Thresholds  beliefInspectThresholds `json:"thresholds"`
+	Facts       []beliefInspectEntry    `json:"facts"`
 }
 
 func runBeliefs(args []string) error {
 	jsonOutput := false
 	agentID := ""
+	stateFilter := ""
+	limit := 20
 	positionals := make([]string, 0, len(args))
 
 	for i := 0; i < len(args); i++ {
@@ -1473,17 +1531,37 @@ func runBeliefs(args []string) error {
 			agentID = strings.TrimSpace(args[i])
 		case strings.HasPrefix(args[i], "--agent="):
 			agentID = strings.TrimSpace(strings.TrimPrefix(args[i], "--agent="))
+		case args[i] == "--state" && i+1 < len(args):
+			i++
+			stateFilter = strings.TrimSpace(args[i])
+		case strings.HasPrefix(args[i], "--state="):
+			stateFilter = strings.TrimSpace(strings.TrimPrefix(args[i], "--state="))
+		case args[i] == "--limit" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(strings.TrimSpace(args[i]))
+			if err != nil || n <= 0 {
+				return fmt.Errorf("invalid --limit value: %q", args[i])
+			}
+			limit = n
+		case strings.HasPrefix(args[i], "--limit="):
+			n, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(args[i], "--limit=")))
+			if err != nil || n <= 0 {
+				return fmt.Errorf("invalid --limit value: %q", strings.TrimPrefix(args[i], "--limit="))
+			}
+			limit = n
 		case args[i] == "--help" || args[i] == "-h":
 			fmt.Println(`cortex beliefs — lifecycle belief stats and manual state overrides
 
 Usage:
   cortex beliefs [stats] [--json] [--agent <id>]
+  cortex beliefs inspect [--json] [--agent <id>] [--state <active|core|retired|superseded>] [--limit <n>]
   cortex beliefs promote <fact_id> [fact_id...]
   cortex beliefs retire <fact_id> [fact_id...]
   cortex beliefs activate <fact_id> [fact_id...]
   cortex beliefs set <active|core|retired|archive> <fact_id> [fact_id...]
 
 Notes:
+  - inspect is read-only and surfaces conviction score breakdowns for operator trust
   - archive/archived is an alias for retired
   - superseded is system-managed and cannot be set directly`)
 			return nil
@@ -1523,11 +1601,12 @@ Notes:
 		}
 
 		report := beliefsReport{
-			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-			Agent:       agentID,
-			States:      states,
-			Total:       total,
-			Policies:    policies,
+			GeneratedAt:       time.Now().UTC().Format(time.RFC3339),
+			Agent:             agentID,
+			States:            states,
+			Total:             total,
+			Policies:          policies,
+			ConvictionWeights: defaultBeliefConvictionWeights,
 		}
 
 		if jsonOutput || !isTTY() {
@@ -1564,6 +1643,15 @@ Notes:
 			report.Policies.ConflictSupersede.RequireStrictlyNewer,
 			report.Policies.ConflictSupersede.MinConfidenceDelta,
 		)
+		fmt.Println()
+		fmt.Println("Conviction scoring (read-only operator surface):")
+		fmt.Printf("  weights: confidence=%.2f reinforcements=%.2f source_diversity=%.2f recency=%.2f\n",
+			report.ConvictionWeights.Confidence,
+			report.ConvictionWeights.Reinforcements,
+			report.ConvictionWeights.SourceDiversity,
+			report.ConvictionWeights.Recency,
+		)
+		fmt.Printf("  inspect with: cortex beliefs inspect --limit 20 [--agent <id>] [--state <state>] [--json]\n")
 		return nil
 	}
 
@@ -1572,6 +1660,60 @@ Notes:
 	ids := []string{}
 
 	switch sub {
+	case "inspect":
+		resolvedFilter, err := resolveBeliefFilterState(stateFilter)
+		if err != nil {
+			return err
+		}
+		s, err := store.NewStore(getStoreConfig())
+		if err != nil {
+			return fmt.Errorf("opening store: %w", err)
+		}
+		defer s.Close()
+		sqlStore, ok := s.(*store.SQLiteStore)
+		if !ok {
+			return fmt.Errorf("beliefs inspect requires SQLiteStore backend")
+		}
+		report, err := runBeliefsInspect(context.Background(), sqlStore, agentID, resolvedFilter, limit)
+		if err != nil {
+			return err
+		}
+		if jsonOutput || !isTTY() {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(report)
+		}
+		title := "Beliefs inspect"
+		if report.Agent != "" {
+			title += fmt.Sprintf(" (agent=%s)", report.Agent)
+		}
+		if report.State != "" {
+			title += fmt.Sprintf(" (state=%s)", report.State)
+		}
+		fmt.Printf("%s:\n", title)
+		fmt.Printf("  weights: confidence=%.2f reinforcements=%.2f source_diversity=%.2f recency=%.2f\n",
+			report.Weights.Confidence,
+			report.Weights.Reinforcements,
+			report.Weights.SourceDiversity,
+			report.Weights.Recency,
+		)
+		fmt.Printf("  thresholds: min_reinforcements=%d min_sources=%d inactive_days=%d confidence_below=%.2f\n",
+			report.Thresholds.MinReinforcements,
+			report.Thresholds.MinSources,
+			report.Thresholds.InactiveDays,
+			report.Thresholds.ConfidenceBelow,
+		)
+		if len(report.Facts) == 0 {
+			fmt.Println("  no facts matched current filter")
+			return nil
+		}
+		for _, f := range report.Facts {
+			fmt.Printf("  #%d score=%.3f state=%s conf=%.3f reinf=%d sources=%d days=%d promote_ready=%t retire_candidate=%t\n",
+				f.FactID, f.ConvictionScore, f.State, f.Confidence, f.Reinforcements, f.SourceCount, f.DaysSinceSeen, f.PromoteReady, f.RetireCandidate,
+			)
+			fmt.Printf("    %s | %s | %s\n", f.Subject, f.Predicate, f.Object)
+		}
+		return nil
 	case "promote":
 		state = store.FactStateCore
 		ids = positionals[1:]
@@ -1620,6 +1762,22 @@ Notes:
 	return nil
 }
 
+func resolveBeliefFilterState(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	s := strings.ToLower(raw)
+	switch s {
+	case store.FactStateActive, store.FactStateCore, store.FactStateRetired, store.FactStateSuperseded:
+		return s, nil
+	case "archive", "archived":
+		return store.FactStateRetired, nil
+	default:
+		return "", fmt.Errorf("invalid belief state filter %q (valid: active, core, retired, superseded)", raw)
+	}
+}
+
 func resolveBeliefTargetState(raw string) (string, error) {
 	s := strings.ToLower(strings.TrimSpace(raw))
 	switch s {
@@ -1654,6 +1812,219 @@ func updateBeliefStates(ctx context.Context, s store.Store, state string, ids []
 		updated++
 	}
 	return updated, nil
+}
+
+func runBeliefsInspect(ctx context.Context, sqlStore *store.SQLiteStore, agentID, stateFilter string, limit int) (*beliefsInspectReport, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	policies, err := cfgresolver.ResolvePolicyConfig("")
+	if err != nil {
+		return nil, fmt.Errorf("resolving policies: %w", err)
+	}
+
+	fetchLimit := limit * 5
+	if fetchLimit < limit {
+		fetchLimit = limit
+	}
+	if fetchLimit > 500 {
+		fetchLimit = 500
+	}
+
+	query := `
+WITH source_counts AS (
+	SELECT LOWER(subject) AS lsub, LOWER(predicate) AS lpred, LOWER(object) AS lobj,
+	       COUNT(DISTINCT memory_id) AS source_count
+	FROM facts
+	WHERE superseded_by IS NULL
+	GROUP BY LOWER(subject), LOWER(predicate), LOWER(object)
+),
+access_counts AS (
+	SELECT fact_id,
+	       SUM(CASE WHEN access_type IN ('reinforce','reference','import') THEN 1 ELSE 0 END) AS reinforcement_count,
+	       MAX(created_at) AS last_access_at
+	FROM fact_accesses_v1
+	GROUP BY fact_id
+)
+SELECT f.id, f.subject, f.predicate, f.object, f.state, f.confidence, f.last_reinforced,
+       COALESCE(ac.reinforcement_count, 0) AS reinforcement_count,
+       COALESCE(sc.source_count, 0) AS source_count,
+       COALESCE(ac.last_access_at, ''),
+       COALESCE(f.agent_id, '')
+FROM facts f
+LEFT JOIN source_counts sc
+  ON LOWER(f.subject) = sc.lsub
+ AND LOWER(f.predicate) = sc.lpred
+ AND LOWER(f.object) = sc.lobj
+LEFT JOIN access_counts ac ON ac.fact_id = f.id
+WHERE 1=1`
+
+	args := []interface{}{}
+	if stateFilter == store.FactStateSuperseded {
+		query += ` AND f.superseded_by IS NOT NULL`
+	} else {
+		query += ` AND f.superseded_by IS NULL`
+	}
+	if stateFilter != "" {
+		query += ` AND LOWER(f.state) = ?`
+		args = append(args, stateFilter)
+	}
+	if strings.TrimSpace(agentID) != "" {
+		query += ` AND (LOWER(COALESCE(f.agent_id, '')) = LOWER(?) OR COALESCE(f.agent_id, '') = '')`
+		args = append(args, strings.TrimSpace(agentID))
+	}
+	query += ` ORDER BY f.confidence DESC, f.id DESC LIMIT ?`
+	args = append(args, fetchLimit)
+
+	rows, err := sqlStore.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query beliefs inspect rows: %w", err)
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC()
+	entries := make([]beliefInspectEntry, 0, limit)
+	weights := defaultBeliefConvictionWeights
+	thresholds := beliefInspectThresholds{
+		MinReinforcements: policies.ReinforcePromote.MinReinforcements,
+		MinSources:        policies.ReinforcePromote.MinSources,
+		InactiveDays:      policies.DecayRetire.InactiveDays,
+		ConfidenceBelow:   policies.DecayRetire.ConfidenceBelow,
+	}
+
+	for rows.Next() {
+		var (
+			id               int64
+			subject          string
+			predicate        string
+			object           string
+			state            string
+			confidence       float64
+			lastReinforced   time.Time
+			reinforcementCnt int
+			sourceCount      int
+			lastAccessRaw    string
+			agent            string
+		)
+		if err := rows.Scan(&id, &subject, &predicate, &object, &state, &confidence, &lastReinforced, &reinforcementCnt, &sourceCount, &lastAccessRaw, &agent); err != nil {
+			return nil, fmt.Errorf("scan beliefs inspect row: %w", err)
+		}
+
+		lastSeen := lastReinforced
+		if parsed, ok := tryParseSQLiteTime(lastAccessRaw); ok {
+			if parsed.After(lastSeen) {
+				lastSeen = parsed
+			}
+		}
+		daysSinceSeen := int(now.Sub(lastSeen).Hours() / 24)
+		if daysSinceSeen < 0 {
+			daysSinceSeen = 0
+		}
+
+		components := beliefConvictionComponents{
+			Confidence:      clamp01(confidence),
+			Reinforcements:  normalizeCount(reinforcementCnt, thresholds.MinReinforcements),
+			SourceDiversity: normalizeCount(sourceCount, thresholds.MinSources),
+			Recency:         recencyComponent(daysSinceSeen, thresholds.InactiveDays),
+		}
+		score := weights.Confidence*components.Confidence +
+			weights.Reinforcements*components.Reinforcements +
+			weights.SourceDiversity*components.SourceDiversity +
+			weights.Recency*components.Recency
+		score = clamp01(score)
+
+		promoteReady := reinforcementCnt >= thresholds.MinReinforcements && sourceCount >= thresholds.MinSources
+		retireCandidate := (state == store.FactStateActive || state == store.FactStateCore) &&
+			daysSinceSeen >= thresholds.InactiveDays && confidence < thresholds.ConfidenceBelow
+
+		entries = append(entries, beliefInspectEntry{
+			FactID:          id,
+			State:           state,
+			Agent:           agent,
+			Subject:         subject,
+			Predicate:       predicate,
+			Object:          object,
+			Confidence:      confidence,
+			Reinforcements:  reinforcementCnt,
+			SourceCount:     sourceCount,
+			DaysSinceSeen:   daysSinceSeen,
+			ConvictionScore: score,
+			PromoteReady:    promoteReady,
+			RetireCandidate: retireCandidate,
+			ScoreComponents: components,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].ConvictionScore == entries[j].ConvictionScore {
+			return entries[i].Confidence > entries[j].Confidence
+		}
+		return entries[i].ConvictionScore > entries[j].ConvictionScore
+	})
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+
+	report := &beliefsInspectReport{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Agent:       strings.TrimSpace(agentID),
+		State:       stateFilter,
+		Limit:       limit,
+		Weights:     weights,
+		Thresholds:  thresholds,
+		Facts:       entries,
+	}
+	return report, nil
+}
+
+func tryParseSQLiteTime(raw string) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	layouts := []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
+func normalizeCount(n, threshold int) float64 {
+	if n <= 0 {
+		return 0
+	}
+	if threshold <= 0 {
+		return 1
+	}
+	return clamp01(float64(n) / float64(threshold))
+}
+
+func recencyComponent(daysSinceSeen, inactiveDays int) float64 {
+	if inactiveDays <= 0 {
+		return 1
+	}
+	ratio := float64(daysSinceSeen) / float64(inactiveDays)
+	return clamp01(1 - ratio)
+}
+
+func clamp01(v float64) float64 {
+	switch {
+	case v < 0:
+		return 0
+	case v > 1:
+		return 1
+	default:
+		return v
+	}
 }
 
 func countFactsByState(ctx context.Context, sqlStore *store.SQLiteStore, state, agentID string) (int64, error) {
