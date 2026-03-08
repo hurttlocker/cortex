@@ -1,5 +1,7 @@
 # Multi-Agent Coordination
 
+> **Active contract:** The repo-root `AGENTS.md` is the current operating contract for all agent work in Cortex. If this file conflicts with the root `AGENTS.md`, the root file wins.
+
 This repo is developed by multiple AI agents working in parallel. This document defines coordination conventions to prevent conflicts, maintain quality, and keep development velocity high.
 
 ---
