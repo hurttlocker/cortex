@@ -329,6 +329,7 @@ func (e *Engine) LoadOrBuildHNSW(ctx context.Context, path string, staleThreshol
 				e.hnsw = loaded
 				return loaded.Len(), nil
 			}
+			fmt.Fprintf(os.Stderr, "warning: could not load HNSW index %s: %v; rebuilding\n", path, err)
 			// Fall through to rebuild on load error
 		}
 	}
