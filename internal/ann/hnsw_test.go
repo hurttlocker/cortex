@@ -1,10 +1,12 @@
 package ann
 
 import (
+	"encoding/binary"
 	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -283,6 +285,51 @@ func TestLoadInvalidMagic(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsCorruptNodeLevelWithoutPanicking(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "corrupt-level.hnsw")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create corrupt file: %v", err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write([]byte(magic)); err != nil {
+		t.Fatalf("write magic: %v", err)
+	}
+	write := func(v int32) {
+		t.Helper()
+		if err := binary.Write(f, binary.LittleEndian, v); err != nil {
+			t.Fatalf("write int32 %d: %v", v, err)
+		}
+	}
+	write(1)   // version
+	write(2)   // dims
+	write(1)   // nodeCount
+	write(0)   // entryPoint
+	write(0)   // maxLevel
+	write(16)  // M
+	write(32)  // Mmax0
+	write(200) // EfConstruction
+	write(50)  // EfSearch
+	if err := binary.Write(f, binary.LittleEndian, int64(1)); err != nil {
+		t.Fatalf("write node id: %v", err)
+	}
+	write(-2) // corrupt level that used to trigger makeslice panic
+	if err := f.Close(); err != nil {
+		t.Fatalf("close corrupt file: %v", err)
+	}
+
+	_, err = Load(path)
+	if err == nil {
+		t.Fatal("expected error for corrupt level")
+	}
+	if got := err.Error(); got == "" || !containsAny(got, []string{"invalid value -2", "corrupt persisted data"}) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // --- Distance Tests ---
 
 func TestCosineDistance(t *testing.T) {
@@ -330,4 +377,13 @@ func resultIDs(results []Result) []int64 {
 		ids[i] = r.ID
 	}
 	return ids
+}
+
+func containsAny(s string, wants []string) bool {
+	for _, want := range wants {
+		if want != "" && strings.Contains(s, want) {
+			return true
+		}
+	}
+	return false
 }

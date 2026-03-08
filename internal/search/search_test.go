@@ -3,13 +3,16 @@ package search
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/hurttlocker/cortex/internal/ann"
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
@@ -57,6 +60,38 @@ func findResultByID(results []Result, id int64) (Result, bool) {
 	return Result{}, false
 }
 
+func writeCorruptHNSWFile(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create corrupt hnsw file: %v", err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write([]byte("CXHNSW01")); err != nil {
+		t.Fatalf("write magic: %v", err)
+	}
+	write := func(v int32) {
+		t.Helper()
+		if err := binary.Write(f, binary.LittleEndian, v); err != nil {
+			t.Fatalf("write int32 %d: %v", v, err)
+		}
+	}
+	write(1)   // version
+	write(3)   // dims
+	write(1)   // nodeCount
+	write(0)   // entryPoint
+	write(0)   // maxLevel
+	write(16)  // M
+	write(32)  // Mmax0
+	write(200) // EfConstruction
+	write(50)  // EfSearch
+	if err := binary.Write(f, binary.LittleEndian, int64(1)); err != nil {
+		t.Fatalf("write node id: %v", err)
+	}
+	write(-2) // corrupt level that used to trigger panic in ann.Load
+}
+
 // seedTestData inserts a standard set of test memories for search testing.
 func seedTestData(t *testing.T, s store.Store) {
 	t.Helper()
@@ -93,6 +128,45 @@ func TestNewEngine(t *testing.T) {
 	}
 	if engine.store == nil {
 		t.Fatal("expected non-nil store in engine")
+	}
+}
+
+func TestLoadOrBuildHNSW_RebuildsCorruptPersistedIndex(t *testing.T) {
+	s, dbPath := newFileBackedTestStore(t)
+	ctx := context.Background()
+	memID, err := s.AddMemory(ctx, &store.Memory{
+		Content:       "HNSW rebuild should recover from corrupt persisted index",
+		SourceFile:    "search-test.md",
+		SourceLine:    1,
+		SourceSection: "tests",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if err := s.AddEmbedding(ctx, memID, []float32{0.9, 0.1, 0.0}); err != nil {
+		t.Fatalf("AddEmbedding: %v", err)
+	}
+
+	hnswPath := filepath.Join(filepath.Dir(dbPath), "hnsw.idx")
+	writeCorruptHNSWFile(t, hnswPath)
+
+	engine := NewEngine(s)
+	count, err := engine.LoadOrBuildHNSW(ctx, hnswPath, 3600)
+	if err != nil {
+		t.Fatalf("LoadOrBuildHNSW: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("LoadOrBuildHNSW count = %d, want 1", count)
+	}
+	if engine.hnsw == nil {
+		t.Fatal("expected HNSW index to be rebuilt")
+	}
+	loaded, err := ann.Load(hnswPath)
+	if err != nil {
+		t.Fatalf("ann.Load rebuilt index: %v", err)
+	}
+	if loaded.Len() != 1 {
+		t.Fatalf("rebuilt persisted index len = %d, want 1", loaded.Len())
 	}
 }
 
