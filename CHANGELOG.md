@@ -2,52 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] - safe-source-refresh
+## [Unreleased]
 
-### Safe per-source refresh path
+## [1.2.4] - 2026-03-08
 
-- **`cortex refresh-source <path>`** — New command that safely refreshes a single source file without touching the rest of the database. Finds all memories derived from the given file, removes their facts (hard-delete) and soft-deletes the memories, then reimports the file from disk using the current extraction pipeline. Supports `--dry-run`, `--extract`, `--no-enrich`, `--no-classify`, `--embed`, `--llm`, and `--force`.
-- **`store.DeleteMemoriesBySourceFile`** — New store method that soft-deletes all active memories for a given `source_file` and hard-deletes their associated facts atomically per-memory. Returns the count of memories removed. Calling on an already-purged or unknown source is safe (returns 0).
-- **Reimport unblocked** — Because memories are soft-deleted (not hard-deleted), `FindByHash` (which filters `WHERE deleted_at IS NULL`) no longer sees the old records, so the re-import of unchanged content produces fresh memory rows without hash-collision skips.
+### 🛠️ v1.2.4 — Operator Maintenance + Trust Hardening
 
-**Files changed:**
-- `internal/store/memory.go` — `DeleteMemoriesBySourceFile` implementation
-- `internal/store/store.go` — Store interface extended with `DeleteMemoriesBySourceFile`
-- `internal/store/refresh_test.go` — Two tests: basic isolation and reimportability
-- `cmd/cortex/main.go` — `runRefreshSource` handler, switch registration, help text, command list
+Patch release that packages the merged operator/trust hardening lane into a coherent maintenance release.
 
-## [Unreleased] - pass3-subject-semantics
+#### Operator visibility + maintenance safety
+- **Belief/operator surface:** `cortex beliefs` lifecycle visibility + manual state controls (`promote`, `retire`, `activate`, `set`).
+- **Lifecycle explainability:** `cortex lifecycle run` now reports per-policy skip stats (for example `needs_reinforcements`, `too_fresh`, `confidence_too_high`) so zero-action runs are diagnosable.
+- **Safe per-source refresh path:** `cortex refresh-source <path>` and `store.DeleteMemoriesBySourceFile` provide isolated, source-scoped refresh/repair without touching unrelated memories.
+- **Source-scoped embedding completion:** source-level embed repair/finish paths now reduce broad blast radius during maintenance workflows.
 
-### Subject/context separation (pass 3)
+#### Trust + signal quality hardening
+- **Doctor false-warning fix:** provider-only LLM config is treated as resolved in `cortex doctor` (issue #301 closed by merged work in this lane).
+- **Hybrid search auto-embedder resolution:** `--mode hybrid|rrf|semantic` auto-resolves embed provider from config/env when available, with graceful BM25 fallback.
+- **Predicate-aware conflict detection:** `cortex conflicts` suppresses obviously multi-valued append-only predicates from attribute-conflict noise.
+- **Extraction noise hardening:** preserves hierarchical section paths, suppresses URL/envelope noise, and tightens subject semantics (`MaxSubjectLength` 50→40 plus natural-language date subject filtering).
+- **Docs sync:** architecture/deep-dive docs updated to reflect current search and trust-hardening behavior.
 
-Three root-cause gaps produced ~400 residual conflict-noise facts even after pass 1+2 hardening. Each was caused by section headers or document titles being stored as fact subjects, then triggering false attribute conflicts against each other.
+#### Included PRs
+- **#302** — feat: harden Cortex search, lifecycle, and conflict trust signals
 
-**Root causes fixed:**
-
-- **Natural-language date subjects** — section headers like `"Feb 18, 2026"` or `"March 2026"` were used as entity subjects because `timestampSubjectRE` only caught ISO-format and clock-time prefixes. Added `nlDateSubjectRE` to `isGenericSubject()` matching both full and 3-letter abbreviated month names. Fixes live-DB example: `subject="Feb 18, 2026", predicate="memorysearch"`.
-
-- **Long document section titles** — subjects between 41–50 chars (like `"Email Security Framework & Spacemail Integration"` at 48 chars) slipped under the old 50-char `isGenericSubject` threshold. Lowered to 40 chars. Real entity names (`Q`, `Cortex`, `Spear`, `SB`, `ORB Strategy`) are all well under 40 chars. `MaxSubjectLength` constant also lowered from 50→40 so the extraction pipeline no longer produces subjects that would be caught by the governor.
-
-- **Conflict query lacks principled entity filter** — the ad-hoc subject denylist in `GetAttributeConflictsLimitWithSuperseded` was growing with specific section names. Replaced the growth pattern with a principled `LENGTH(f.subject) <= 40` clause. This filters historical DB rows that predate the governor fix without requiring a full DB reprocess.
-
-**Files changed:**
-- `internal/extract/governor.go` — `nlDateSubjectRE` var + `isGenericSubject` length threshold 50→40
-- `internal/extract/extract.go` — `MaxSubjectLength` constant 50→40
-- `internal/store/events.go` — `entitySubjectMaxLen=40` clause in conflict pair query
-- `internal/extract/governor_test.go` — 4 new pass 3 tests
-
-**Reprocess recommendation:** Targeted. Only facts with `LENGTH(subject) > 40` or subjects matching month-name date patterns need re-extraction. Full DB reprocess is not required — the conflict query now filters these facts at query time for existing data.
-
-## [Unreleased] - trust-hardening-first-pass
-
-### Signal quality hardening sprint
-
-- **Hybrid search auto-embedder** — `--mode hybrid|rrf|semantic` now automatically resolves the embedder from `embed.provider` in `config.yaml` or `CORTEX_EMBED` env var when `--embed` is not explicitly passed. The smartest mode now works by default when embeddings are configured. Falls back to BM25 gracefully if no embedder is available at all.
-- **Conflict detection predicate-aware** — `cortex conflicts` no longer flags obviously multi-valued predicates (`reinforce`, `references`, `tagged`, etc.) as attribute conflicts. These predicates are append-only by design. A denylist of 15 predicate patterns is applied at query time. Real single-valued attribute conflicts (e.g. `email`, `status`, `location`) are unaffected.
-- **Extraction root-cause cleanup** — structured markdown now preserves full hierarchical section paths instead of collapsing everything to the first header bucket; URL-scheme keys (`https:`) and envelope metadata (`session id`, `assistant`, `channel`, etc.) are dropped before they become facts.
-- **Conflict subject-bucket suppression** — generic section buckets like `Completed Today`, `In Progress`, and their hierarchical forms (`Completed Today > Trading Systems`) are no longer treated as entity subjects for attribute-conflict detection.
-- **Lifecycle skip-stats visibility** — `cortex lifecycle run` now emits per-policy skip stats explaining why candidates were not acted upon (e.g. `needs_reinforcements=12 too_fresh=47 confidence_too_high=3`). Diagnoses zero-action lifecycle runs without changing any automatic behavior.
-- **Docs reality sync** — Updated `ARCHITECTURE.md` and `CORTEX_DEEP_DIVE.md` to reflect hybrid auto-resolve behavior.
+#### Not shipped in v1.2.4
+- **#308** (`feat(beliefs): add read-only conviction inspect operator surface`) remains open/queued and is intentionally excluded from this release cut.
 
 ## [1.2.3] - 2026-03-05
 
