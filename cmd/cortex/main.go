@@ -8328,6 +8328,9 @@ type agentSummary struct {
 	FactCount       int    `json:"fact_count"`
 	ActiveFactCount int    `json:"active_fact_count"`
 	LastSeen        string `json:"last_seen,omitempty"`
+	TrustLevel      string `json:"trust_level"`
+	TrustScope      string `json:"trust_scope"`
+	TrustConfigured bool   `json:"trust_configured"`
 }
 
 type agentsReport struct {
@@ -8344,6 +8347,11 @@ func runAgents(args []string) error {
 		default:
 			return fmt.Errorf("unknown argument: %s\nUsage: cortex agents [--json]", arg)
 		}
+	}
+
+	trustByAgent, err := cfgresolver.ResolveAgentTrustConfig("")
+	if err != nil {
+		return fmt.Errorf("loading trust config: %w", err)
 	}
 
 	cfg := getStoreConfig()
@@ -8420,6 +8428,13 @@ func runAgents(args []string) error {
 			MemoryCount:     memoryCount,
 			FactCount:       factCount,
 			ActiveFactCount: activeFactCount,
+			TrustLevel:      "unconfigured",
+			TrustScope:      "n/a",
+		}
+		if trust, ok := trustByAgent[agentID]; ok {
+			entry.TrustLevel = trust.Trust
+			entry.TrustScope = trust.Scope
+			entry.TrustConfigured = true
 		}
 		if lastSeen.Valid && strings.TrimSpace(lastSeen.String) != "" {
 			entry.LastSeen = lastSeen.String
@@ -8444,17 +8459,20 @@ func runAgents(args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%-16s  %8s  %8s  %8s  %s\n", "AGENT", "MEMORIES", "FACTS", "ACTIVE", "LAST_SEEN")
-	fmt.Println(strings.Repeat("─", 72))
+	fmt.Printf("%-16s  %8s  %8s  %8s  %-13s  %-23s  %s\n", "AGENT", "MEMORIES", "FACTS", "ACTIVE", "TRUST", "SCOPE", "LAST_SEEN")
+	fmt.Println(strings.Repeat("─", 110))
 	for _, a := range agents {
 		lastSeen := a.LastSeen
 		if lastSeen == "" {
 			lastSeen = "-"
 		}
-		fmt.Printf("%-16s  %8d  %8d  %8d  %s\n",
-			a.AgentID, a.MemoryCount, a.FactCount, a.ActiveFactCount, lastSeen)
+		fmt.Printf("%-16s  %8d  %8d  %8d  %-13s  %-23s  %s\n",
+			a.AgentID, a.MemoryCount, a.FactCount, a.ActiveFactCount, a.TrustLevel, a.TrustScope, lastSeen)
 	}
 	fmt.Println()
+	if len(trustByAgent) > 0 {
+		fmt.Printf("Trust visibility loaded from %s (read-only visibility only; no cross-agent write enforcement in this slice).\n", cfgresolver.DefaultConfigPath())
+	}
 	fmt.Println("Global (agent_id='') facts are shared and not listed here.")
 	return nil
 }

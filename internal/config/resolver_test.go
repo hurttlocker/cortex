@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -205,4 +206,66 @@ func TestResolveConfig_ObsidianExportOverrides(t *testing.T) {
 	if obs.HubTypes.Person == "" || obs.HubTypes.Project == "" {
 		t.Fatalf("expected hub type regex overrides, got %+v", obs.HubTypes)
 	}
+}
+
+func TestResolveAgentTrustConfig_Valid(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	yaml := `agents:
+  opus:
+    trust: owner
+  x7:
+    trust: collaborator
+  hawk:
+    trust: reader
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	trust, err := ResolveAgentTrustConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("ResolveAgentTrustConfig: %v", err)
+	}
+	if len(trust) != 3 {
+		t.Fatalf("expected 3 trust entries, got %d", len(trust))
+	}
+	if trust["opus"].Scope != "read:all write:all" {
+		t.Fatalf("unexpected opus scope: %+v", trust["opus"])
+	}
+	if trust["x7"].Scope != "read:all write:own" {
+		t.Fatalf("unexpected x7 scope: %+v", trust["x7"])
+	}
+	if trust["hawk"].Scope != "read:all write:none" {
+		t.Fatalf("unexpected hawk scope: %+v", trust["hawk"])
+	}
+}
+
+func TestResolveAgentTrustConfig_InvalidTrust(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	yaml := `agents:
+  hawk:
+    trust: admin
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := ResolveAgentTrustConfig(cfgPath)
+	if err == nil {
+		t.Fatal("expected invalid trust error")
+	}
+	if got := err.Error(); got == "" || !containsAll(got, "agents.hawk.trust", "owner", "collaborator", "reader") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func containsAll(s string, needles ...string) bool {
+	for _, n := range needles {
+		if !strings.Contains(s, n) {
+			return false
+		}
+	}
+	return true
 }

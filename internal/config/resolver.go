@@ -58,6 +58,16 @@ type PolicyConfig struct {
 	ConflictSupersede ConflictSupersedePolicy `yaml:"conflict_supersede" json:"conflict_supersede"`
 }
 
+type AgentTrustRule struct {
+	Trust string `yaml:"trust" json:"trust"`
+}
+
+type AgentTrustEntry struct {
+	AgentID string `json:"agent_id"`
+	Trust   string `json:"trust"`
+	Scope   string `json:"scope"`
+}
+
 type ObsidianHubTypesConfig struct {
 	Person   string `yaml:"person" json:"person"`
 	Project  string `yaml:"project" json:"project"`
@@ -144,7 +154,8 @@ type fileConfig struct {
 		APIKey   string `yaml:"api_key"`
 		Endpoint string `yaml:"endpoint"`
 	} `yaml:"embed"`
-	Policies PolicyConfig `yaml:"policies"`
+	Policies PolicyConfig              `yaml:"policies"`
+	Agents   map[string]AgentTrustRule `yaml:"agents"`
 	Export   struct {
 		Obsidian ObsidianExportConfig `yaml:"obsidian"`
 	} `yaml:"export"`
@@ -256,6 +267,58 @@ func ResolveObsidianExportConfig(configPath string) (ObsidianExportConfig, error
 		return ObsidianExportConfig{}, err
 	}
 	return resolved.ObsidianExport, nil
+}
+
+func ResolveAgentTrustConfig(configPath string) (map[string]AgentTrustEntry, error) {
+	path := strings.TrimSpace(configPath)
+	if path == "" {
+		path = DefaultConfigPath()
+	}
+
+	cfg, err := loadConfig(path)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := map[string]AgentTrustEntry{}
+	if cfg == nil || len(cfg.Agents) == 0 {
+		return entries, nil
+	}
+
+	for rawAgentID, rule := range cfg.Agents {
+		agentID := strings.TrimSpace(rawAgentID)
+		if agentID == "" {
+			return nil, fmt.Errorf("parsing %s: agents contains an empty agent id", path)
+		}
+		trust := strings.ToLower(strings.TrimSpace(rule.Trust))
+		if trust == "" {
+			return nil, fmt.Errorf("parsing %s: agents.%s.trust is required", path, agentID)
+		}
+		scope, ok := AgentTrustScope(trust)
+		if !ok {
+			return nil, fmt.Errorf("parsing %s: agents.%s.trust=%q is invalid (allowed: owner, collaborator, reader)", path, agentID, trust)
+		}
+		entries[agentID] = AgentTrustEntry{
+			AgentID: agentID,
+			Trust:   trust,
+			Scope:   scope,
+		}
+	}
+
+	return entries, nil
+}
+
+func AgentTrustScope(trustLevel string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(trustLevel)) {
+	case "owner":
+		return "read:all write:all", true
+	case "collaborator":
+		return "read:all write:own", true
+	case "reader":
+		return "read:all write:none", true
+	default:
+		return "", false
+	}
 }
 
 func (r ResolvedConfig) EffectiveLLMModel(purpose, fallback string) ResolvedValue {

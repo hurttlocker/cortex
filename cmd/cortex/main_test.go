@@ -2255,6 +2255,22 @@ func TestRunAgents_JSON(t *testing.T) {
 	globalDBPath = dbPath
 	t.Cleanup(func() { globalDBPath = oldDBPath })
 
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	cfgDir := filepath.Join(homeDir, ".cortex")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	trustCfg := `agents:
+  mister:
+    trust: owner
+  hawk:
+    trust: reader
+`
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(trustCfg), 0o600); err != nil {
+		t.Fatalf("write trust config: %v", err)
+	}
+
 	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -2363,6 +2379,9 @@ func TestRunAgents_JSON(t *testing.T) {
 	if mister.MemoryCount != 1 || mister.FactCount != 1 || mister.ActiveFactCount != 1 {
 		t.Fatalf("unexpected mister stats: %+v", mister)
 	}
+	if !mister.TrustConfigured || mister.TrustLevel != "owner" || mister.TrustScope != "read:all write:all" {
+		t.Fatalf("unexpected mister trust visibility: %+v", mister)
+	}
 
 	hawk, ok := findAgentSummary(payload.Agents, "hawk")
 	if !ok {
@@ -2370,6 +2389,60 @@ func TestRunAgents_JSON(t *testing.T) {
 	}
 	if hawk.MemoryCount != 1 || hawk.FactCount != 2 || hawk.ActiveFactCount != 1 {
 		t.Fatalf("unexpected hawk stats: %+v", hawk)
+	}
+	if !hawk.TrustConfigured || hawk.TrustLevel != "reader" || hawk.TrustScope != "read:all write:none" {
+		t.Fatalf("unexpected hawk trust visibility: %+v", hawk)
+	}
+}
+
+func TestRunAgents_TextIncludesTrustVisibility(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	cfgDir := filepath.Join(homeDir, ".cortex")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	trustCfg := `agents:
+  mister:
+    trust: owner
+`
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(trustCfg), 0o600); err != nil {
+		t.Fatalf("write trust config: %v", err)
+	}
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memID, err := s.AddMemory(ctx, &store.Memory{Content: "mister memory", SourceFile: "mister.md", Metadata: &store.Metadata{AgentID: "mister"}})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "deploy", Predicate: "owner", Object: "mister", FactType: "identity", AgentID: "mister"}); err != nil {
+		t.Fatalf("add fact: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	out := captureStdout(func() {
+		if err := runAgents(nil); err != nil {
+			t.Fatalf("runAgents: %v", err)
+		}
+	})
+	if !strings.Contains(out, "TRUST") || !strings.Contains(out, "SCOPE") || !strings.Contains(out, "read:all write:all") {
+		t.Fatalf("expected trust columns in output, got: %s", out)
+	}
+	if !strings.Contains(out, "read-only visibility only") {
+		t.Fatalf("expected read-only note in output, got: %s", out)
 	}
 }
 
@@ -2380,6 +2453,8 @@ func TestRunAgents_NoAgents(t *testing.T) {
 	oldDBPath := globalDBPath
 	globalDBPath = dbPath
 	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	t.Setenv("HOME", t.TempDir())
 
 	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
 	if err != nil {
@@ -2396,6 +2471,45 @@ func TestRunAgents_NoAgents(t *testing.T) {
 	})
 	if !strings.Contains(out, "No agents found") {
 		t.Fatalf("expected empty-state message, got: %s", out)
+	}
+}
+
+func TestRunAgents_InvalidTrustConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	cfgDir := filepath.Join(homeDir, ".cortex")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	badCfg := `agents:
+  hawk:
+    trust: admin
+`
+	if err := os.WriteFile(filepath.Join(cfgDir, "config.yaml"), []byte(badCfg), 0o600); err != nil {
+		t.Fatalf("write bad config: %v", err)
+	}
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	err = runAgents([]string{"--json"})
+	if err == nil {
+		t.Fatal("expected trust config validation error")
+	}
+	if !strings.Contains(err.Error(), "loading trust config") || !strings.Contains(err.Error(), "agents.hawk.trust") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
