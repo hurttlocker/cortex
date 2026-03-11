@@ -11,6 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Guard workflow `if` expressions against direct secrets context
+        run: |
+          if grep -RInE "^[[:space:]]*if:[[:space:]]*\$\{\{[[:space:]]*secrets\." .github/workflows/*.yml; then
+            echo "Direct secrets.* in if expressions is invalid; use env indirection (see #314)."
+            exit 1
+          fi
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
