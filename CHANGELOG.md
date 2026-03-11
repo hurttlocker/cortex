@@ -4,30 +4,45 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [1.2.4] - 2026-03-08
+## [1.2.4] - 2026-03-11
 
-### 🛠️ v1.2.4 — Operator Maintenance + Trust Hardening
+### 🛠️ v1.2.4 — Operator Retrieval + Recall Packaging + Reliability Hardening
 
-Patch release that packages the merged operator/trust hardening lane into a coherent maintenance release.
+Release that packages the post-`v1.2.3` operator-quality wave into one honest cut: stronger operator retrieval, a cleaner OpenClaw happy path, bounded recall packaging, workflow repair, and ANN/HNSW reliability hardening.
 
-#### Operator visibility + maintenance safety
-- **Belief/operator surface:** `cortex beliefs` lifecycle visibility + manual state controls (`promote`, `retire`, `activate`, `set`).
-- **Lifecycle explainability:** `cortex lifecycle run` now reports per-policy skip stats (for example `needs_reinforcements`, `too_fresh`, `confidence_too_high`) so zero-action runs are diagnosable.
-- **Safe per-source refresh path:** `cortex refresh-source <path>` and `store.DeleteMemoriesBySourceFile` provide isolated, source-scoped refresh/repair without touching unrelated memories.
-- **Source-scoped embedding completion:** source-level embed repair/finish paths now reduce broad blast radius during maintenance workflows.
+#### Operator retrieval + actionability
+- **Trust visibility surface:** better visibility into Cortex trust boundaries and agent-facing operator state.
+- **Operator-intent query shaping:** retrieval path now shapes long workflow prompts without mutating the raw query surface.
+- **Top-1 tie-break hardening:** operator-style retrieval is more stable when multiple candidates compete closely.
+- **Deterministic actionability repair:** operator outputs preserve a cleaner actionability contract for downstream use.
 
-#### Trust + signal quality hardening
-- **Doctor false-warning fix:** provider-only LLM config is treated as resolved in `cortex doctor` (issue #301 closed by merged work in this lane).
-- **Hybrid search auto-embedder resolution:** `--mode hybrid|rrf|semantic` auto-resolves embed provider from config/env when available, with graceful BM25 fallback.
-- **Predicate-aware conflict detection:** `cortex conflicts` suppresses obviously multi-valued append-only predicates from attribute-conflict noise.
-- **Extraction noise hardening:** preserves hierarchical section paths, suppresses URL/envelope noise, and tightens subject semantics (`MaxSubjectLength` 50→40 plus natural-language date subject filtering).
-- **Docs sync:** architecture/deep-dive docs updated to reflect current search and trust-hardening behavior.
+#### OpenClaw setup + recall packaging
+- **Canonical OpenClaw happy path:** clearer zero-to-working Cortex + OpenClaw setup flow.
+- **Bounded recall manifest selection:** recall injection now plans against a hard budget instead of naïve slice-only behavior.
+- **Grouped recall packing:** same-lane recall can be packed more usefully by project/file/section.
+- **Packed-entry transparency follow-up:** collapsed same-source detail remains visible in packed output instead of disappearing under long primary snippets.
+
+#### Reliability + CI hardening
+- **Reason-quality nightly workflow repaired:** the broken nightly eval workflow runs cleanly again on `main`.
+- **ANN/HNSW malformed-state hardening:** malformed persisted ANN state no longer causes repeated unstable load/rebuild loops; rebuilds recover to a stable state.
 
 #### Included PRs
-- **#302** — feat: harden Cortex search, lifecycle, and conflict trust signals
+- **#312** — trust visibility
+- **#315** — operator-intent query shaping (#303 slice A)
+- **#316** — top-1 ranking hardening (#304 slice A)
+- **#317** — deterministic actionability repair (#305 slice A)
+- **#322** — canonical OpenClaw happy path (#321)
+- **#323** — bounded recall manifest budget selection (#319 slice A)
+- **#324** — reason-quality nightly workflow repair (#314)
+- **#325** — grouped recall packing for #318-lite
+- **#327** — collapsed-hit detail marker visibility follow-up (#326)
+- **#328** — ANN/HNSW malformed-state reliability hardening (#313)
 
-#### Not shipped in v1.2.4
-- **#308** (`feat(beliefs): add read-only conviction inspect operator surface`) remains open/queued and is intentionally excluded from this release cut.
+#### Not fully shipped in v1.2.4
+- **#318** remains broader than the shipped `#318-lite` harvest.
+- **#319** remains broader than shipped Slice A.
+- **#320** (ghost cues + archive stubs) remains intentionally held and is not part of this release.
+- **#307** remains the broader operator-mode umbrella beyond the shipped bounded slices.
 
 ## [1.2.3] - 2026-03-05
 
