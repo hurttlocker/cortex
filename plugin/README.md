@@ -71,6 +71,7 @@ Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
 | `autoCapture` | `false` | Capture conversation exchanges after each AI turn |
 | `extractFacts` | `true` | Extract structured facts from captured content |
 | `recallLimit` | `3` | Max memories injected per turn |
+| `recallBudgetChars` | `3000` | Hard character budget for injected recall context |
 | `minScore` | `0.3` | Minimum score for auto-recall results |
 | `captureMaxChars` | `2000` | Max message length for auto-capture |
 | `capture.dedupe.enabled` | `true` | Enable near-duplicate suppression for auto-capture |
@@ -86,6 +87,14 @@ Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
 
 ### Auto-Recall
 Before each AI response, Cortex searches for relevant memories using your query and injects them as context. The AI sees past decisions, preferences, and facts without being asked.
+
+Recall now builds a deterministic **manifest** before injection:
+- applies dedupe + ranking order
+- enforces `recallLimit`
+- enforces a hard `recallBudgetChars` cap
+- deterministically keeps/drops items under budget
+
+Selection behavior is observable in plugin logs (`cortex: recall manifest ...`) and test-covered.
 
 ### Auto-Capture
 After each AI turn, the conversation exchange is captured into Cortex with automatic fact extraction. Preferences, decisions, identities, and temporal facts are extracted and indexed.

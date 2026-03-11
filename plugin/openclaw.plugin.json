@@ -37,6 +37,12 @@
       "help": "Maximum memories to inject per turn.",
       "advanced": true
     },
+    "recallBudgetChars": {
+      "label": "Recall Budget (chars)",
+      "placeholder": "3000",
+      "help": "Hard character budget for injected recall context. Selection drops lower-priority items when budget is exceeded.",
+      "advanced": true
+    },
     "minScore": {
       "label": "Minimum Score",
       "placeholder": "0.3",
@@ -108,6 +114,7 @@
       "autoCapture": { "type": "boolean" },
       "autoRecall": { "type": "boolean" },
       "recallLimit": { "type": "number", "minimum": 1, "maximum": 10 },
+      "recallBudgetChars": { "type": "number", "minimum": 300, "maximum": 20000 },
       "minScore": { "type": "number", "minimum": 0, "maximum": 1 },
       "captureMaxChars": { "type": "number", "minimum": 100, "maximum": 10000 },
       "extractFacts": { "type": "boolean" },
