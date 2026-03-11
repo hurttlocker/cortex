@@ -90,9 +90,11 @@ Before each AI response, Cortex searches for relevant memories using your query 
 
 Recall now builds a deterministic **manifest** before injection:
 - applies dedupe + ranking order
+- packs recall by **project/file/section** groups
+- provenance-safe collapse of same-source hits (no synthetic summary store)
 - enforces `recallLimit`
 - enforces a hard `recallBudgetChars` cap
-- deterministically keeps/drops items under budget
+- deterministically keeps/drops packed entries under budget
 
 Selection behavior is observable in plugin logs (`cortex: recall manifest ...`) and test-covered.
 
