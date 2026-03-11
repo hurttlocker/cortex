@@ -231,30 +231,15 @@ cortex bench --recursive --max-iterations 8 --max-depth 1 --output recursive.md
 
 ## 8. OpenClaw Plugin (Optional)
 
-If you're running [OpenClaw](https://github.com/openclaw/openclaw), the Cortex plugin adds automatic capture and recall:
+For OpenClaw integration, use the canonical setup flow:
 
-```bash
-# Install the plugin
-openclaw plugins install /path/to/cortex/plugin
+- **[docs/openclaw-happy-path.md](openclaw-happy-path.md)**
 
-# Add to openclaw.json under plugins.entries:
-"openclaw-cortex": {
-  "enabled": true,
-  "config": {
-    "autoRecall": true,
-    "autoCapture": true,
-    "extractFacts": true,
-    "searchMode": "hybrid",
-    "embedProvider": "ollama/nomic-embed-text"
-  }
-}
-```
-
-- **autoRecall**: Injects relevant memories before each AI turn
-- **autoCapture**: Stores conversation exchanges after each turn
-- **extractFacts**: Pulls out key-value pairs, identities, temporal facts
-
-Restart OpenClaw after config change.
+That path is the single source of truth for:
+- plugin install + config placement
+- `openclaw cortex setup` verification
+- actionable doctor/setup next steps
+- stale runtime drift checks + HNSW rebuild health guidance
 
 ---
 

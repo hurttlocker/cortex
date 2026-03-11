@@ -18,7 +18,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { writeFile, unlink, mkdtemp } from "node:fs/promises";
+import { writeFile, unlink, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -90,6 +90,31 @@ interface CortexStats {
   };
 }
 
+interface DoctorCheck {
+  name: string;
+  status: "pass" | "warn" | "fail";
+  details: string;
+  hint?: string;
+}
+
+interface DoctorReport {
+  generated_at: string;
+  db_path: string;
+  summary: {
+    pass: number;
+    warn: number;
+    fail: number;
+  };
+  checks: DoctorCheck[];
+}
+
+interface SetupCheck {
+  name: string;
+  status: "pass" | "warn" | "fail";
+  details: string;
+  hint?: string;
+}
+
 /** Structured metadata attached to memories (Issue #30). */
 interface CortexMetadata {
   session_key?: string;
@@ -146,9 +171,12 @@ function parseConfig(raw: unknown): CortexConfig {
     ? capture.lowSignalPatterns.filter((p): p is string => typeof p === "string" && p.trim().length > 0)
     : lowSignalDefaults;
 
+  const binaryPath = typeof cfg.binaryPath === "string" ? expandHomePath(cfg.binaryPath) : resolveDefaultBinaryPath();
+  const dbPath = typeof cfg.dbPath === "string" ? expandHomePath(cfg.dbPath) : join(homedir(), ".cortex", "cortex.db");
+
   return {
-    binaryPath: typeof cfg.binaryPath === "string" ? cfg.binaryPath : resolveDefaultBinaryPath(),
-    dbPath: typeof cfg.dbPath === "string" ? cfg.dbPath : join(homedir(), ".cortex", "cortex.db"),
+    binaryPath,
+    dbPath,
     embedProvider: typeof cfg.embedProvider === "string" ? cfg.embedProvider : "ollama/nomic-embed-text",
     searchMode: (cfg.searchMode as CortexConfig["searchMode"]) ?? "hybrid",
     autoCapture: cfg.autoCapture === true,
@@ -191,6 +219,144 @@ function parseConfig(raw: unknown): CortexConfig {
           : 0.98,
     },
   };
+}
+
+const canonicalOpenClawSetupDoc = "docs/openclaw-happy-path.md";
+const minimumRecommendedCortexVersion = "1.2.4";
+const knownPluginConfigKeys = new Set([
+  "binaryPath", "dbPath", "embedProvider", "searchMode", "autoCapture", "autoRecall", "recallLimit", "minScore",
+  "captureMaxChars", "extractFacts", "capture", "recallDedupe",
+]);
+
+function expandHomePath(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed === "~") return homedir();
+  if (trimmed.startsWith("~/")) return join(homedir(), trimmed.slice(2));
+  return trimmed;
+}
+
+function extractCortexVersion(raw: string): string | null {
+  const match = raw.match(/(\d+)\.(\d+)\.(\d+)/);
+  return match ? `${match[1]}.${match[2]}.${match[3]}` : null;
+}
+
+function compareSemver(a: string, b: string): number {
+  const pa = a.split(".").map((x) => parseInt(x, 10) || 0);
+  const pb = b.split(".").map((x) => parseInt(x, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const va = pa[i] ?? 0;
+    const vb = pb[i] ?? 0;
+    if (va > vb) return 1;
+    if (va < vb) return -1;
+  }
+  return 0;
+}
+
+function iconForSetupStatus(status: SetupCheck["status"]): string {
+  if (status === "pass") return "✅";
+  if (status === "warn") return "⚠️";
+  return "❌";
+}
+
+function findBinaryInPath(binName: string): string | null {
+  const pathEnv = process.env.PATH || "";
+  for (const dir of pathEnv.split(":")) {
+    if (!dir) continue;
+    const candidate = join(dir, binName);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+async function readBinaryVersion(binaryPath: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(binaryPath, ["--version"], {
+      timeout: 10_000,
+      env: { ...process.env, HOME: homedir() },
+      maxBuffer: 1024 * 1024,
+    });
+    return extractCortexVersion(stdout.trim());
+  } catch {
+    return null;
+  }
+}
+
+function findDoctorCheck(report: DoctorReport | null, name: string): DoctorCheck | undefined {
+  if (!report?.checks) return undefined;
+  return report.checks.find((c) => c.name === name);
+}
+
+async function inspectOpenClawConfigPlacement(): Promise<SetupCheck[]> {
+  const checks: SetupCheck[] = [];
+  const configPath = join(homedir(), ".openclaw", "openclaw.json");
+
+  if (!existsSync(configPath)) {
+    checks.push({
+      name: "openclaw_config",
+      status: "fail",
+      details: `missing ${configPath}`,
+      hint: "Create ~/.openclaw/openclaw.json, add plugins.entries.openclaw-cortex, then rerun `openclaw cortex setup`.",
+    });
+    return checks;
+  }
+
+  checks.push({
+    name: "openclaw_config",
+    status: "pass",
+    details: `found ${configPath}`,
+  });
+
+  try {
+    const raw = await readFile(configPath, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, any>;
+    const entry = parsed?.plugins?.entries?.["openclaw-cortex"];
+
+    if (!entry || typeof entry !== "object") {
+      checks.push({
+        name: "plugin_entry",
+        status: "fail",
+        details: "plugins.entries.openclaw-cortex is missing",
+        hint: "Install plugin with `openclaw plugins install openclaw-cortex` and add the entry under plugins.entries.",
+      });
+      return checks;
+    }
+
+    checks.push({
+      name: "plugin_entry",
+      status: "pass",
+      details: "plugins.entries.openclaw-cortex is configured",
+    });
+
+    if (entry.config && typeof entry.config === "object") {
+      checks.push({
+        name: "config_placement",
+        status: "pass",
+        details: "plugin settings are nested under config",
+      });
+    } else {
+      const misplaced = Object.keys(entry).filter((k) => knownPluginConfigKeys.has(k));
+      checks.push({
+        name: "config_placement",
+        status: misplaced.length > 0 ? "fail" : "warn",
+        details: misplaced.length > 0
+          ? `found config keys at top-level (${misplaced.join(", ")})`
+          : "plugin config block is missing",
+        hint: "Move Cortex settings under plugins.entries.openclaw-cortex.config to avoid gateway startup failures.",
+      });
+    }
+  } catch (err: any) {
+    checks.push({
+      name: "openclaw_config_parse",
+      status: "fail",
+      details: `cannot parse ~/.openclaw/openclaw.json: ${err?.message ?? err}`,
+      hint: "Fix JSON syntax, then rerun `openclaw cortex setup`.",
+    });
+  }
+
+  return checks;
 }
 
 // ============================================================================
@@ -313,6 +479,15 @@ class CortexCLI {
     try {
       const output = await this.exec(["stats", "--json"]);
       return JSON.parse(output) as CortexStats;
+    } catch {
+      return null;
+    }
+  }
+
+  async doctor(): Promise<DoctorReport | null> {
+    try {
+      const output = await this.exec(["doctor", "--json"], 60_000);
+      return JSON.parse(output) as DoctorReport;
     } catch {
       return null;
     }
@@ -721,44 +896,168 @@ const cortexPlugin = {
 
         cortex
           .command("setup")
-          .description("Check Cortex setup")
+          .description("Verify canonical Cortex + OpenClaw setup flow")
           .action(async () => {
+            const checks: SetupCheck[] = [];
+            const addCheck = (check: SetupCheck) => checks.push(check);
+
+            console.log("Cortex + OpenClaw setup check");
+            console.log(`Canonical guide: ${canonicalOpenClawSetupDoc}`);
             console.log(`Binary: ${cfg.binaryPath}`);
             console.log(`DB: ${cfg.dbPath}`);
             console.log(`Embed: ${cfg.embedProvider}`);
-            console.log(`Mode: ${cfg.searchMode}`);
-            console.log(`Auto-recall: ${cfg.autoRecall}`);
-            console.log(`Auto-capture: ${cfg.autoCapture}`);
-            console.log(`Extract facts: ${cfg.extractFacts}`);
-            console.log(`Capture dedupe: ${cfg.capture.dedupe.enabled}`);
-            console.log(`Capture similarity threshold: ${cfg.capture.similarityThreshold}`);
-            console.log(`Capture dedupe window: ${cfg.capture.dedupeWindowSec}s`);
-            console.log(`Capture coalesce window: ${cfg.capture.coalesceWindowSec}s`);
-            console.log(`Capture min chars: ${cfg.capture.minCaptureChars}`);
-            console.log(`Recall dedupe: ${cfg.recallDedupe.enabled}`);
-            console.log(`Recall dedupe similarity threshold: ${cfg.recallDedupe.similarityThreshold}`);
+            console.log("");
 
-            // Verify binary exists
-            try {
-              const stats = await cli.stats();
-              if (stats) {
-                console.log(`\n✅ Cortex is working — ${stats.memories} memories, ${stats.facts} facts`);
-              }
-            } catch (err: any) {
-              console.log(`\n❌ Cortex binary not found or not working: ${err.message}`);
-              console.log("Install: https://github.com/hurttlocker/cortex/releases");
+            // Verify OpenClaw config + plugin config placement first.
+            const configChecks = await inspectOpenClawConfigPlacement();
+            checks.push(...configChecks);
+
+            // Verify configured Cortex binary and version.
+            const binaryVersion = await readBinaryVersion(cfg.binaryPath);
+            if (!binaryVersion) {
+              addCheck({
+                name: "cortex_binary",
+                status: "fail",
+                details: `cannot execute ${cfg.binaryPath}`,
+                hint: "Install Cortex from GitHub releases and set plugins.entries.openclaw-cortex.config.binaryPath to the installed binary.",
+              });
+            } else {
+              addCheck({
+                name: "cortex_binary",
+                status: "pass",
+                details: `${cfg.binaryPath} (v${binaryVersion})`,
+              });
             }
 
-            // Connector health summary
+            // Stale ~/bin/cortex detection + runtime drift against PATH runtime.
+            const homeBin = join(homedir(), "bin", "cortex");
+            const pathBinary = findBinaryInPath("cortex");
+            const configuredBinaryForCompare = cfg.binaryPath === "cortex" && pathBinary ? pathBinary : cfg.binaryPath;
+            const homeBinVersion = existsSync(homeBin) ? await readBinaryVersion(homeBin) : null;
+            const pathBinaryVersion = pathBinary ? await readBinaryVersion(pathBinary) : null;
+
+            if (existsSync(homeBin) && pathBinary && pathBinary !== homeBin && homeBinVersion && pathBinaryVersion && compareSemver(homeBinVersion, pathBinaryVersion) < 0) {
+              addCheck({
+                name: "stale_home_bin",
+                status: "warn",
+                details: `~/bin/cortex is stale (v${homeBinVersion}) vs PATH cortex (v${pathBinaryVersion} at ${pathBinary})`,
+                hint: "Update or remove stale ~/bin/cortex, or point binaryPath to the intended runtime to avoid drift.",
+              });
+            } else {
+              addCheck({
+                name: "stale_home_bin",
+                status: "pass",
+                details: "no stale ~/bin/cortex drift detected",
+              });
+            }
+
+            if (binaryVersion && compareSemver(binaryVersion, minimumRecommendedCortexVersion) < 0) {
+              addCheck({
+                name: "runtime_drift",
+                status: "warn",
+                details: `plugin is running against Cortex v${binaryVersion} (< recommended v${minimumRecommendedCortexVersion})`,
+                hint: "Upgrade Cortex runtime (brew upgrade hurttlocker/cortex/cortex-memory or latest GitHub release).",
+              });
+            } else if (binaryVersion) {
+              addCheck({
+                name: "runtime_drift",
+                status: "pass",
+                details: `runtime version is current enough (v${binaryVersion})`,
+              });
+            }
+
+            if (binaryVersion && pathBinaryVersion && pathBinary && configuredBinaryForCompare !== pathBinary && compareSemver(binaryVersion, pathBinaryVersion) !== 0) {
+              addCheck({
+                name: "binary_path_drift",
+                status: "warn",
+                details: `configured binary (${cfg.binaryPath} v${binaryVersion}) differs from PATH cortex (${pathBinary} v${pathBinaryVersion})`,
+                hint: "Use one canonical binary path in plugin config and shell PATH to avoid inconsistent setup/doctor output.",
+              });
+            } else {
+              addCheck({
+                name: "binary_path_drift",
+                status: "pass",
+                details: "configured binary and PATH runtime are aligned",
+              });
+            }
+
+            // Pull actionable checks from cortex doctor.
+            const doctor = await cli.doctor();
+            if (!doctor) {
+              addCheck({
+                name: "doctor",
+                status: "fail",
+                details: "failed to run `cortex doctor --json`",
+                hint: "Run `cortex doctor` directly to inspect errors, then rerun `openclaw cortex setup`.",
+              });
+            } else {
+              const interesting = ["database_path", "database_open", "database_stats", "embeddings", "embed_config", "hnsw_index", "version"];
+              for (const key of interesting) {
+                const found = findDoctorCheck(doctor, key);
+                if (!found) continue;
+                addCheck({
+                  name: `doctor_${key}`,
+                  status: found.status,
+                  details: found.details,
+                  hint: found.hint,
+                });
+              }
+
+              const hnswCheck = findDoctorCheck(doctor, "hnsw_index");
+              if (hnswCheck && hnswCheck.status !== "pass") {
+                addCheck({
+                  name: "hnsw_rebuild_health",
+                  status: "warn",
+                  details: "ANN index is missing or unhealthy for semantic/hybrid retrieval",
+                  hint: "Run `cortex index` to rebuild HNSW, then rerun `openclaw cortex setup`.",
+                });
+              } else {
+                addCheck({
+                  name: "hnsw_rebuild_health",
+                  status: "pass",
+                  details: "HNSW health check passed",
+                });
+              }
+            }
+
+            // Optional connector summary (non-blocking visibility)
             try {
               const { stdout } = await execFileAsync(cfg.binaryPath, ["connect", "status"], {
-                timeout: 10000,
+                timeout: 10_000,
                 env: { ...process.env, CORTEX_DB: cfg.dbPath },
               });
-              console.log(`\n📡 Connectors:`);
+              console.log("📡 Connectors:");
               console.log(stdout.trim() || "  No connectors configured");
             } catch {
-              console.log(`\n📡 Connectors: none configured`);
+              console.log("📡 Connectors: none configured");
+            }
+
+            console.log("\nSetup checks:");
+            for (const check of checks) {
+              console.log(`  ${iconForSetupStatus(check.status)} ${check.name}: ${check.details}`);
+              if (check.hint && check.status !== "pass") {
+                console.log(`     next: ${check.hint}`);
+              }
+            }
+
+            const summary = checks.reduce(
+              (acc, c) => {
+                if (c.status === "pass") acc.pass += 1;
+                else if (c.status === "warn") acc.warn += 1;
+                else acc.fail += 1;
+                return acc;
+              },
+              { pass: 0, warn: 0, fail: 0 },
+            );
+
+            console.log(`\nSummary: ${summary.pass} pass, ${summary.warn} warn, ${summary.fail} fail`);
+            if (summary.fail > 0) {
+              console.log("\nFix the failing checks above, then rerun: openclaw cortex setup");
+              process.exitCode = 1;
+            } else if (summary.warn > 0) {
+              console.log("\nSetup is usable, but warnings should be resolved for a stable happy-path install.");
+            } else {
+              console.log("\n✅ Happy-path setup verified. You can now run OpenClaw with Cortex recall/capture enabled.");
             }
           });
 

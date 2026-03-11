@@ -16,23 +16,17 @@ openclaw plugins install openclaw-cortex
 
 ## Setup
 
-1. **Install Cortex** — download from [GitHub Releases](https://github.com/hurttlocker/cortex/releases) or build from source:
-   ```bash
-   # Download (macOS ARM64 example)
-   curl -L https://github.com/hurttlocker/cortex/releases/latest/download/cortex_darwin_arm64 -o ~/bin/cortex
-   chmod +x ~/bin/cortex
-   ```
+Use the canonical OpenClaw happy path guide:
 
-2. **Install ollama + nomic-embed-text** (for hybrid search):
-   ```bash
-   # Install ollama: https://ollama.ai
-   ollama pull nomic-embed-text
-   ```
+- **[../docs/openclaw-happy-path.md](../docs/openclaw-happy-path.md)**
 
-3. **Verify setup:**
-   ```bash
-   openclaw cortex setup
-   ```
+Quick verify command:
+
+```bash
+openclaw cortex setup
+```
+
+The setup check prints actionable next steps for config placement, runtime drift, doctor health, and HNSW rebuild warnings.
 
 ## Configuration
 
@@ -122,7 +116,7 @@ The plugin registers 4 tools the AI can use:
 ```bash
 openclaw cortex search "wedding venue"    # Search memories
 openclaw cortex stats                      # Show statistics
-openclaw cortex setup                      # Verify configuration + connector health
+openclaw cortex setup                      # Verify canonical setup health + actionable next steps
 openclaw cortex connect status             # Show connector sync status
 openclaw cortex connect sync               # Sync all connectors
 openclaw cortex connect sync github        # Sync specific provider
