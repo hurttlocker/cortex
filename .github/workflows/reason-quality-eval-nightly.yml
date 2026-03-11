@@ -9,6 +9,8 @@ on:
 jobs:
   reason-quality-eval:
     runs-on: ubuntu-latest
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -24,9 +26,7 @@ jobs:
         run: mkdir -p tests/output/reason-eval
 
       - name: Run nightly eval (if API key available)
-        if: ${{ secrets.OPENROUTER_API_KEY != '' }}
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        if: ${{ env.OPENROUTER_API_KEY != '' }}
         run: |
           python3 scripts/reason_quality_eval.py \
             --binary /tmp/cortex \
@@ -36,7 +36,7 @@ jobs:
             --timeout-sec 300
 
       - name: Reliability guardrail gate (Track 2)
-        if: ${{ secrets.OPENROUTER_API_KEY != '' }}
+        if: ${{ env.OPENROUTER_API_KEY != '' }}
         run: |
           latest_json=$(ls -1t tests/output/reason-eval/reason-quality-eval-*.json | head -n 1)
           python3 scripts/reason_guardrail_gate.py \
@@ -54,7 +54,7 @@ jobs:
             --output tests/output/reason-eval/reason-outcome-rollup.json
 
       - name: Dry-run eval plan (fallback when no API key)
-        if: ${{ secrets.OPENROUTER_API_KEY == '' }}
+        if: ${{ env.OPENROUTER_API_KEY == '' }}
         run: |
           python3 scripts/reason_quality_eval.py \
             --fixture tests/fixtures/reason/eval-set-v1.json \
