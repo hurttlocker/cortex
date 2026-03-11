@@ -58,6 +58,27 @@ var lowSignalIntentQueries = map[string]struct{}{
 	"heartbeat_ok":  {},
 }
 
+const (
+	operatorQueryShapeMinChars  = 120
+	operatorQueryShapeMinTokens = 18
+	operatorQueryShapeMaxTokens = 40
+	queryShapeExplainMaxChars   = 260
+)
+
+var operatorBoilerplateTokens = map[string]struct{}{
+	"read": {}, "follow": {}, "strictly": {}, "infer": {}, "repeat": {}, "prior": {}, "chats": {},
+	"nothing": {}, "needs": {}, "attention": {}, "reply": {}, "heartbeat": {}, "current": {}, "time": {},
+	"relevant": {}, "memories": {}, "local": {}, "knowledge": {}, "base": {}, "conversation": {}, "summary": {},
+	"source": {}, "session": {}, "channel": {}, "message": {}, "system": {}, "assistant": {}, "user": {},
+	"instructions": {}, "format": {}, "output": {}, "include": {}, "section": {}, "sections": {}, "exactly": {},
+	"respond": {}, "post": {}, "compaction": {}, "refresh": {}, "exists": {},
+}
+
+var operatorCueTokens = map[string]struct{}{
+	"heartbeat": {}, "workflow": {}, "operator": {}, "summary": {}, "audit": {}, "session": {},
+	"assistant": {}, "user": {}, "system": {}, "format": {}, "output": {}, "current": {}, "time": {},
+}
+
 var (
 	tradingIntentTokens = map[string]struct{}{
 		"trading": {}, "orb": {}, "breakout": {}, "qqq": {}, "spy": {}, "crypto": {}, "coinbase": {}, "v23": {}, "options": {},
@@ -208,10 +229,20 @@ type Result struct {
 
 // ExplainDetails surfaces provenance and ranking factors for operator trust/debugging.
 type ExplainDetails struct {
-	Provenance     ExplainProvenance `json:"provenance"`
-	Confidence     ExplainConfidence `json:"confidence"`
-	RankComponents RankComponents    `json:"rank_components"`
-	Why            string            `json:"why,omitempty"`
+	Provenance     ExplainProvenance  `json:"provenance"`
+	Confidence     ExplainConfidence  `json:"confidence"`
+	RankComponents RankComponents     `json:"rank_components"`
+	QueryShape     *ExplainQueryShape `json:"query_shape,omitempty"`
+	Why            string             `json:"why,omitempty"`
+}
+
+// ExplainQueryShape captures raw-vs-shaped retrieval query context when query shaping is applied.
+type ExplainQueryShape struct {
+	Raw           string `json:"raw"`
+	Shaped        string `json:"shaped"`
+	Applied       bool   `json:"applied"`
+	RemovedTokens int    `json:"removed_tokens,omitempty"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 type ExplainProvenance struct {
@@ -253,6 +284,14 @@ type RankComponents struct {
 type confidenceDetail struct {
 	confidence          float64
 	effectiveConfidence float64
+}
+
+type queryShapeDecision struct {
+	Raw           string
+	Shaped        string
+	Applied       bool
+	RemovedTokens int
+	Reason        string
 }
 
 // Searcher performs searches across the memory store.
@@ -356,8 +395,15 @@ func (e *Engine) LoadOrBuildHNSW(ctx context.Context, path string, staleThreshol
 // After retrieving results, it applies confidence decay weighting and
 // reinforces facts linked to the returned memories (Ebbinghaus reinforcement-on-recall).
 func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Result, error) {
-	if query == "" {
+	rawQuery := strings.TrimSpace(query)
+	if rawQuery == "" {
 		return nil, nil
+	}
+
+	queryShape := shapeOperatorIntentQuery(rawQuery)
+	retrievalQuery := rawQuery
+	if queryShape.Applied {
+		retrievalQuery = queryShape.Shaped
 	}
 
 	requestedLimit := opts.Limit
@@ -392,13 +438,13 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 
 	switch opts.Mode {
 	case ModeKeyword, "":
-		results, err = e.searchBM25(ctx, query, opts)
+		results, err = e.searchBM25(ctx, retrievalQuery, opts)
 	case ModeSemantic:
-		results, err = e.searchSemantic(ctx, query, opts)
+		results, err = e.searchSemantic(ctx, retrievalQuery, opts)
 	case ModeHybrid:
-		results, err = e.searchHybrid(ctx, query, opts)
+		results, err = e.searchHybrid(ctx, retrievalQuery, opts)
 	case ModeRRF:
-		results, err = e.searchRRF(ctx, query, opts)
+		results, err = e.searchRRF(ctx, retrievalQuery, opts)
 	default:
 		return nil, fmt.Errorf("unknown search mode: %q", opts.Mode)
 	}
@@ -429,12 +475,12 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		results = applyClassBoost(results, opts.Explain)
 	}
 
-	results = applyIntentBucketPriors(query, results, opts.Explain)
+	results = applyIntentBucketPriors(retrievalQuery, results, opts.Explain)
 	results = applyCaptureNoisePenalty(results, opts.Explain)
-	results = applyLowSignalIntentSuppression(query, results, opts.Explain)
-	results = applyOffTopicLowSignalSuppression(query, results, opts.Explain)
-	results = applyWrapperNoiseSuppression(query, results, opts.Explain)
-	results = applyLexicalOverlapFilter(query, results, opts.Explain)
+	results = applyLowSignalIntentSuppression(retrievalQuery, results, opts.Explain)
+	results = applyOffTopicLowSignalSuppression(retrievalQuery, results, opts.Explain)
+	results = applyWrapperNoiseSuppression(retrievalQuery, results, opts.Explain)
+	results = applyLexicalOverlapFilter(retrievalQuery, results, opts.Explain)
 
 	// Metadata-aware ranking boosts (Issue #148)
 	results = applyMetadataBoosts(results, opts)
@@ -451,6 +497,7 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 
 	if opts.Explain {
 		e.addExplainability(results, confidenceDetails)
+		attachQueryShapeExplain(results, queryShape)
 	}
 
 	if len(results) > requestedLimit {
@@ -773,6 +820,106 @@ func normalizeIntentText(s string) string {
 		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
 	})
 	return strings.Join(parts, " ")
+}
+
+// shapeOperatorIntentQuery condenses long operator workflow prompts by stripping
+// known answer-contract/transport boilerplate tokens while preserving core intent.
+// This is a retrieval-only transform; callers should keep using the raw query for
+// downstream reasoning/answer generation surfaces.
+func shapeOperatorIntentQuery(query string) queryShapeDecision {
+	raw := strings.TrimSpace(query)
+	if raw == "" {
+		return queryShapeDecision{}
+	}
+
+	normalized := normalizeIntentText(raw)
+	tokens := strings.Fields(normalized)
+	if len(raw) < operatorQueryShapeMinChars || len(tokens) < operatorQueryShapeMinTokens {
+		return queryShapeDecision{Raw: raw, Shaped: raw, Applied: false}
+	}
+
+	cueCount := countTokensInSet(tokens, operatorCueTokens)
+	hasStructuredScaffold := strings.Contains(raw, "<") || strings.Contains(raw, "\n") || strings.Contains(raw, "[")
+	if cueCount < 3 && !hasStructuredScaffold {
+		return queryShapeDecision{Raw: raw, Shaped: raw, Applied: false}
+	}
+
+	shapedTokens := make([]string, 0, len(tokens))
+	removed := 0
+	for _, tok := range tokens {
+		if _, drop := operatorBoilerplateTokens[tok]; drop {
+			removed++
+			continue
+		}
+		shapedTokens = append(shapedTokens, tok)
+	}
+
+	if len(shapedTokens) > operatorQueryShapeMaxTokens {
+		removed += len(shapedTokens) - operatorQueryShapeMaxTokens
+		shapedTokens = shapedTokens[:operatorQueryShapeMaxTokens]
+	}
+	if len(shapedTokens) < 5 {
+		return queryShapeDecision{Raw: raw, Shaped: raw, Applied: false}
+	}
+
+	shaped := strings.Join(shapedTokens, " ")
+	if shaped == "" || shaped == normalized {
+		return queryShapeDecision{Raw: raw, Shaped: raw, Applied: false}
+	}
+
+	reason := fmt.Sprintf("long operator prompt condensed (cue_tokens=%d removed_tokens=%d)", cueCount, removed)
+	return queryShapeDecision{
+		Raw:           raw,
+		Shaped:        shaped,
+		Applied:       true,
+		RemovedTokens: removed,
+		Reason:        reason,
+	}
+}
+
+func countTokensInSet(tokens []string, lookup map[string]struct{}) int {
+	n := 0
+	for _, tok := range tokens {
+		if _, ok := lookup[tok]; ok {
+			n++
+		}
+	}
+	return n
+}
+
+func attachQueryShapeExplain(results []Result, shape queryShapeDecision) {
+	if !shape.Applied || len(results) == 0 {
+		return
+	}
+
+	raw := truncateForExplain(shape.Raw, queryShapeExplainMaxChars)
+	shaped := truncateForExplain(shape.Shaped, queryShapeExplainMaxChars)
+	for i := range results {
+		ensureExplain(&results[i])
+		results[i].Explain.QueryShape = &ExplainQueryShape{
+			Raw:           raw,
+			Shaped:        shaped,
+			Applied:       true,
+			RemovedTokens: shape.RemovedTokens,
+			Reason:        shape.Reason,
+		}
+		if results[i].Explain.Why == "" {
+			results[i].Explain.Why = "query shaping applied before retrieval"
+		} else {
+			results[i].Explain.Why += "; query shaping applied before retrieval"
+		}
+	}
+}
+
+func truncateForExplain(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
 }
 
 func isLowSignalCaptureContent(content string) bool {
