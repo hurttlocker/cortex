@@ -76,6 +76,14 @@ That's it. Your agent now has persistent memory with 17 MCP tools.
 cortex doctor    # Checks DB, config, embeddings, connectors, version
 ```
 
+### OpenClaw users (canonical setup path)
+
+Use one setup flow from zero → plugin enabled → health verified:
+
+- **[docs/openclaw-happy-path.md](docs/openclaw-happy-path.md)**
+
+The canonical flow includes actionable `openclaw cortex setup` checks for binary drift, config placement, doctor next steps, and HNSW rebuild health.
+
 ### Next steps
 
 ```bash
