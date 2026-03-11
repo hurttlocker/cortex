@@ -63,6 +63,11 @@ const (
 	operatorQueryShapeMinTokens = 18
 	operatorQueryShapeMaxTokens = 40
 	queryShapeExplainMaxChars   = 260
+
+	operatorTop1TieBreakWindow        = 0.03
+	operatorTop1TieBreakMaxCandidates = 5
+	operatorTop1TieBreakMaxBoost      = 0.08
+	operatorTop1OverlapDenominatorCap = 8
 )
 
 var operatorBoilerplateTokens = map[string]struct{}{
@@ -497,6 +502,11 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 
 	if opts.Explain {
 		e.addExplainability(results, confidenceDetails)
+	}
+
+	results = applyOperatorTop1TieBreak(queryShape, retrievalQuery, results, opts.Explain)
+
+	if opts.Explain {
 		attachQueryShapeExplain(results, queryShape)
 	}
 
@@ -920,6 +930,113 @@ func truncateForExplain(s string, max int) string {
 		return s[:max]
 	}
 	return s[:max-3] + "..."
+}
+
+// applyOperatorTop1TieBreak hardens top-1 ranking for operator-style prompts by
+// applying a bounded tie-break boost to near-top candidates based on section/file
+// lexical overlap with the (already-shaped) retrieval query.
+func applyOperatorTop1TieBreak(shape queryShapeDecision, query string, results []Result, explain bool) []Result {
+	if !shape.Applied || len(results) < 2 {
+		return results
+	}
+	queryTokens := queryTokenSet(query)
+	if len(queryTokens) == 0 {
+		return results
+	}
+	topScore := results[0].Score
+	if topScore <= 0 {
+		return results
+	}
+
+	candidates := make([]int, 0, operatorTop1TieBreakMaxCandidates)
+	for i := range results {
+		if i >= operatorTop1TieBreakMaxCandidates {
+			break
+		}
+		if results[i].Score >= topScore*(1.0-operatorTop1TieBreakWindow) {
+			candidates = append(candidates, i)
+			continue
+		}
+		if i > 0 {
+			break
+		}
+	}
+	if len(candidates) < 2 {
+		return results
+	}
+
+	applied := false
+	for _, idx := range candidates {
+		signal := operatorTop1TieBreakSignal(queryTokens, results[idx])
+		if signal <= 0 {
+			continue
+		}
+		boost := 1.0 + (signal * operatorTop1TieBreakMaxBoost)
+		results[idx].Score *= boost
+		applied = true
+		if explain {
+			ensureExplain(&results[idx])
+			results[idx].Explain.RankComponents.FinalScore = results[idx].Score
+			msg := fmt.Sprintf("operator top-1 tie-break %.2fx (signal=%.2f)", boost, signal)
+			if results[idx].Explain.Why == "" {
+				results[idx].Explain.Why = msg
+			} else {
+				results[idx].Explain.Why += "; " + msg
+			}
+		}
+	}
+	if !applied {
+		return results
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Score == results[j].Score {
+			return results[i].MemoryID > results[j].MemoryID
+		}
+		return results[i].Score > results[j].Score
+	})
+	return results
+}
+
+func operatorTop1TieBreakSignal(queryTokens map[string]struct{}, r Result) float64 {
+	if len(queryTokens) == 0 {
+		return 0
+	}
+	section := overlapCoverage(queryTokens, queryTokenSet(r.SourceSection))
+	source := overlapCoverage(queryTokens, queryTokenSet(r.SourceFile))
+	content := overlapCoverage(queryTokens, queryTokenSet(r.Content))
+	signal := section*0.55 + source*0.30 + content*0.15
+	if signal > 1 {
+		signal = 1
+	}
+	return signal
+}
+
+func overlapCoverage(queryTokens, resultTokens map[string]struct{}) float64 {
+	if len(queryTokens) == 0 || len(resultTokens) == 0 {
+		return 0
+	}
+	matches := 0
+	for tok := range queryTokens {
+		if _, ok := resultTokens[tok]; ok {
+			matches++
+		}
+	}
+	if matches == 0 {
+		return 0
+	}
+	denom := len(queryTokens)
+	if denom > operatorTop1OverlapDenominatorCap {
+		denom = operatorTop1OverlapDenominatorCap
+	}
+	if denom <= 0 {
+		return 0
+	}
+	coverage := float64(matches) / float64(denom)
+	if coverage > 1 {
+		coverage = 1
+	}
+	return coverage
 }
 
 func isLowSignalCaptureContent(content string) bool {
