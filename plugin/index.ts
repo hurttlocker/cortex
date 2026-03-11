@@ -1137,16 +1137,19 @@ const cortexPlugin = {
 
           if (recallPlan.selected.length === 0) {
             api.logger.warn(
-              `cortex: recall manifest selected 0/${recallPlan.manifest.deduped_count} under budget ${recallPlan.manifest.budget_chars} chars`,
+              `cortex: recall manifest selected 0/${recallPlan.manifest.packed_count} packed groups (raw=${recallPlan.manifest.raw_count}, deduped=${recallPlan.manifest.deduped_count}) under budget ${recallPlan.manifest.budget_chars} chars`,
             );
             return;
           }
 
           api.logger.info(
+            `cortex: recall manifest raw=${recallPlan.manifest.raw_count} deduped=${recallPlan.manifest.deduped_count} packed=${recallPlan.manifest.packed_count} collapsed_hits=${recallPlan.manifest.collapsed_hits}`,
+          );
+          api.logger.info(
             `cortex: recall manifest budget=${recallPlan.manifest.budget_chars} chars (used=${recallPlan.manifest.context_chars}) selected=${recallPlan.manifest.selected_count} dropped=${recallPlan.manifest.dropped_count}`,
           );
           api.logger.info(
-            `cortex: injecting ${recallPlan.selected.length} memories (scores: ${recallPlan.selected.map((r) => r.score.toFixed(2)).join(", ")})`,
+            `cortex: injecting ${recallPlan.selected.length} packed recall entries (scores: ${recallPlan.selected.map((r) => r.score.toFixed(2)).join(", ")})`,
           );
 
           return {
