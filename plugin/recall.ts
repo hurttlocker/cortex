@@ -69,6 +69,7 @@ const maxRecallLimit = 20;
 const maxPackedPreviewsPerSource = 3;
 const maxPackedPreviewChars = 140;
 const maxPackedContentChars = 520;
+const minCollapsedTailChars = 24;
 
 function normalizeRecallLimit(limit: number): number {
   if (!Number.isFinite(limit)) return 3;
@@ -158,8 +159,20 @@ function collapseSameSourceHits(hits: RecallResult[]): string {
   }
 
   const tail = previews.slice(1).join(" | ");
-  const combined = `${previews[0]} [collapsed ${hits.length} same-source hits: ${tail}]`;
-  return truncate(combined, maxPackedContentChars);
+  const collapsePrefix = ` [collapsed ${hits.length} same-source hits: `;
+  const collapseSuffix = "]";
+
+  const minTailBudget = Math.min(minCollapsedTailChars, Math.max(1, tail.length));
+  const primaryBudget = Math.max(40, maxPackedContentChars - collapsePrefix.length - collapseSuffix.length - minTailBudget);
+  const primary = truncate(previews[0], primaryBudget);
+
+  const tailBudget = Math.max(
+    minTailBudget,
+    maxPackedContentChars - primary.length - collapsePrefix.length - collapseSuffix.length,
+  );
+  const tailPreview = truncate(tail, tailBudget);
+
+  return `${primary}${collapsePrefix}${tailPreview}${collapseSuffix}`;
 }
 
 function buildPackedCandidates(rankedResults: RecallResult[]): PackedRecallCandidate[] {

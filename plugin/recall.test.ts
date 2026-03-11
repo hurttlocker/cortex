@@ -64,6 +64,34 @@ test("buildRecallPlan collapses same source hits with provenance-safe metadata",
   assert.equal(plan.manifest.selected[0]?.packed_hits, 2);
 });
 
+test("buildRecallPlan keeps collapsed marker + secondary detail under long primary snippet", () => {
+  const raw = [
+    makeResult({
+      memory_id: 10,
+      score: 0.99,
+      source_file: "project-alpha/notes.md",
+      source_section: "runbook",
+      content: "A".repeat(1200),
+    }),
+    makeResult({
+      memory_id: 11,
+      score: 0.95,
+      source_file: "project-alpha/notes.md",
+      source_section: "runbook",
+      content: "secondary critical detail token for collapsed tail visibility",
+    }),
+  ];
+
+  const plan = buildRecallPlan(raw, raw, { limit: 3, budgetChars: 5000 });
+  assert.equal(plan.selected.length, 1);
+
+  const packed = plan.selected[0];
+  assert.equal(packed?.packed_hits, 2);
+  assert.ok((packed?.content || "").includes("[collapsed 2 same-source hits:"));
+  assert.ok((packed?.content || "").includes("secondary"));
+  assert.ok((packed?.content || "").length <= 520);
+});
+
 test("buildRecallPlan drops deterministically under hard budget", () => {
   const longA = "A".repeat(900);
   const longB = "B".repeat(900);
