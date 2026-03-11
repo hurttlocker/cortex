@@ -339,21 +339,54 @@ func (e *Engine) BuildHNSW(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	// Detect dimensions from first embedding
-	firstVec, err := e.store.GetEmbedding(ctx, ids[0])
-	if err != nil {
-		return 0, fmt.Errorf("getting first embedding: %w", err)
+	var (
+		idx                   *ann.Index
+		expectedDims          int
+		skippedDimensionCount int
+		skippedLoadErrorCount int
+	)
+
+	for _, id := range ids {
+		vec, err := e.store.GetEmbedding(ctx, id)
+		if err != nil {
+			skippedLoadErrorCount++
+			continue // keep building from remaining embeddings
+		}
+		if len(vec) == 0 {
+			skippedDimensionCount++
+			continue
+		}
+
+		if idx == nil {
+			expectedDims = len(vec)
+			idx = ann.New(expectedDims)
+		}
+
+		if len(vec) != expectedDims {
+			skippedDimensionCount++
+			continue
+		}
+
+		idx.Insert(id, vec)
 	}
 
-	idx := ann.New(len(firstVec))
-	idx.Insert(ids[0], firstVec)
-
-	for i := 1; i < len(ids); i++ {
-		vec, err := e.store.GetEmbedding(ctx, ids[i])
-		if err != nil {
-			continue // skip errors, don't abort entire build
+	if idx == nil || idx.Len() == 0 {
+		e.hnsw = nil
+		if skippedLoadErrorCount > 0 {
+			return 0, fmt.Errorf("building HNSW: no usable embeddings (load errors=%d)", skippedLoadErrorCount)
 		}
-		idx.Insert(ids[i], vec)
+		return 0, nil
+	}
+
+	if skippedDimensionCount > 0 || skippedLoadErrorCount > 0 {
+		fmt.Fprintf(
+			os.Stderr,
+			"warning: HNSW build skipped %d embeddings (dimension mismatch/empty) and %d load errors; indexed %d vectors with %d dims\n",
+			skippedDimensionCount,
+			skippedLoadErrorCount,
+			idx.Len(),
+			expectedDims,
+		)
 	}
 
 	e.hnsw = idx

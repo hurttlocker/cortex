@@ -170,6 +170,71 @@ func TestLoadOrBuildHNSW_RebuildsCorruptPersistedIndex(t *testing.T) {
 	}
 }
 
+func TestBuildHNSW_SkipsMismatchedEmbeddingDimensionsAndPersistsValidIndex(t *testing.T) {
+	s, dbPath := newFileBackedTestStore(t)
+	ctx := context.Background()
+
+	memA, err := s.AddMemory(ctx, &store.Memory{
+		Content:       "embedding dims 3 A",
+		SourceFile:    "dims-test.md",
+		SourceLine:    1,
+		SourceSection: "tests",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory A: %v", err)
+	}
+	if err := s.AddEmbedding(ctx, memA, []float32{0.1, 0.2, 0.3}); err != nil {
+		t.Fatalf("AddEmbedding A: %v", err)
+	}
+
+	memB, err := s.AddMemory(ctx, &store.Memory{
+		Content:       "embedding dims 2 B (mismatch)",
+		SourceFile:    "dims-test.md",
+		SourceLine:    2,
+		SourceSection: "tests",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory B: %v", err)
+	}
+	if err := s.AddEmbedding(ctx, memB, []float32{0.9, 0.8}); err != nil {
+		t.Fatalf("AddEmbedding B: %v", err)
+	}
+
+	memC, err := s.AddMemory(ctx, &store.Memory{
+		Content:       "embedding dims 3 C",
+		SourceFile:    "dims-test.md",
+		SourceLine:    3,
+		SourceSection: "tests",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory C: %v", err)
+	}
+	if err := s.AddEmbedding(ctx, memC, []float32{0.7, 0.6, 0.5}); err != nil {
+		t.Fatalf("AddEmbedding C: %v", err)
+	}
+
+	engine := NewEngine(s)
+	count, err := engine.BuildHNSW(ctx)
+	if err != nil {
+		t.Fatalf("BuildHNSW: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("BuildHNSW count = %d, want 2 (mismatched dims should be skipped)", count)
+	}
+
+	hnswPath := filepath.Join(filepath.Dir(dbPath), "hnsw.idx")
+	if err := engine.SaveHNSW(hnswPath); err != nil {
+		t.Fatalf("SaveHNSW: %v", err)
+	}
+	loaded, err := ann.Load(hnswPath)
+	if err != nil {
+		t.Fatalf("ann.Load persisted index: %v", err)
+	}
+	if loaded.Len() != 2 {
+		t.Fatalf("persisted index len = %d, want 2", loaded.Len())
+	}
+}
+
 // --- BM25 Keyword Search ---
 
 func TestSearchBM25_SingleTerm(t *testing.T) {

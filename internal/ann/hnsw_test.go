@@ -330,6 +330,60 @@ func TestLoadRejectsCorruptNodeLevelWithoutPanicking(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsMalformedFriendCountWithoutPanicking(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "malformed-friend-count.hnsw")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create malformed file: %v", err)
+	}
+	defer f.Close()
+
+	if _, err := f.Write([]byte(magic)); err != nil {
+		t.Fatalf("write magic: %v", err)
+	}
+	write := func(v int32) {
+		t.Helper()
+		if err := binary.Write(f, binary.LittleEndian, v); err != nil {
+			t.Fatalf("write int32 %d: %v", v, err)
+		}
+	}
+	write(1)   // version
+	write(2)   // dims
+	write(1)   // nodeCount
+	write(0)   // entryPoint
+	write(0)   // maxLevel
+	write(16)  // M
+	write(32)  // Mmax0
+	write(200) // EfConstruction
+	write(50)  // EfSearch
+
+	if err := binary.Write(f, binary.LittleEndian, int64(42)); err != nil {
+		t.Fatalf("write node id: %v", err)
+	}
+	write(0) // valid level
+	if err := binary.Write(f, binary.LittleEndian, float32(0.1)); err != nil {
+		t.Fatalf("write vec[0]: %v", err)
+	}
+	if err := binary.Write(f, binary.LittleEndian, float32(0.2)); err != nil {
+		t.Fatalf("write vec[1]: %v", err)
+	}
+	write(2147483647) // malformed friend count (len out-of-range case)
+
+	if err := f.Close(); err != nil {
+		t.Fatalf("close malformed file: %v", err)
+	}
+
+	_, err = Load(path)
+	if err == nil {
+		t.Fatal("expected error for malformed friend count")
+	}
+	if got := err.Error(); got == "" || !containsAny(got, []string{"invalid value", "corrupt persisted data"}) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // --- Distance Tests ---
 
 func TestCosineDistance(t *testing.T) {
