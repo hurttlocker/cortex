@@ -77,6 +77,16 @@ interface CortexSearchResult {
   snippet?: string;
 }
 
+interface CortexSearchOptions {
+  agent?: string;
+  channel?: string;
+  sessionKey?: string;
+  boostAgent?: string;
+  boostChannel?: string;
+  boostSessionKey?: string;
+  after?: string;
+}
+
 interface CortexStats {
   memories: number;
   facts: number;
@@ -233,6 +243,17 @@ const knownPluginConfigKeys = new Set([
   "binaryPath", "dbPath", "embedProvider", "searchMode", "autoCapture", "autoRecall", "recallLimit", "recallBudgetChars", "minScore",
   "captureMaxChars", "extractFacts", "capture", "recallDedupe",
 ]);
+
+function isCompactionLikePrompt(prompt: string): boolean {
+  return /(post-compaction context refresh|pre-compaction memory flush|compaction|memory flush)/i.test(prompt);
+}
+
+function formatDateYYYYMMDD(date: Date): string {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
 
 function expandHomePath(input: string): string {
   const trimmed = input.trim();
@@ -392,7 +413,13 @@ class CortexCLI {
     }
   }
 
-  async search(query: string, limit = 5, mode?: string, minScore?: number): Promise<CortexSearchResult[]> {
+  async search(
+    query: string,
+    limit = 5,
+    mode?: string,
+    minScore?: number,
+    options?: CortexSearchOptions,
+  ): Promise<CortexSearchResult[]> {
     const searchMode = mode ?? this.defaultMode;
     const args = ["search", query, "--limit", String(limit), "--json"];
 
@@ -405,6 +432,14 @@ class CortexCLI {
     if (minScore !== undefined) {
       args.push("--min-score", String(minScore));
     }
+
+    if (options?.agent) args.push("--agent", options.agent);
+    if (options?.channel) args.push("--channel", options.channel);
+    if (options?.sessionKey) args.push("--session-key", options.sessionKey);
+    if (options?.boostAgent) args.push("--boost-agent", options.boostAgent);
+    if (options?.boostChannel) args.push("--boost-channel", options.boostChannel);
+    if (options?.boostSessionKey) args.push("--boost-session-key", options.boostSessionKey);
+    if (options?.after) args.push("--after", options.after);
 
     const output = await this.exec(args);
     if (!output || output === "null" || output === "[]") return [];
@@ -1118,21 +1153,73 @@ const cortexPlugin = {
     // ========================================================================
 
     if (cfg.autoRecall) {
-      api.on("before_agent_start", async (event) => {
+      api.on("before_agent_start", async (event, ctx) => {
         if (!event.prompt || event.prompt.length < 10) return;
 
         try {
+          const compactionMode = isCompactionLikePrompt(event.prompt);
           const fetchLimit = Math.max(cfg.recallLimit, cfg.recallLimit * 3);
-          const rawResults = await cli.search(event.prompt, fetchLimit, cfg.searchMode, cfg.minScore);
-          if (rawResults.length === 0) return;
+          const now = new Date();
+          const todayKey = formatDateYYYYMMDD(now);
+          const yesterday = new Date(now);
+          yesterday.setDate(yesterday.getDate() - 1);
+          const yesterdayKey = formatDateYYYYMMDD(yesterday);
+
+          const baseSearchOptions: CortexSearchOptions = {
+            boostAgent: typeof ctx?.agentId === "string" ? ctx.agentId : undefined,
+            boostChannel: typeof ctx?.channelId === "string" ? ctx.channelId : undefined,
+            boostSessionKey: typeof ctx?.sessionKey === "string" ? ctx.sessionKey : undefined,
+          };
+
+          const mergedRawResults: CortexSearchResult[] = [];
+          const seenMemoryIds = new Set<number>();
+          const appendResults = (rows: CortexSearchResult[]) => {
+            for (const row of rows) {
+              if (seenMemoryIds.has(row.memory_id)) continue;
+              seenMemoryIds.add(row.memory_id);
+              mergedRawResults.push(row);
+            }
+          };
+
+          if (typeof ctx?.sessionKey === "string" && ctx.sessionKey.trim() !== "") {
+            appendResults(
+              await cli.search(event.prompt, fetchLimit, cfg.searchMode, cfg.minScore, {
+                ...baseSearchOptions,
+                sessionKey: ctx.sessionKey,
+                after: compactionMode ? todayKey : undefined,
+              }),
+            );
+
+            if (mergedRawResults.length === 0 && compactionMode) {
+              appendResults(
+                await cli.search(event.prompt, fetchLimit, cfg.searchMode, cfg.minScore, {
+                  ...baseSearchOptions,
+                  sessionKey: ctx.sessionKey,
+                  after: yesterdayKey,
+                }),
+              );
+            }
+          }
+
+          if (mergedRawResults.length < cfg.recallLimit) {
+            appendResults(
+              await cli.search(event.prompt, fetchLimit, cfg.searchMode, cfg.minScore, {
+                ...baseSearchOptions,
+                agent: typeof ctx?.agentId === "string" ? ctx.agentId : undefined,
+                after: compactionMode ? yesterdayKey : undefined,
+              }),
+            );
+          }
+
+          if (mergedRawResults.length === 0) return;
 
           const deduped = cfg.recallDedupe.enabled
-            ? dedupeRecallResults(rawResults, cfg.recallDedupe.similarityThreshold)
-            : rawResults;
+            ? dedupeRecallResults(mergedRawResults, cfg.recallDedupe.similarityThreshold)
+            : mergedRawResults;
 
-          const recallPlan = buildRecallPlan(rawResults, deduped, {
-            limit: cfg.recallLimit,
-            budgetChars: cfg.recallBudgetChars,
+          const recallPlan = buildRecallPlan(mergedRawResults, deduped, {
+            limit: compactionMode ? Math.min(cfg.recallLimit, 1) : cfg.recallLimit,
+            budgetChars: compactionMode ? Math.min(cfg.recallBudgetChars, 900) : cfg.recallBudgetChars,
           });
 
           if (recallPlan.selected.length === 0) {
@@ -1149,7 +1236,7 @@ const cortexPlugin = {
             `cortex: recall manifest budget=${recallPlan.manifest.budget_chars} chars (used=${recallPlan.manifest.context_chars}) selected=${recallPlan.manifest.selected_count} dropped=${recallPlan.manifest.dropped_count}`,
           );
           api.logger.info(
-            `cortex: injecting ${recallPlan.selected.length} packed recall entries (scores: ${recallPlan.selected.map((r) => r.score.toFixed(2)).join(", ")})`,
+            `cortex: injecting ${recallPlan.selected.length} packed recall entries${compactionMode ? " (compaction-biased)" : ""} (scores: ${recallPlan.selected.map((r) => r.score.toFixed(2)).join(", ")})`,
           );
 
           return {

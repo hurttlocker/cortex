@@ -754,10 +754,12 @@ func runSearch(args []string) error {
 	disableClassBoost := false
 	agentFlag := ""
 	channelFlag := ""
+	sessionKeyFlag := ""
 	afterFlag := ""
 	beforeFlag := ""
 	boostAgentFlag := ""
 	boostChannelFlag := ""
+	boostSessionKeyFlag := ""
 	sourceFlag := ""
 	intentFlag := "all"
 	sourceBoostFlags := []string{}
@@ -791,6 +793,11 @@ func runSearch(args []string) error {
 			channelFlag = args[i]
 		case strings.HasPrefix(args[i], "--channel="):
 			channelFlag = strings.TrimPrefix(args[i], "--channel=")
+		case args[i] == "--session-key" && i+1 < len(args):
+			i++
+			sessionKeyFlag = args[i]
+		case strings.HasPrefix(args[i], "--session-key="):
+			sessionKeyFlag = strings.TrimPrefix(args[i], "--session-key=")
 		case args[i] == "--after" && i+1 < len(args):
 			i++
 			afterFlag = args[i]
@@ -828,6 +835,11 @@ func runSearch(args []string) error {
 			boostChannelFlag = args[i]
 		case strings.HasPrefix(args[i], "--boost-channel="):
 			boostChannelFlag = strings.TrimPrefix(args[i], "--boost-channel=")
+		case args[i] == "--boost-session-key" && i+1 < len(args):
+			i++
+			boostSessionKeyFlag = args[i]
+		case strings.HasPrefix(args[i], "--boost-session-key="):
+			boostSessionKeyFlag = strings.TrimPrefix(args[i], "--boost-session-key=")
 		case args[i] == "--explain":
 			explain = true
 		case args[i] == "--include-superseded":
@@ -892,7 +904,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--source <provider>] [--intent memory|import|connector|all] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--session-key <key>] [--boost-agent <id>] [--boost-channel <name>] [--boost-session-key <key>] [--source <provider>] [--intent memory|import|connector|all] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 	if limit < 1 || limit > 1000 {
 		return fmt.Errorf("--limit must be between 1 and 1000")
@@ -988,6 +1000,7 @@ func runSearch(args []string) error {
 		DisableClassBoost: disableClassBoost,
 		Agent:             agentFlag,
 		Channel:           channelFlag,
+		SessionKey:        sessionKeyFlag,
 		After:             afterFlag,
 		Before:            beforeFlag,
 		Source:            sourceFlag,
@@ -997,6 +1010,7 @@ func runSearch(args []string) error {
 		Explain:           explain,
 		BoostAgent:        boostAgentFlag,
 		BoostChannel:      boostChannelFlag,
+		BoostSessionKey:   boostSessionKeyFlag,
 	}
 
 	// Query expansion: use LLM to generate multiple search queries
