@@ -168,11 +168,13 @@ type Options struct {
 	DisableClassBoost bool     // Disable class-aware weighting (default: false)
 	Agent             string   // Filter by metadata agent_id (Issue #30)
 	Channel           string   // Filter by metadata channel (Issue #30)
+	SessionKey        string   // Filter by metadata session_key (Issue #230)
 
-	// Metadata-aware ranking context (Issue #148)
+	// Metadata-aware ranking context (Issue #148 / #230)
 	// These don't filter — they boost results that match the calling context.
 	BoostAgent        string        // Boost results from this agent (e.g., "main", "ace")
 	BoostChannel      string        // Boost results from this channel (e.g., "discord", "telegram")
+	BoostSessionKey   string        // Boost results from this exact session key (e.g., "agent:main:discord:channel:...")
 	After             string        // Filter memories imported after date YYYY-MM-DD (Issue #30)
 	Before            string        // Filter memories imported before date YYYY-MM-DD (Issue #30)
 	Source            string        // Filter by source prefix (e.g., "github", "gmail") (Issue #199)
@@ -275,10 +277,11 @@ type RankComponents struct {
 	HybridBM25Contribution     *float64 `json:"hybrid_bm25_contribution,omitempty"`
 	HybridSemanticContribution *float64 `json:"hybrid_semantic_contribution,omitempty"`
 
-	// Metadata-aware ranking (Issue #148)
-	AgentBoost   float64 `json:"agent_boost,omitempty"`
-	ChannelBoost float64 `json:"channel_boost,omitempty"`
-	RecencyBoost float64 `json:"recency_boost,omitempty"`
+	// Metadata-aware ranking (Issue #148 / #230)
+	AgentBoost      float64 `json:"agent_boost,omitempty"`
+	ChannelBoost    float64 `json:"channel_boost,omitempty"`
+	SessionKeyBoost float64 `json:"session_key_boost,omitempty"`
+	RecencyBoost    float64 `json:"recency_boost,omitempty"`
 
 	// Source weighting (Issue #199)
 	SourceWeight          float64 `json:"source_weight,omitempty"`
@@ -500,8 +503,8 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		results = filterByIntent(results, intent)
 	}
 
-	// Apply metadata filters (Issue #30)
-	if opts.Agent != "" || opts.Channel != "" || opts.After != "" || opts.Before != "" {
+	// Apply metadata filters (Issue #30 / #230)
+	if opts.Agent != "" || opts.Channel != "" || opts.SessionKey != "" || opts.After != "" || opts.Before != "" {
 		results = filterByMetadata(results, opts)
 	}
 
@@ -558,6 +561,9 @@ func filterByMetadata(results []Result, opts Options) []Result {
 			continue
 		}
 		if opts.Channel != "" && !matchChannel(r, opts.Channel) {
+			continue
+		}
+		if opts.SessionKey != "" && !matchSessionKey(r, opts.SessionKey) {
 			continue
 		}
 		if opts.After != "" && r.ImportedAt.Format("2006-01-02") < opts.After {
@@ -1222,13 +1228,16 @@ func hasResultTokenOverlap(r Result, queryTokens map[string]struct{}) bool {
 	return false
 }
 
-// Metadata-aware ranking boost constants (Issue #148).
+// Metadata-aware ranking boost constants (Issue #148 / #230).
 const (
 	// Boost for results from the same agent as the querier.
 	metadataAgentBoost = 1.08
 
 	// Boost for results from the same channel as the querier.
 	metadataChannelBoost = 1.05
+
+	// Stronger boost for results from the same exact session as the querier.
+	metadataSessionKeyBoost = 1.15
 
 	// Recency boost tiers: recent memories are more likely relevant.
 	recencyBoostToday     = 1.10
@@ -1241,10 +1250,10 @@ const (
 	sourceWeightConnector = 0.97 // Slight penalty for connector-imported records
 )
 
-// applyMetadataBoosts boosts results that match the calling agent/channel context.
+// applyMetadataBoosts boosts results that match the calling agent/channel/session context.
 // This is ranking-only — no results are filtered out.
 func applyMetadataBoosts(results []Result, opts Options) []Result {
-	if opts.BoostAgent == "" && opts.BoostChannel == "" {
+	if opts.BoostAgent == "" && opts.BoostChannel == "" && opts.BoostSessionKey == "" {
 		return results
 	}
 
@@ -1267,6 +1276,14 @@ func applyMetadataBoosts(results []Result, opts Options) []Result {
 			if opts.Explain {
 				ensureExplain(&results[i])
 				results[i].Explain.RankComponents.ChannelBoost = metadataChannelBoost
+			}
+		}
+
+		if opts.BoostSessionKey != "" && strings.EqualFold(meta.SessionKey, opts.BoostSessionKey) {
+			results[i].Score *= metadataSessionKeyBoost
+			if opts.Explain {
+				ensureExplain(&results[i])
+				results[i].Explain.RankComponents.SessionKeyBoost = metadataSessionKeyBoost
 			}
 		}
 	}
@@ -1508,6 +1525,13 @@ func matchChannel(r Result, channel string) bool {
 		return false
 	}
 	return r.Metadata.Channel == channel || r.Metadata.ChannelName == channel
+}
+
+func matchSessionKey(r Result, sessionKey string) bool {
+	if r.Metadata == nil {
+		return false
+	}
+	return strings.EqualFold(r.Metadata.SessionKey, sessionKey)
 }
 
 // applyConfidenceDecay adjusts search result scores based on the effective confidence

@@ -56,6 +56,22 @@ func TestApplyMetadataBoosts_NoBoostContext(t *testing.T) {
 	}
 }
 
+func TestFilterByMetadata_SessionKey(t *testing.T) {
+	results := []Result{
+		{Content: "same session", Metadata: &store.Metadata{SessionKey: "agent:main:main"}},
+		{Content: "other session", Metadata: &store.Metadata{SessionKey: "agent:main:discord:channel:1"}},
+		{Content: "no metadata"},
+	}
+
+	filtered := filterByMetadata(results, Options{SessionKey: "agent:main:main"})
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(filtered))
+	}
+	if filtered[0].Content != "same session" {
+		t.Fatalf("expected same-session result, got %q", filtered[0].Content)
+	}
+}
+
 func TestApplyRecencyBoost_TodayBoosted(t *testing.T) {
 	now := time.Now()
 	results := []Result{
@@ -134,6 +150,23 @@ func TestApplyMetadataBoosts_BothAgentAndChannel(t *testing.T) {
 	// Double boost should be > single boost
 	if boosted[0].Score <= boosted[1].Score {
 		t.Errorf("expected double boost (%f) > single boost (%f)", boosted[0].Score, boosted[1].Score)
+	}
+}
+
+func TestApplyMetadataBoosts_SessionKeyMatch(t *testing.T) {
+	results := []Result{
+		{Content: "same session", Score: 1.0, Metadata: &store.Metadata{SessionKey: "agent:main:discord:channel:1"}},
+		{Content: "different session", Score: 1.0, Metadata: &store.Metadata{SessionKey: "agent:main:discord:channel:2"}},
+	}
+
+	opts := Options{BoostSessionKey: "agent:main:discord:channel:1"}
+	boosted := applyMetadataBoosts(results, opts)
+
+	if boosted[0].Content != "same session" {
+		t.Errorf("expected same-session result first, got %q", boosted[0].Content)
+	}
+	if boosted[0].Score <= boosted[1].Score {
+		t.Errorf("expected same-session boost (%f) > other score (%f)", boosted[0].Score, boosted[1].Score)
 	}
 }
 
