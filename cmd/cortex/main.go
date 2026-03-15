@@ -2151,7 +2151,7 @@ func runStale(args []string) error {
 	opts := observe.StaleOpts{
 		MaxConfidence: 0.5,
 		MaxDays:       30,
-		Limit:         50,
+		Limit:         math.MaxInt, // default to all stale facts unless caller sets --limit
 	}
 	jsonOutput := false
 	agentFlag := ""
@@ -2196,6 +2196,25 @@ func runStale(args []string) error {
 				return fmt.Errorf("invalid --min-confidence value: %s", args[i])
 			}
 			opts.MaxConfidence = conf
+		case args[i] == "--limit" && i+1 < len(args):
+			i++
+			limit, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --limit value: %s", args[i])
+			}
+			if limit < 1 {
+				return fmt.Errorf("--limit must be >= 1")
+			}
+			opts.Limit = limit
+		case strings.HasPrefix(args[i], "--limit="):
+			limit, err := strconv.Atoi(strings.TrimPrefix(args[i], "--limit="))
+			if err != nil {
+				return fmt.Errorf("invalid --limit value: %s", args[i])
+			}
+			if limit < 1 {
+				return fmt.Errorf("--limit must be >= 1")
+			}
+			opts.Limit = limit
 		case args[i] == "--json":
 			jsonOutput = true
 		case args[i] == "--include-superseded":
