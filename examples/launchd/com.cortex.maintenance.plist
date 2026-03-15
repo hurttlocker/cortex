@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 
+  Cortex daily maintenance: lifecycle policies + dedup sweep.
+  
+  Install:
+    cp com.cortex.maintenance.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.cortex.maintenance.plist
+  
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.cortex.maintenance.plist
+    rm ~/Library/LaunchAgents/com.cortex.maintenance.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cortex.maintenance</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>$HOME/bin/cortex-maintenance.sh</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:$HOME/bin</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/cortex-maintenance.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/cortex-maintenance.stderr.log</string>
+</dict>
+</plist>
