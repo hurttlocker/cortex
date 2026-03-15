@@ -230,6 +230,7 @@ type Result struct {
 	Snippet       string          `json:"snippet,omitempty"`
 	MatchType     string          `json:"match_type"` // "bm25", "semantic", "hybrid", "rrf"
 	MemoryID      int64           `json:"memory_id"`
+	FactIDs       []int64         `json:"fact_ids"`              // Facts linked to memory_id (for mutate-after-search workflows)
 	ImportedAt    time.Time       `json:"imported_at,omitempty"` // For metadata date filtering
 	Explain       *ExplainDetails `json:"explain,omitempty"`
 }
