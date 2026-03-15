@@ -4303,9 +4303,13 @@ func runInfer(args []string) error {
 	return nil
 }
 
+func graphUsageError() error {
+	return fmt.Errorf("usage: cortex graph <fact_id> [--depth 2] [--min-confidence 0.5] [--export json] [--agent <id>]\n       cortex graph --subject \"topic\" [--depth 2] [--min-confidence 0.5] [--export json] [--agent <id>]\n       cortex graph --serve [--port 8090]")
+}
+
 func runGraph(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex graph <fact_id> [--depth 2] [--min-confidence 0.5] [--export json] [--agent <id>]\n       cortex graph --serve [--port 8090]")
+		return graphUsageError()
 	}
 
 	// Handle --serve mode
@@ -4313,17 +4317,27 @@ func runGraph(args []string) error {
 		return runGraphServe(args[1:])
 	}
 
-	factID, err := strconv.ParseInt(args[0], 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid fact id: %s", args[0])
-	}
-
 	depth := 2
 	minConf := 0.0
 	exportJSON := false
 	agentFilter := ""
-	for i := 1; i < len(args); i++ {
+	subjectFilter := ""
+	factID := int64(0)
+	hasFactID := false
+
+	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--subject" && i+1 < len(args):
+			i++
+			subjectFilter = strings.TrimSpace(args[i])
+			if subjectFilter == "" {
+				return fmt.Errorf("--subject cannot be empty")
+			}
+		case strings.HasPrefix(args[i], "--subject="):
+			subjectFilter = strings.TrimSpace(strings.TrimPrefix(args[i], "--subject="))
+			if subjectFilter == "" {
+				return fmt.Errorf("--subject cannot be empty")
+			}
 		case args[i] == "--depth" && i+1 < len(args):
 			i++
 			d, err := strconv.Atoi(args[i])
@@ -4353,7 +4367,28 @@ func runGraph(args []string) error {
 		case args[i] == "--agent" && i+1 < len(args):
 			i++
 			agentFilter = args[i]
+		case strings.HasPrefix(args[i], "--agent="):
+			agentFilter = strings.TrimPrefix(args[i], "--agent=")
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		default:
+			if hasFactID {
+				return fmt.Errorf("unexpected argument: %s", args[i])
+			}
+			parsedFactID, err := strconv.ParseInt(args[i], 10, 64)
+			if err != nil || parsedFactID <= 0 {
+				return fmt.Errorf("invalid fact id: %s", args[i])
+			}
+			hasFactID = true
+			factID = parsedFactID
 		}
+	}
+
+	if subjectFilter != "" && hasFactID {
+		return fmt.Errorf("provide either <fact_id> or --subject, not both")
+	}
+	if subjectFilter == "" && !hasFactID {
+		return graphUsageError()
 	}
 
 	s, err := store.NewStore(getStoreConfig())
@@ -4368,14 +4403,39 @@ func runGraph(args []string) error {
 	}
 
 	ctx := context.Background()
-	nodes, err := sqlStore.TraverseGraph(ctx, factID, depth, minConf)
-	if err != nil {
-		return err
+	var nodes []store.GraphNode
+	seedFactIDs := []int64{}
+
+	if subjectFilter != "" {
+		seedFactIDs, err = resolveGraphSeedFactIDsBySubject(ctx, sqlStore.GetDB(), subjectFilter, minConf)
+		if err != nil {
+			return err
+		}
+		if len(seedFactIDs) == 0 {
+			if exportJSON {
+				fmt.Println("{}")
+			} else {
+				fmt.Printf("No graph found from subject %q\n", subjectFilter)
+			}
+			return nil
+		}
+
+		nodes, err = traverseGraphFromSeedFacts(ctx, sqlStore, seedFactIDs, depth, minConf)
+		if err != nil {
+			return err
+		}
+	} else {
+		nodes, err = sqlStore.TraverseGraph(ctx, factID, depth, minConf)
+		if err != nil {
+			return err
+		}
 	}
 
 	if len(nodes) == 0 {
 		if exportJSON {
 			fmt.Println("{}")
+		} else if subjectFilter != "" {
+			fmt.Printf("No graph found from subject %q\n", subjectFilter)
 		} else {
 			fmt.Printf("No graph found from fact #%d\n", factID)
 		}
@@ -4383,11 +4443,142 @@ func runGraph(args []string) error {
 	}
 
 	if exportJSON {
+		if subjectFilter != "" {
+			return runGraphExportJSONWithMeta(ctx, sqlStore, nodes, map[string]interface{}{
+				"root_subject":  subjectFilter,
+				"seed_fact_ids": seedFactIDs,
+				"depth":         depth,
+			}, agentFilter)
+		}
 		return runGraphExportJSON(ctx, sqlStore, nodes, factID, depth, agentFilter)
 	}
 
-	fmt.Printf("🔗 Knowledge graph from fact #%d (depth %d, %d nodes):\n\n", factID, depth, len(nodes))
+	if subjectFilter != "" {
+		fmt.Printf("🔗 Knowledge graph from subject %q (depth %d, %d seed facts, %d nodes):\n\n", subjectFilter, depth, len(seedFactIDs), len(nodes))
+	} else {
+		fmt.Printf("🔗 Knowledge graph from fact #%d (depth %d, %d nodes):\n\n", factID, depth, len(nodes))
+	}
+	outputGraphNodesTTY(nodes)
+	return nil
+}
+
+func resolveGraphSeedFactIDsBySubject(ctx context.Context, db *sql.DB, subject string, minConf float64) ([]int64, error) {
+	subject = strings.TrimSpace(subject)
+	if subject == "" {
+		return nil, fmt.Errorf("--subject cannot be empty")
+	}
+
+	rows, err := db.QueryContext(ctx,
+		`SELECT id
+		   FROM facts
+		  WHERE LOWER(TRIM(subject)) = LOWER(TRIM(?))
+		    AND (superseded_by IS NULL OR superseded_by = 0)
+		    AND confidence >= ?
+		  ORDER BY confidence DESC, id DESC`,
+		subject, minConf,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying graph seed facts for subject %q: %w", subject, err)
+	}
+	defer rows.Close()
+
+	seedFactIDs := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning graph seed fact id: %w", err)
+		}
+		seedFactIDs = append(seedFactIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating graph seed fact rows: %w", err)
+	}
+	return seedFactIDs, nil
+}
+
+func traverseGraphFromSeedFacts(ctx context.Context, sqlStore *store.SQLiteStore, seedFactIDs []int64, depth int, minConf float64) ([]store.GraphNode, error) {
+	merged := make(map[int64]store.GraphNode)
+
+	for _, seedFactID := range seedFactIDs {
+		nodes, err := sqlStore.TraverseGraph(ctx, seedFactID, depth, minConf)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, node := range nodes {
+			if node.Fact == nil {
+				continue
+			}
+
+			existing, ok := merged[node.Fact.ID]
+			if !ok {
+				merged[node.Fact.ID] = store.GraphNode{
+					Fact:  node.Fact,
+					Edges: dedupeGraphEdges(node.Edges),
+					Depth: node.Depth,
+				}
+				continue
+			}
+
+			if node.Depth < existing.Depth {
+				existing.Depth = node.Depth
+			}
+			existing.Fact = node.Fact
+			existing.Edges = dedupeGraphEdges(append(existing.Edges, node.Edges...))
+			merged[node.Fact.ID] = existing
+		}
+	}
+
+	combined := make([]store.GraphNode, 0, len(merged))
+	for _, node := range merged {
+		sort.Slice(node.Edges, func(i, j int) bool {
+			if node.Edges[i].SourceFactID != node.Edges[j].SourceFactID {
+				return node.Edges[i].SourceFactID < node.Edges[j].SourceFactID
+			}
+			if node.Edges[i].TargetFactID != node.Edges[j].TargetFactID {
+				return node.Edges[i].TargetFactID < node.Edges[j].TargetFactID
+			}
+			return node.Edges[i].EdgeType < node.Edges[j].EdgeType
+		})
+		combined = append(combined, node)
+	}
+
+	sort.Slice(combined, func(i, j int) bool {
+		if combined[i].Depth != combined[j].Depth {
+			return combined[i].Depth < combined[j].Depth
+		}
+		if combined[i].Fact == nil || combined[j].Fact == nil {
+			return combined[i].Fact != nil
+		}
+		return combined[i].Fact.ID < combined[j].Fact.ID
+	})
+
+	return combined, nil
+}
+
+func dedupeGraphEdges(edges []store.FactEdge) []store.FactEdge {
+	if len(edges) < 2 {
+		return edges
+	}
+
+	seen := make(map[string]struct{}, len(edges))
+	unique := make([]store.FactEdge, 0, len(edges))
+	for _, edge := range edges {
+		key := fmt.Sprintf("%d:%d:%s:%.6f:%s", edge.SourceFactID, edge.TargetFactID, edge.EdgeType, edge.Confidence, edge.Source)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, edge)
+	}
+	return unique
+}
+
+func outputGraphNodesTTY(nodes []store.GraphNode) {
 	for _, node := range nodes {
+		if node.Fact == nil {
+			continue
+		}
 		indent := strings.Repeat("  ", node.Depth)
 		factText := fmt.Sprintf("%s %s %s", node.Fact.Subject, node.Fact.Predicate, node.Fact.Object)
 		if len(factText) > 60 {
@@ -4406,7 +4597,6 @@ func runGraph(args []string) error {
 			fmt.Printf("%s  └─[%s]→ #%d (%.0f%%)\n", indent, e.EdgeType, otherID, e.Confidence*100)
 		}
 	}
-	return nil
 }
 
 func runGraphServe(args []string) error {
@@ -4629,11 +4819,19 @@ type graphExportResult struct {
 }
 
 func runGraphExportJSON(ctx context.Context, sqlStore *store.SQLiteStore, nodes []store.GraphNode, rootID int64, depth int, agentFilter string) error {
+	return runGraphExportJSONWithMeta(ctx, sqlStore, nodes, map[string]interface{}{
+		"root_fact_id": rootID,
+		"depth":        depth,
+	}, agentFilter)
+}
+
+func runGraphExportJSONWithMeta(ctx context.Context, sqlStore *store.SQLiteStore, nodes []store.GraphNode, meta map[string]interface{}, agentFilter string) error {
+	if meta == nil {
+		meta = map[string]interface{}{}
+	}
+
 	result := graphExportResult{
-		Meta: map[string]interface{}{
-			"root_fact_id": rootID,
-			"depth":        depth,
-		},
+		Meta: meta,
 	}
 
 	seenNodes := make(map[int64]bool)
@@ -5984,7 +6182,7 @@ Tools (17):
   cortex_reinforce      Reset decay timer on important facts
   cortex_reason         Synthesize answers from multiple memories (LLM)
   cortex_edge_add       Create relationship edges between facts
-  cortex_graph          Traverse knowledge graph from a fact ID
+  cortex_graph          Traverse knowledge graph from a fact ID or subject
   cortex_graph_export   Export subgraph as structured JSON
   cortex_graph_explore  Explore graph around a topic/subject
   cortex_graph_impact   Analyze blast radius for a subject
@@ -10104,6 +10302,7 @@ Observe:
 
 Knowledge Graph:
   graph <fact_id>       Explore fact relationships (CLI)
+  graph --subject <s>   Explore graph from all facts matching a subject
   graph --serve         Launch interactive graph explorer (web UI)
   cluster               List or rebuild topic clusters
 
