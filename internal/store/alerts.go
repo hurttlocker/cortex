@@ -236,6 +236,7 @@ func (s *SQLiteStore) CheckConflictsForFact(ctx context.Context, fact *Fact) ([]
 		   AND LOWER(predicate) = LOWER(?)
 		   AND id != ?
 		   AND superseded_by IS NULL
+		   AND state NOT IN ('retired', 'superseded')
 		   AND confidence > 0
 		 LIMIT 20`,
 		fact.Subject, fact.Predicate, fact.ID,

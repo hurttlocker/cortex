@@ -320,6 +320,18 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 		return nil
 	}
 
+	// Cross-source content-only dedup (#335): same content from a different source
+	// file should not create a duplicate memory. Check content-only hash.
+	contentOnlyHash := store.HashContentOnly(raw.Content)
+	crossSourceDup, err := e.store.FindByContentOnly(ctx, contentOnlyHash)
+	if err != nil {
+		return err
+	}
+	if crossSourceDup != nil {
+		result.MemoriesUnchanged++
+		return nil
+	}
+
 	if shouldSkipLowSignalCapture(raw.Content, opts) {
 		result.MemoriesUnchanged++
 		return nil

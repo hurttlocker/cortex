@@ -472,9 +472,11 @@ func (s *SQLiteStore) GetAttributeConflictsLimitWithSuperseded(ctx context.Conte
 		limit = 100
 	}
 
-	supersededClause := "AND f.superseded_by IS NULL"
+	// Filter out retired and superseded facts from conflict detection.
+	// Retired facts are resolved — they should not generate conflict pairs.
+	supersededClause := "AND f.superseded_by IS NULL AND f.state NOT IN ('retired', 'superseded')"
 	if includeSuperseded {
-		supersededClause = ""
+		supersededClause = "AND f.state != 'retired'"
 	}
 
 	// Build SQL exclusion clauses for known noisy predicates and generic section-bucket

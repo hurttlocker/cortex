@@ -31,10 +31,12 @@ func (s *SQLiteStore) AddMemory(ctx context.Context, m *Memory) (int64, error) {
 		return 0, fmt.Errorf("invalid memory class %q", m.MemoryClass)
 	}
 
+	contentOnlyHash := HashContentOnly(m.Content)
+
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO memories (content, source_file, source_line, source_section, content_hash, project, memory_class, metadata, imported_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, m.Project, m.MemoryClass, metadataArg, now, now,
+		`INSERT INTO memories (content, source_file, source_line, source_section, content_hash, content_only_hash, project, memory_class, metadata, imported_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Content, m.SourceFile, m.SourceLine, m.SourceSection, m.ContentHash, contentOnlyHash, m.Project, m.MemoryClass, metadataArg, now, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting memory: %w", err)
@@ -325,6 +327,28 @@ func (s *SQLiteStore) FindByHash(ctx context.Context, hash string) (*Memory, err
 	}
 	if err != nil {
 		return nil, fmt.Errorf("finding memory by hash: %w", err)
+	}
+	m.MemoryClass = memClass.String
+	return m, nil
+}
+
+// FindByContentOnly looks up a memory by content-only hash (ignoring source file).
+// This enables cross-source deduplication: same text from two different files is
+// recognized as a duplicate. Returns the first match or nil.
+func (s *SQLiteStore) FindByContentOnly(ctx context.Context, contentHash string) (*Memory, error) {
+	m := &Memory{}
+	var memClass sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, content, source_file, source_line, source_section, content_hash, project, memory_class, imported_at, updated_at
+		 FROM memories WHERE content_only_hash = ? AND deleted_at IS NULL LIMIT 1`, contentHash,
+	).Scan(&m.ID, &m.Content, &m.SourceFile, &m.SourceLine, &m.SourceSection,
+		&m.ContentHash, &m.Project, &memClass, &m.ImportedAt, &m.UpdatedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("finding memory by content-only hash: %w", err)
 	}
 	m.MemoryClass = memClass.String
 	return m, nil

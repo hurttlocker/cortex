@@ -251,6 +251,7 @@ type Store interface {
 
 	// Deduplication
 	FindByHash(ctx context.Context, hash string) (*Memory, error)
+	FindByContentOnly(ctx context.Context, contentHash string) (*Memory, error)
 
 	// Projects
 	ListProjects(ctx context.Context) ([]ProjectInfo, error)
