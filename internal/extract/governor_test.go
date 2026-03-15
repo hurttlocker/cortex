@@ -356,6 +356,7 @@ func TestGovernor_AutoCaptureDropsTransientAndBooleanNoise(t *testing.T) {
 		{Subject: "Current UTC time", Predicate: "status", Object: "2026-03-15 17:52", FactType: "temporal", Confidence: 0.9},
 		{Subject: "Repository HEAD", Predicate: "is on", Object: "origin/main", FactType: "state", Confidence: 0.9},
 		{Subject: "Feature flag", Predicate: "status", Object: "active", FactType: "state", Confidence: 0.9},
+		{Subject: "auto-capture", Predicate: "phone", Object: "7930762102", FactType: "identity", Confidence: 0.7},
 		{Subject: "Cortex", Predicate: "decision", Object: "ship governor tightening now", FactType: "decision", Confidence: 0.92},
 	}
 

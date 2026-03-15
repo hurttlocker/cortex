@@ -336,6 +336,7 @@ var autoCaptureNoisePredicates = map[string]bool{
 	"has":   true,
 	"was":   true,
 	"are":   true,
+	"phone": true, // 10-digit sender IDs get regex-extracted as phone numbers
 }
 
 var autoCaptureNoiseSubjectPrefixes = []string{
