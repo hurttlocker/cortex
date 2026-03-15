@@ -1091,7 +1091,8 @@ func runSearch(args []string) error {
 
 	// Determine output format
 	if jsonOutput || !isTTY() {
-		return outputJSON(results)
+		enriched := enrichSearchResultsWithFactIDs(ctx, s, results, includeSuperseded)
+		return outputJSON(enriched)
 	}
 
 	// Show expanded queries header in TTY mode
@@ -7115,6 +7116,70 @@ func getExtendedStats(ctx context.Context, s store.Store) (int, string, error) {
 	}
 
 	return len(files), dateRange, nil
+}
+
+func enrichSearchResultsWithFactIDs(ctx context.Context, s store.Store, results []search.Result, includeSuperseded bool) []search.Result {
+	if len(results) == 0 {
+		return results
+	}
+
+	enriched := make([]search.Result, len(results))
+	copy(enriched, results)
+
+	memoryIDs := make([]int64, 0, len(enriched))
+	seenMemory := make(map[int64]struct{}, len(enriched))
+	for _, result := range enriched {
+		if result.MemoryID <= 0 {
+			continue
+		}
+		if _, ok := seenMemory[result.MemoryID]; ok {
+			continue
+		}
+		seenMemory[result.MemoryID] = struct{}{}
+		memoryIDs = append(memoryIDs, result.MemoryID)
+	}
+
+	factIDsByMemory := make(map[int64][]int64, len(memoryIDs))
+	for _, memoryID := range memoryIDs {
+		factIDsByMemory[memoryID] = []int64{}
+	}
+
+	if len(memoryIDs) > 0 {
+		var (
+			facts []*store.Fact
+			err   error
+		)
+		if includeSuperseded {
+			facts, err = s.GetFactsByMemoryIDsIncludingSuperseded(ctx, memoryIDs)
+		} else {
+			facts, err = s.GetFactsByMemoryIDs(ctx, memoryIDs)
+		}
+		if err == nil {
+			for _, fact := range facts {
+				factIDsByMemory[fact.MemoryID] = append(factIDsByMemory[fact.MemoryID], fact.ID)
+			}
+			for memoryID := range factIDsByMemory {
+				sort.Slice(factIDsByMemory[memoryID], func(i, j int) bool {
+					return factIDsByMemory[memoryID][i] < factIDsByMemory[memoryID][j]
+				})
+			}
+		}
+	}
+
+	for i := range enriched {
+		if enriched[i].MemoryID <= 0 {
+			enriched[i].FactIDs = []int64{}
+			continue
+		}
+		ids, ok := factIDsByMemory[enriched[i].MemoryID]
+		if !ok || ids == nil {
+			enriched[i].FactIDs = []int64{}
+			continue
+		}
+		enriched[i].FactIDs = ids
+	}
+
+	return enriched
 }
 
 func outputJSON(results []search.Result) error {
