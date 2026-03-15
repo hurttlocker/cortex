@@ -304,6 +304,37 @@ Current time: Saturday, February 14th, 2026 — 9:04 PM
 	}
 }
 
+func TestPipelineExtract_AutoCaptureUsesStricterGovernor(t *testing.T) {
+	pipeline := NewPipeline()
+	text := "**Status:** false\n**Decision:** ship the governor tightening today"
+
+	facts, err := pipeline.Extract(context.Background(), text, map[string]string{"source_file": "/tmp/cortex-capture-abc/auto-capture.md"})
+	if err != nil {
+		t.Fatalf("Extract error: %v", err)
+	}
+
+	if len(facts) != 1 {
+		t.Fatalf("expected auto-capture strict governor to keep only one fact, got %d: %+v", len(facts), facts)
+	}
+	if facts[0].Predicate != "decision" {
+		t.Fatalf("expected decision fact to survive strict governor, got %+v", facts[0])
+	}
+}
+
+func TestPipelineExtract_NonAutoCaptureKeepsBooleanState(t *testing.T) {
+	pipeline := NewPipeline()
+	text := "**Status:** false\n**Decision:** ship the governor tightening today"
+
+	facts, err := pipeline.Extract(context.Background(), text, map[string]string{"source_file": "/tmp/status-notes.md"})
+	if err != nil {
+		t.Fatalf("Extract error: %v", err)
+	}
+
+	if len(facts) != 2 {
+		t.Fatalf("expected non-auto-capture path to keep both facts, got %d: %+v", len(facts), facts)
+	}
+}
+
 func TestNormalizeSubject_PreservesStructuredHierarchy(t *testing.T) {
 	subj := normalizeSubject("COMPLETED TODAY > Trading Systems", false)
 	if subj != "COMPLETED TODAY > Trading Systems" {
