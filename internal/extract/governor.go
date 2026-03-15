@@ -28,6 +28,17 @@ type GovernorConfig struct {
 	// DropGenericSubjects removes facts with subjects that carry no signal
 	// (e.g., "Conversation Summary", empty subjects). Default: true.
 	DropGenericSubjects bool
+
+	// DropTransientFacts enables stricter subject/predicate filtering for
+	// conversation auto-capture noise (timestamps, message metadata, trivial state echoes).
+	DropTransientFacts bool
+
+	// DropBooleanObjects removes trivial yes/no style object values for noisy sources.
+	DropBooleanObjects bool
+
+	// DropInstructionParroting removes facts that appear to mirror prompt/rules language
+	// instead of durable knowledge.
+	DropInstructionParroting bool
 }
 
 // DefaultGovernorConfig returns the recommended default governor settings.
@@ -48,11 +59,14 @@ func DefaultGovernorConfig() GovernorConfig {
 // Auto-capture text is noisy by nature — only high-signal facts survive.
 func AutoCaptureGovernorConfig() GovernorConfig {
 	return GovernorConfig{
-		MaxFactsPerMemory:   5,
-		MinObjectLength:     4,
-		MinPredicateLength:  5,
-		DropMarkdownJunk:    true,
-		DropGenericSubjects: true,
+		MaxFactsPerMemory:        3,
+		MinObjectLength:          6,
+		MinPredicateLength:       5,
+		DropMarkdownJunk:         true,
+		DropGenericSubjects:      true,
+		DropTransientFacts:       true,
+		DropBooleanObjects:       true,
+		DropInstructionParroting: true,
 	}
 }
 
@@ -153,6 +167,31 @@ func (g *Governor) isNoise(f ExtractedFact) bool {
 		return true
 	}
 
+	predLower := strings.ToLower(pred)
+	objLower := strings.ToLower(obj)
+	subjLower := strings.ToLower(subj)
+
+	if g.config.DropTransientFacts {
+		if autoCaptureNoisePredicates[predLower] {
+			return true
+		}
+		for _, prefix := range autoCaptureNoiseSubjectPrefixes {
+			if strings.HasPrefix(subjLower, prefix) {
+				return true
+			}
+		}
+	}
+
+	if g.config.DropBooleanObjects {
+		if autoCaptureNoiseObjects[normalizeGovernorToken(objLower)] {
+			return true
+		}
+	}
+
+	if g.config.DropInstructionParroting && isInstructionParroting(subj, pred, obj) {
+		return true
+	}
+
 	// Object is just a repetition of the predicate (circular fact)
 	if strings.EqualFold(obj, pred) {
 		return true
@@ -169,10 +208,6 @@ func (g *Governor) isNoise(f ExtractedFact) bool {
 	}
 
 	// --- v0.9.0 noise filters (Feb 2026) ---
-
-	predLower := strings.ToLower(pred)
-	objLower := strings.ToLower(obj)
-	subjLower := strings.ToLower(subj)
 
 	// Generic regex-extracted predicates that aren't real facts.
 	// Note: "email" and "phone" are kept — they're valid in KV pairs like "Email: test@example.com"
@@ -293,6 +328,44 @@ func isMarkdownJunk(s string) bool {
 
 // gitHashRE matches predicates that are git commit hashes (6+ hex chars).
 var gitHashRE = regexp.MustCompile(`^[0-9a-f]{6,}\b`)
+
+var autoCaptureNoisePredicates = map[string]bool{
+	"is":    true,
+	"is on": true,
+	"is at": true,
+	"has":   true,
+	"was":   true,
+	"are":   true,
+}
+
+var autoCaptureNoiseSubjectPrefixes = []string{
+	"current",
+	"timestamp",
+	"message ",
+}
+
+var autoCaptureNoiseObjects = map[string]bool{
+	"true":    true,
+	"false":   true,
+	"yes":     true,
+	"no":      true,
+	"none":    true,
+	"n/a":     true,
+	"active":  true,
+	"enabled": true,
+}
+
+var instructionSignals = []string{
+	"must",
+	"should",
+	"never",
+	"always",
+	"do not",
+	"read-only",
+	"append only",
+	"flush",
+	"overwrite",
+}
 
 // timestampSubjectRE matches subjects that are primarily timestamps or
 // timestamp-prefixed section headers — strong signal of auto-capture noise.
@@ -419,6 +492,26 @@ func isOnlyFormatting(s string) bool {
 		}
 	}
 	return true
+}
+
+func normalizeGovernorToken(s string) string {
+	normalized := strings.ToLower(strings.TrimSpace(s))
+	normalized = strings.Trim(normalized, "\"'`.,;:!?()[]{}")
+	return normalized
+}
+
+func isInstructionParroting(subj, pred, obj string) bool {
+	combined := strings.ToLower(strings.Join([]string{subj, pred, obj}, " "))
+	count := 0
+	for _, signal := range instructionSignals {
+		if strings.Contains(combined, signal) {
+			count++
+			if count >= 2 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // deduplicateByTriple removes facts with the same (subject, predicate, object) triple,

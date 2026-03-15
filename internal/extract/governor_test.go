@@ -332,11 +332,69 @@ func TestGovernor_TighterDefaults(t *testing.T) {
 	}
 
 	acfg := AutoCaptureGovernorConfig()
-	if acfg.MaxFactsPerMemory != 5 {
-		t.Errorf("expected AutoCapture MaxFactsPerMemory=5, got %d", acfg.MaxFactsPerMemory)
+	if acfg.MaxFactsPerMemory != 3 {
+		t.Errorf("expected AutoCapture MaxFactsPerMemory=3, got %d", acfg.MaxFactsPerMemory)
 	}
-	if acfg.MinObjectLength != 4 {
-		t.Errorf("expected AutoCapture MinObjectLength=4, got %d", acfg.MinObjectLength)
+	if acfg.MinObjectLength != 6 {
+		t.Errorf("expected AutoCapture MinObjectLength=6, got %d", acfg.MinObjectLength)
+	}
+	if !acfg.DropTransientFacts {
+		t.Error("expected AutoCapture DropTransientFacts=true")
+	}
+	if !acfg.DropBooleanObjects {
+		t.Error("expected AutoCapture DropBooleanObjects=true")
+	}
+	if !acfg.DropInstructionParroting {
+		t.Error("expected AutoCapture DropInstructionParroting=true")
+	}
+}
+
+func TestGovernor_AutoCaptureDropsTransientAndBooleanNoise(t *testing.T) {
+	gov := NewGovernor(AutoCaptureGovernorConfig())
+
+	facts := []ExtractedFact{
+		{Subject: "Current UTC time", Predicate: "status", Object: "2026-03-15 17:52", FactType: "temporal", Confidence: 0.9},
+		{Subject: "Repository HEAD", Predicate: "is on", Object: "origin/main", FactType: "state", Confidence: 0.9},
+		{Subject: "Feature flag", Predicate: "status", Object: "active", FactType: "state", Confidence: 0.9},
+		{Subject: "Cortex", Predicate: "decision", Object: "ship governor tightening now", FactType: "decision", Confidence: 0.92},
+	}
+
+	result := gov.Apply(facts)
+	if len(result) != 1 {
+		t.Fatalf("expected only one durable fact to remain, got %d: %+v", len(result), result)
+	}
+	if result[0].Subject != "Cortex" {
+		t.Fatalf("expected Cortex decision fact to survive, got %+v", result[0])
+	}
+}
+
+func TestGovernor_AutoCaptureDropsInstructionParroting(t *testing.T) {
+	gov := NewGovernor(AutoCaptureGovernorConfig())
+
+	facts := []ExtractedFact{
+		{Subject: "workspace policy", Predicate: "governor note", Object: "read-only during flush and never overwrite memory files", FactType: "kv", Confidence: 0.9},
+		{Subject: "Cortex", Predicate: "decision", Object: "ship the bounded governor patch", FactType: "decision", Confidence: 0.9},
+	}
+
+	result := gov.Apply(facts)
+	if len(result) != 1 {
+		t.Fatalf("expected instruction parroting to drop, got %d: %+v", len(result), result)
+	}
+	if result[0].Subject != "Cortex" {
+		t.Fatalf("expected durable decision fact to survive, got %+v", result[0])
+	}
+}
+
+func TestGovernor_DefaultConfigKeepsNonAutoCaptureBooleanState(t *testing.T) {
+	gov := NewGovernor(DefaultGovernorConfig())
+
+	facts := []ExtractedFact{
+		{Subject: "Feature flag", Predicate: "status", Object: "false", FactType: "state", Confidence: 0.9},
+	}
+
+	result := gov.Apply(facts)
+	if len(result) != 1 {
+		t.Fatalf("expected default governor to keep non-auto-capture boolean state, got %d: %+v", len(result), result)
 	}
 }
 
