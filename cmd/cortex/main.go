@@ -3663,9 +3663,12 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 				SourceQuote: extractedFact.SourceQuote,
 			}
 
-			factID, err := s.AddFact(ctx, fact)
+			factID, stored, err := ingest.StoreExtractedFact(ctx, s, fact)
 			if err != nil {
-				continue // Skip storage errors
+				continue // Skip storage/supersession errors
+			}
+			if !stored {
+				continue // Existing active fact already represents current object
 			}
 
 			stats.FactsExtracted++
@@ -4994,7 +4997,7 @@ func runUpdate(args []string) error {
 		}
 
 		for _, extractedFact := range extractedFacts {
-			_, err := s.AddFact(ctx, &store.Fact{
+			_, stored, err := ingest.StoreExtractedFact(ctx, s, &store.Fact{
 				MemoryID:    memoryID,
 				Subject:     extractedFact.Subject,
 				Predicate:   extractedFact.Predicate,
@@ -5007,7 +5010,9 @@ func runUpdate(args []string) error {
 			if err != nil {
 				continue
 			}
-			factCount++
+			if stored {
+				factCount++
+			}
 		}
 	}
 
