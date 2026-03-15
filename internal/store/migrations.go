@@ -114,6 +114,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating cluster tables: %w", err)
 	}
 
+	// Schema evolution: content-only hash for cross-source dedup (v1.3 — Issue #335)
+	if err := s.migrateContentOnlyHash(); err != nil {
+		return fmt.Errorf("migrating content_only_hash: %w", err)
+	}
+
 	return nil
 }
 
@@ -121,15 +126,16 @@ func (s *SQLiteStore) runBootstrapDDL() error {
 	statements := []string{
 		// Core memory table
 		`CREATE TABLE IF NOT EXISTS memories (
-			id             INTEGER PRIMARY KEY AUTOINCREMENT,
-			content        TEXT NOT NULL,
-			source_file    TEXT,
-			source_line    INTEGER,
-			source_section TEXT,
-			content_hash   TEXT UNIQUE NOT NULL,
-			imported_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
-			deleted_at     DATETIME
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			content           TEXT NOT NULL,
+			source_file       TEXT,
+			source_line       INTEGER,
+			source_section    TEXT,
+			content_hash      TEXT UNIQUE NOT NULL,
+			content_only_hash TEXT DEFAULT '',
+			imported_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+			deleted_at        DATETIME
 		)`,
 
 		// FTS5 full-text search index (multi-column)
@@ -1170,6 +1176,95 @@ func (s *SQLiteStore) migrateWatchesTable() error {
 	`)
 	if err != nil {
 		return fmt.Errorf("creating watches_v1 table: %w", err)
+	}
+
+	return nil
+}
+
+// migrateContentOnlyHash adds content_only_hash column to memories for cross-source
+// deduplication (Issue #335). This column stores SHA-256(content) without the source
+// path, enabling detection of identical content imported from different files.
+func (s *SQLiteStore) migrateContentOnlyHash() error {
+	var count int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='content_only_hash'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checking for content_only_hash column: %w", err)
+	}
+	if count > 0 {
+		return nil // Already migrated
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning content_only_hash migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmts := []string{
+		`ALTER TABLE memories ADD COLUMN content_only_hash TEXT DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_memories_content_only_hash ON memories(content_only_hash)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			if isDuplicateColumnError(err) {
+				continue
+			}
+			return fmt.Errorf("executing %q: %w", truncate(stmt, 60), err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing content_only_hash migration: %w", err)
+	}
+
+	// Backfill existing rows outside the DDL transaction.
+	rows, err := s.db.Query(`SELECT id, content FROM memories WHERE content_only_hash = '' OR content_only_hash IS NULL`)
+	if err != nil {
+		return fmt.Errorf("reading memories for backfill: %w", err)
+	}
+
+	type backfillRow struct {
+		id      int64
+		content string
+	}
+	var pending []backfillRow
+	for rows.Next() {
+		var r backfillRow
+		if err := rows.Scan(&r.id, &r.content); err != nil {
+			rows.Close()
+			return fmt.Errorf("scanning memory for backfill: %w", err)
+		}
+		pending = append(pending, r)
+	}
+	rows.Close()
+
+	if len(pending) > 0 {
+		backfillTx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning backfill transaction: %w", err)
+		}
+		defer backfillTx.Rollback()
+
+		updateStmt, err := backfillTx.Prepare(`UPDATE memories SET content_only_hash = ? WHERE id = ?`)
+		if err != nil {
+			return fmt.Errorf("preparing backfill statement: %w", err)
+		}
+		defer updateStmt.Close()
+
+		for _, r := range pending {
+			h := HashContentOnly(r.content)
+			if _, err := updateStmt.Exec(h, r.id); err != nil {
+				return fmt.Errorf("backfilling memory %d: %w", r.id, err)
+			}
+		}
+
+		if err := backfillTx.Commit(); err != nil {
+			return fmt.Errorf("committing backfill: %w", err)
+		}
+
+		fmt.Printf("  Content-only hash migration: backfilled %d memories\n", len(pending))
 	}
 
 	return nil
