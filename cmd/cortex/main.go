@@ -134,6 +134,8 @@ func main() {
 		exitWithError(runReason(args[1:]))
 	case "bench":
 		exitWithError(runBench(args[1:]))
+	case "eval":
+		exitWithError(runEval(args[1:]))
 	case "connect":
 		exitWithError(runConnect(args[1:]))
 	case "init":
@@ -2530,21 +2532,23 @@ func runStats(args []string) error {
 }
 
 type healthReport struct {
-	Memories            int64    `json:"memories"`
-	Embeddings          int64    `json:"embeddings"`
-	EmbeddingCoverage   float64  `json:"embedding_coverage"`
-	Facts               int64    `json:"facts"`
-	ActiveFacts         int64    `json:"active_facts"`
-	RetiredFacts        int64    `json:"retired_facts"`
-	SupersededFacts     int64    `json:"superseded_facts"`
-	UnresolvedConflicts int      `json:"unresolved_conflicts"`
-	StaleFacts          int      `json:"stale_facts"`
-	DBBytes             int64    `json:"db_bytes"`
-	HNSWBytes           int64    `json:"hnsw_bytes"`
-	LastImportAt        string   `json:"last_import_at,omitempty"`
-	LastLifecycleAt     string   `json:"last_lifecycle_at,omitempty"`
-	LastOptimizeAt      string   `json:"last_optimize_at,omitempty"`
-	Recommendations     []string `json:"recommendations"`
+	Memories            int64          `json:"memories"`
+	Embeddings          int64          `json:"embeddings"`
+	EmbeddingCoverage   float64        `json:"embedding_coverage"`
+	Facts               int64          `json:"facts"`
+	ActiveFacts         int64          `json:"active_facts"`
+	RetiredFacts        int64          `json:"retired_facts"`
+	SupersededFacts     int64          `json:"superseded_facts"`
+	UnresolvedConflicts int            `json:"unresolved_conflicts"`
+	StaleFacts          int            `json:"stale_facts"`
+	SourceTiers         map[string]int `json:"source_tiers,omitempty"`
+	PredicateModes      map[string]int `json:"predicate_modes,omitempty"`
+	DBBytes             int64          `json:"db_bytes"`
+	HNSWBytes           int64          `json:"hnsw_bytes"`
+	LastImportAt        string         `json:"last_import_at,omitempty"`
+	LastLifecycleAt     string         `json:"last_lifecycle_at,omitempty"`
+	LastOptimizeAt      string         `json:"last_optimize_at,omitempty"`
+	Recommendations     []string       `json:"recommendations"`
 }
 
 func runHealth(args []string) error {
@@ -2613,6 +2617,14 @@ func runHealth(args []string) error {
 	if err != nil {
 		return fmt.Errorf("loading stale facts: %w", err)
 	}
+	sourceTiers, err := countSourceTiers(ctx, ss)
+	if err != nil {
+		return err
+	}
+	predicateModes, err := countPredicateModes(ctx, ss)
+	if err != nil {
+		return err
+	}
 
 	report := healthReport{
 		Memories:            stats.MemoryCount,
@@ -2623,6 +2635,8 @@ func runHealth(args []string) error {
 		SupersededFacts:     superseded,
 		UnresolvedConflicts: unresolvedGroups,
 		StaleFacts:          len(staleFacts),
+		SourceTiers:         sourceTiers,
+		PredicateModes:      predicateModes,
 		DBBytes:             stats.DBSizeBytes,
 	}
 	if stats.MemoryCount > 0 {
@@ -2658,6 +2672,16 @@ func runHealth(args []string) error {
 	fmt.Printf("Facts:        %d (%d active, %d retired, %d superseded)\n", report.Facts, report.ActiveFacts, report.RetiredFacts, report.SupersededFacts)
 	fmt.Printf("Conflicts:    %d unresolved\n", report.UnresolvedConflicts)
 	fmt.Printf("Stale (>30d): %d facts below 0.3 confidence\n", report.StaleFacts)
+	if len(report.SourceTiers) > 0 {
+		fmt.Printf("Source tiers: ")
+		fmt.Print(formatCountMap(report.SourceTiers))
+		fmt.Println()
+	}
+	if len(report.PredicateModes) > 0 {
+		fmt.Printf("Predicate modes: ")
+		fmt.Print(formatCountMap(report.PredicateModes))
+		fmt.Println()
+	}
 	fmt.Printf("Storage:      %s (DB) + %s (HNSW index)\n", formatBytes(report.DBBytes), formatBytes(report.HNSWBytes))
 	if report.LastImportAt != "" {
 		if t, err := time.Parse(time.RFC3339, report.LastImportAt); err == nil {
@@ -2774,6 +2798,400 @@ func buildHealthRecommendations(report healthReport) []string {
 		recs = append(recs, "⚠ Database optimize history missing — run: cortex optimize")
 	}
 	return recs
+}
+
+func countSourceTiers(ctx context.Context, ss *store.SQLiteStore) (map[string]int, error) {
+	rows, err := ss.QueryContext(ctx, `SELECT COALESCE(source_file, '') FROM memories WHERE deleted_at IS NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("counting source tiers: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var source string
+		if err := rows.Scan(&source); err != nil {
+			return nil, fmt.Errorf("scan source tier: %w", err)
+		}
+		tier := search.SourceTierForFile(source)
+		if tier == "" {
+			tier = "other"
+		}
+		out[tier]++
+	}
+	return out, rows.Err()
+}
+
+func countPredicateModes(ctx context.Context, ss *store.SQLiteStore) (map[string]int, error) {
+	rows, err := ss.QueryContext(ctx, `SELECT COALESCE(predicate, ''), COUNT(*) FROM facts GROUP BY COALESCE(predicate, '')`)
+	if err != nil {
+		return nil, fmt.Errorf("counting predicate modes: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]int{}
+	for rows.Next() {
+		var predicate string
+		var count int
+		if err := rows.Scan(&predicate, &count); err != nil {
+			return nil, fmt.Errorf("scan predicate mode: %w", err)
+		}
+		mode := store.PredicateConflictMode(predicate)
+		out[mode] += count
+	}
+	return out, rows.Err()
+}
+
+func formatCountMap(values map[string]int) string {
+	if len(values) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", key, values[key]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+type retrievalEvalQuerySpec struct {
+	Query               string   `json:"query"`
+	Limit               int      `json:"limit"`
+	MaxNoisyTop3        int      `json:"max_noisy_top3"`
+	K                   int      `json:"k"`
+	ExpectedContainsAny []string `json:"expected_contains_any"`
+	MinPrecisionAtK     float64  `json:"min_precision_at_k"`
+	MinHits             int      `json:"min_hits"`
+}
+
+type retrievalEvalFixture struct {
+	Name         string                   `json:"name"`
+	Description  string                   `json:"description"`
+	NoiseMarkers []string                 `json:"noise_markers"`
+	Queries      []retrievalEvalQuerySpec `json:"queries"`
+}
+
+type retrievalEvalQueryResult struct {
+	Query            string   `json:"query"`
+	Hits             int      `json:"hits"`
+	NoisyPositions   []int    `json:"noisy_positions"`
+	NoisyTop3        int      `json:"noisy_top3"`
+	MaxNoisyTop3     int      `json:"max_noisy_top3"`
+	K                int      `json:"k"`
+	ExpectedContains []string `json:"expected_contains_any"`
+	RelevantInTopK   int      `json:"relevant_in_top_k"`
+	PrecisionAtK     float64  `json:"precision_at_k"`
+	MinPrecisionAtK  float64  `json:"min_precision_at_k"`
+	Passed           bool     `json:"passed"`
+	TopMemoryID      int64    `json:"top_memory_id,omitempty"`
+}
+
+type retrievalEvalSummary struct {
+	Queries         int     `json:"queries"`
+	Passed          int     `json:"passed"`
+	Failed          int     `json:"failed"`
+	PassRate        float64 `json:"pass_rate"`
+	AvgPrecisionAtK float64 `json:"avg_precision_at_k"`
+	TotalNoisyTop3  int     `json:"total_noisy_top3"`
+}
+
+type retrievalEvalReport struct {
+	Fixture string                     `json:"fixture"`
+	Corpus  string                     `json:"corpus"`
+	Mode    string                     `json:"mode"`
+	Embed   string                     `json:"embed,omitempty"`
+	Summary retrievalEvalSummary       `json:"summary"`
+	Results []retrievalEvalQueryResult `json:"results"`
+}
+
+func runEval(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex eval search [--fixture <path>] [--corpus <dir>] [--mode keyword|semantic|hybrid|rrf] [--embed <provider/model>] [--json] [--min-pass-rate N] [--min-avg-precision N] [--max-total-noisy-top3 N]")
+	}
+
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "search":
+		return runEvalSearch(args[1:])
+	default:
+		return fmt.Errorf("unknown eval subcommand %q (expected: search)", args[0])
+	}
+}
+
+func runEvalSearch(args []string) error {
+	fixturePath := "tests/fixtures/retrieval/ci-gate.json"
+	corpusPath := "tests/fixtures/retrieval/ci-corpus"
+	mode := "keyword"
+	embedFlag := "ollama/nomic-embed-text"
+	jsonOutput := false
+	minPassRate := 0.95
+	minAvgPrecision := 0.60
+	maxTotalNoisyTop3 := 2
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--fixture" && i+1 < len(args):
+			i++
+			fixturePath = args[i]
+		case strings.HasPrefix(args[i], "--fixture="):
+			fixturePath = strings.TrimPrefix(args[i], "--fixture=")
+		case args[i] == "--corpus" && i+1 < len(args):
+			i++
+			corpusPath = args[i]
+		case strings.HasPrefix(args[i], "--corpus="):
+			corpusPath = strings.TrimPrefix(args[i], "--corpus=")
+		case args[i] == "--mode" && i+1 < len(args):
+			i++
+			mode = args[i]
+		case strings.HasPrefix(args[i], "--mode="):
+			mode = strings.TrimPrefix(args[i], "--mode=")
+		case args[i] == "--embed" && i+1 < len(args):
+			i++
+			embedFlag = args[i]
+		case strings.HasPrefix(args[i], "--embed="):
+			embedFlag = strings.TrimPrefix(args[i], "--embed=")
+		case args[i] == "--json":
+			jsonOutput = true
+		case args[i] == "--min-pass-rate" && i+1 < len(args):
+			i++
+			v, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --min-pass-rate value: %s", args[i])
+			}
+			minPassRate = v
+		case strings.HasPrefix(args[i], "--min-pass-rate="):
+			v, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--min-pass-rate="), 64)
+			if err != nil {
+				return fmt.Errorf("invalid --min-pass-rate value: %s", args[i])
+			}
+			minPassRate = v
+		case args[i] == "--min-avg-precision" && i+1 < len(args):
+			i++
+			v, err := strconv.ParseFloat(args[i], 64)
+			if err != nil {
+				return fmt.Errorf("invalid --min-avg-precision value: %s", args[i])
+			}
+			minAvgPrecision = v
+		case strings.HasPrefix(args[i], "--min-avg-precision="):
+			v, err := strconv.ParseFloat(strings.TrimPrefix(args[i], "--min-avg-precision="), 64)
+			if err != nil {
+				return fmt.Errorf("invalid --min-avg-precision value: %s", args[i])
+			}
+			minAvgPrecision = v
+		case args[i] == "--max-total-noisy-top3" && i+1 < len(args):
+			i++
+			v, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --max-total-noisy-top3 value: %s", args[i])
+			}
+			maxTotalNoisyTop3 = v
+		case strings.HasPrefix(args[i], "--max-total-noisy-top3="):
+			v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--max-total-noisy-top3="))
+			if err != nil {
+				return fmt.Errorf("invalid --max-total-noisy-top3 value: %s", args[i])
+			}
+			maxTotalNoisyTop3 = v
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s", args[i])
+		default:
+			return fmt.Errorf("unexpected argument: %s", args[i])
+		}
+	}
+
+	fixtureBytes, err := os.ReadFile(fixturePath)
+	if err != nil {
+		return fmt.Errorf("reading fixture: %w", err)
+	}
+	var fixture retrievalEvalFixture
+	if err := json.Unmarshal(fixtureBytes, &fixture); err != nil {
+		return fmt.Errorf("parsing fixture: %w", err)
+	}
+
+	searchMode, err := search.ParseMode(mode)
+	if err != nil {
+		return err
+	}
+	if searchMode == search.ModeRRF {
+		searchMode = search.ModeHybrid
+	}
+
+	tmpDir, err := os.MkdirTemp("", "cortex-eval-search-")
+	if err != nil {
+		return fmt.Errorf("creating temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		return fmt.Errorf("opening temp store: %w", err)
+	}
+	ctx := context.Background()
+	engine := ingest.NewEngine(s)
+	opts := ingest.ImportOptions{Recursive: true}
+	if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+		applyExtractionRuntimeConfig(resolvedCfg)
+		opts.Denylist = resolvedCfg.Import.Denylist
+	}
+	result, err := engine.ImportFile(ctx, corpusPath, opts)
+	if err != nil {
+		s.Close()
+		return fmt.Errorf("importing corpus: %w", err)
+	}
+
+	var searchEngine *search.Engine
+	if searchMode == search.ModeKeyword {
+		searchEngine = search.NewEngine(s)
+	} else {
+		embedCfg, err := embed.ResolveEmbedConfig(embedFlag)
+		if err != nil {
+			s.Close()
+			return fmt.Errorf("configuring embedder: %w", err)
+		}
+		if embedCfg == nil {
+			s.Close()
+			return fmt.Errorf("no embedding configuration found")
+		}
+		embedder, err := embed.NewClient(embedCfg)
+		if err != nil {
+			s.Close()
+			return fmt.Errorf("creating embedder: %w", err)
+		}
+		embedEngine := ingest.NewEmbedEngine(s, embedder)
+		if _, err := embedEngine.EmbedMemories(ctx, ingest.EmbedOptions{BatchSize: 50, Workers: 2, AdaptiveBatching: true}); err != nil {
+			s.Close()
+			return fmt.Errorf("embedding eval corpus: %w", err)
+		}
+		searchEngine = search.NewEngineWithEmbedder(s, embedder)
+	}
+
+	report := retrievalEvalReport{
+		Fixture: fixture.Name,
+		Corpus:  corpusPath,
+		Mode:    string(searchMode),
+		Embed:   embedFlag,
+		Results: make([]retrievalEvalQueryResult, 0, len(fixture.Queries)),
+	}
+
+	totalPrecision := 0.0
+	for _, spec := range fixture.Queries {
+		limit := spec.Limit
+		if limit <= 0 {
+			limit = 8
+		}
+		k := spec.K
+		if k <= 0 {
+			k = 5
+		}
+		minHits := spec.MinHits
+		if minHits <= 0 {
+			minHits = 1
+		}
+
+		results, err := searchEngine.Search(ctx, spec.Query, search.Options{Mode: searchMode, Limit: limit})
+		if err != nil {
+			s.Close()
+			return fmt.Errorf("running eval query %q: %w", spec.Query, err)
+		}
+
+		noisyPositions := make([]int, 0)
+		for i, hit := range results {
+			if containsAnyString(hit.Content, fixture.NoiseMarkers) || containsAnyString(hit.SourceFile, fixture.NoiseMarkers) {
+				noisyPositions = append(noisyPositions, i+1)
+			}
+		}
+		noisyTop3 := 0
+		for _, pos := range noisyPositions {
+			if pos <= 3 {
+				noisyTop3++
+			}
+		}
+
+		relevant := 0
+		topK := results
+		if len(topK) > k {
+			topK = topK[:k]
+		}
+		for _, hit := range topK {
+			if containsAnyString(hit.Content, spec.ExpectedContainsAny) || containsAnyString(hit.SourceFile, spec.ExpectedContainsAny) {
+				relevant++
+			}
+		}
+		precisionAtK := float64(relevant) / math.Max(1, float64(k))
+		passed := len(results) >= minHits && noisyTop3 <= spec.MaxNoisyTop3 && precisionAtK >= spec.MinPrecisionAtK
+
+		item := retrievalEvalQueryResult{
+			Query:            spec.Query,
+			Hits:             len(results),
+			NoisyPositions:   noisyPositions,
+			NoisyTop3:        noisyTop3,
+			MaxNoisyTop3:     spec.MaxNoisyTop3,
+			K:                k,
+			ExpectedContains: spec.ExpectedContainsAny,
+			RelevantInTopK:   relevant,
+			PrecisionAtK:     precisionAtK,
+			MinPrecisionAtK:  spec.MinPrecisionAtK,
+			Passed:           passed,
+		}
+		if len(results) > 0 {
+			item.TopMemoryID = results[0].MemoryID
+		}
+		report.Results = append(report.Results, item)
+		report.Summary.Queries++
+		if passed {
+			report.Summary.Passed++
+		} else {
+			report.Summary.Failed++
+		}
+		report.Summary.TotalNoisyTop3 += noisyTop3
+		totalPrecision += precisionAtK
+	}
+	if report.Summary.Queries > 0 {
+		report.Summary.PassRate = float64(report.Summary.Passed) / float64(report.Summary.Queries)
+		report.Summary.AvgPrecisionAtK = totalPrecision / float64(report.Summary.Queries)
+	}
+
+	_ = result
+	s.Close()
+
+	if jsonOutput || !isTTY() {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			return err
+		}
+	} else {
+		fmt.Printf("Retrieval Eval: %s\n", report.Fixture)
+		fmt.Printf("  Corpus: %s\n", report.Corpus)
+		fmt.Printf("  Mode: %s\n", report.Mode)
+		fmt.Printf("  Queries: %d  Passed: %d  Failed: %d  Pass rate: %.1f%%\n", report.Summary.Queries, report.Summary.Passed, report.Summary.Failed, report.Summary.PassRate*100)
+		fmt.Printf("  Avg precision@k: %.2f  Total noisy top3: %d\n", report.Summary.AvgPrecisionAtK, report.Summary.TotalNoisyTop3)
+		for _, item := range report.Results {
+			status := "PASS"
+			if !item.Passed {
+				status = "FAIL"
+			}
+			fmt.Printf("  [%s] %s | hits=%d p@k=%.2f noisy_top3=%d\n", status, item.Query, item.Hits, item.PrecisionAtK, item.NoisyTop3)
+		}
+	}
+
+	if report.Summary.PassRate < minPassRate || report.Summary.AvgPrecisionAtK < minAvgPrecision || report.Summary.TotalNoisyTop3 > maxTotalNoisyTop3 {
+		return fmt.Errorf("retrieval eval gate failed: pass_rate=%.2f avg_precision=%.2f noisy_top3=%d", report.Summary.PassRate, report.Summary.AvgPrecisionAtK, report.Summary.TotalNoisyTop3)
+	}
+	return nil
+}
+
+func containsAnyString(text string, needles []string) bool {
+	lower := strings.ToLower(text)
+	for _, needle := range needles {
+		if needle != "" && strings.Contains(lower, strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
 }
 
 func runStale(args []string) error {
@@ -11201,7 +11619,7 @@ var cortexCommands = []string{
 	"extract", "classify", "reinforce", "supersede", "fact", "fact-history",
 	"stats", "health", "stale", "conflicts", "agents", "projects",
 	"graph", "cluster",
-	"reason", "bench",
+	"reason", "bench", "eval",
 	"cleanup", "optimize", "embed", "tag", "answer", "lifecycle", "beliefs", "suppress", "source-weight",
 	"connect",
 	"mcp", "doctor", "completion", "version", "help",
@@ -11315,6 +11733,7 @@ Knowledge Graph:
 LLM:
   reason <query>        LLM reasoning over memories (search → analyze)
   bench                 Benchmark LLM models for reasoning quality/speed
+  eval search           Deterministic retrieval eval over fixture corpus
 
 Maintenance:
   doctor                Health check (DB, embeddings, connectors, LLM keys)

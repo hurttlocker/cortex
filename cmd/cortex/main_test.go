@@ -2848,6 +2848,53 @@ func TestRunHealth_JSON(t *testing.T) {
 	if !strings.Contains(out, "\"memories\"") || !strings.Contains(out, "\"recommendations\"") {
 		t.Fatalf("unexpected health output: %q", out)
 	}
+	if !strings.Contains(out, "\"source_tiers\"") || !strings.Contains(out, "\"predicate_modes\"") {
+		t.Fatalf("expected source tier + predicate mode output, got %q", out)
+	}
+}
+
+func TestRunEvalSearch_JSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	corpusDir := filepath.Join(tmpDir, "corpus")
+	if err := os.MkdirAll(corpusDir, 0o755); err != nil {
+		t.Fatalf("mkdir corpus: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(corpusDir, "profile.md"), []byte("Q prefers Sonnet for coding tasks.\n"), 0o644); err != nil {
+		t.Fatalf("write corpus file: %v", err)
+	}
+	fixturePath := filepath.Join(tmpDir, "fixture.json")
+	fixture := `{
+	  "name": "test-fixture",
+	  "noise_markers": ["HEARTBEAT_OK"],
+	  "queries": [
+	    {
+	      "query": "Q prefers Sonnet for coding tasks",
+	      "limit": 5,
+	      "max_noisy_top3": 0,
+	      "k": 1,
+	      "expected_contains_any": ["sonnet", "coding"],
+	      "min_precision_at_k": 1.0,
+	      "min_hits": 1
+	    }
+	  ]
+	}`
+	if err := os.WriteFile(fixturePath, []byte(fixture), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runEval([]string{"search", "--fixture", fixturePath, "--corpus", corpusDir, "--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runEval search: %v\nout=%s", runErr, out)
+	}
+	if !strings.Contains(out, "\"pass_rate\"") || !strings.Contains(out, "\"test-fixture\"") {
+		t.Fatalf("unexpected eval JSON output: %q", out)
+	}
 }
 
 func TestRunSuppress_AddListRemove(t *testing.T) {

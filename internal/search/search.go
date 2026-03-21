@@ -690,7 +690,7 @@ func (e *Engine) SearchFacts(ctx context.Context, query string, opts Options) ([
 			SourceFile:    memory.SourceFile,
 			SourceLine:    memory.SourceLine,
 			SourceSection: memory.SourceSection,
-			SourceTier:    sourceTierForFile(memory.SourceFile),
+			SourceTier:    SourceTierForFile(memory.SourceFile),
 			Score:         score,
 			MatchType:     "fact",
 		})
@@ -1813,7 +1813,7 @@ func applySourceWeight(results []Result, boosts []SourceBoost, explain bool) []R
 }
 
 func sourceWeightForFile(sourceFile string) float64 {
-	switch sourceTierForFile(sourceFile) {
+	switch SourceTierForFile(sourceFile) {
 	case "core":
 		return sourceWeightManual * sourceWeightMemoryMD
 	case "journal":
@@ -1855,7 +1855,7 @@ func sourceWeightForFile(sourceFile string) float64 {
 	return weight
 }
 
-func sourceTierForFile(sourceFile string) string {
+func SourceTierForFile(sourceFile string) string {
 	lower := strings.ToLower(strings.TrimSpace(sourceFile))
 	switch {
 	case lower == "memory.md", strings.HasSuffix(lower, "/memory.md"):
@@ -2223,7 +2223,7 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 		r := Result{
 			Content:       sr.Memory.Content,
 			SourceFile:    sr.Memory.SourceFile,
-			SourceTier:    sourceTierForFile(sr.Memory.SourceFile),
+			SourceTier:    SourceTierForFile(sr.Memory.SourceFile),
 			SourceLine:    sr.Memory.SourceLine,
 			SourceSection: sr.Memory.SourceSection,
 			Project:       sr.Memory.Project,
@@ -2421,7 +2421,7 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 		r := Result{
 			Content:       sr.Memory.Content,
 			SourceFile:    sr.Memory.SourceFile,
-			SourceTier:    sourceTierForFile(sr.Memory.SourceFile),
+			SourceTier:    SourceTierForFile(sr.Memory.SourceFile),
 			SourceLine:    sr.Memory.SourceLine,
 			SourceSection: sr.Memory.SourceSection,
 			Project:       sr.Memory.Project,
@@ -2486,7 +2486,7 @@ func (e *Engine) searchSemanticHNSW(ctx context.Context, queryVec []float32, opt
 		r := Result{
 			Content:       mem.Content,
 			SourceFile:    mem.SourceFile,
-			SourceTier:    sourceTierForFile(mem.SourceFile),
+			SourceTier:    SourceTierForFile(mem.SourceFile),
 			SourceLine:    mem.SourceLine,
 			SourceSection: mem.SourceSection,
 			Project:       mem.Project,
