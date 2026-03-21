@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-03-21
+
+### 🧠 v1.3.0 — High-Signal Memory Autopilot
+
+`v1.3.0` turns Cortex from a powerful local memory store into a more opinionated, self-maintaining memory engine: import-time noise suppression, fact-first retrieval, stronger conflict resolution, operator hygiene controls, richer health reporting, and a deterministic retrieval eval gate.
+
+#### Search quality + import hygiene
+- **Import-time denylist** — configurable `import.denylist` rejects known noise before storage/extraction and tracks `denied_at_import_count`.
+- **Core source-aware ranking** — curated sources now outrank transcript/task noise by default, with source-tier semantics exposed in search and health surfaces.
+- **Fact-level search** — `cortex search --facts` returns direct fact hits for downstream agent recall and IDE/plugin use.
+- **Plugin fact-first recall** — OpenClaw plugin now defaults to fact-mode recall while retaining a memory-mode escape hatch.
+
+#### Lifecycle + conflict resolution
+- **Aggressive lifecycle mode** — `cortex lifecycle run --aggressive` resolves more conflicts with substring-specificity, age-gap, and lower confidence-delta heuristics.
+- **Extraction-time fuzzy dedup** — near-identical extracted facts reinforce existing facts instead of creating duplicates.
+- **Temporal/heartbeat suppression** — extracted fact storage now drops more ephemeral protocol/timestamp garbage before it enters the graph.
+- **Per-type decay defaults** — decay rates were rebalanced to better reflect how identity, preference, config, decision, state, and temporal facts actually age.
+
+#### Operator controls + observability
+- **`cortex health`** — actionable operational report with embedding coverage, lifecycle timestamps, source tiers, predicate modes, stale counts, and recommendations.
+- **Operator hygiene commands** — `cortex suppress`, `cortex source-weight`, and `cortex fact keep|drop` let users tune quality without hand-editing code.
+- **Quality profiles** — config `profile: personal|agent-ops|codebase|trading` seeds sane default denylists, suppressions, and source boosts.
+- **Predicate conflict policies** — store/runtime now understands single-valued vs multi-valued vs append-only predicate behavior.
+
+#### Eval + release confidence
+- **`cortex eval search`** — deterministic retrieval eval command over fixture corpus with CI-style thresholds and nonzero exit on regression.
+- **High-signal retrieval eval tests** — new fixtures ensure curated memory beats prompt echo/noise in ranking.
+- **Release-ready baseline** — this release packages the multi-pass search/lifecycle hygiene wave into a stable checkpoint for real-world feedback.
+
+#### Included Direct Mainline Commits
+- `749ac0a` — improve search quality and import hygiene
+- `2e92df4` — harden lifecycle conflict resolution
+- `c0cf4fc` — productize high-signal memory defaults
+- `0ba0cfd` — add operator hygiene controls
+- `ee48342` — add retrieval eval command
+
 ## [1.2.4] - 2026-03-11
 
 ### 🛠️ v1.2.4 — Operator Retrieval + Recall Packaging + Reliability Hardening

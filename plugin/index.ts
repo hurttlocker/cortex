@@ -257,7 +257,7 @@ function parseConfig(raw: unknown): CortexConfig {
 }
 
 const canonicalOpenClawSetupDoc = "docs/openclaw-happy-path.md";
-const minimumRecommendedCortexVersion = "1.2.4";
+const minimumRecommendedCortexVersion = "1.3.0";
 const knownPluginConfigKeys = new Set([
   "binaryPath", "dbPath", "embedProvider", "searchMode", "recallMode", "autoCapture", "autoRecall", "recallLimit", "recallBudgetChars", "minScore",
   "captureMaxChars", "extractFacts", "capture", "recallDedupe",

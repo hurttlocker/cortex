@@ -1,6 +1,6 @@
 {
   "name": "openclaw-cortex",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Cortex memory plugin for OpenClaw — local, free, observable AI memory with hybrid search and confidence decay",
   "type": "module",
   "main": "index.ts",
