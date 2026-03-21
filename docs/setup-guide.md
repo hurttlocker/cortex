@@ -34,12 +34,13 @@ ollama pull nomic-embed-text
 
 # one-time bootstrap
 cortex embed ollama/nomic-embed-text --batch-size 10
+cortex embed --status
 
 # recommended for 24/7 agents: refresh every 30 minutes
 cortex embed ollama/nomic-embed-text --watch --interval 30m --batch-size 10
 ```
 
-This generates vector embeddings for hybrid search (keyword + semantic) and keeps them fresh as new memories arrive.
+This generates vector embeddings for hybrid search (keyword + semantic) and keeps them fresh as new memories arrive. Once an embed provider is configured, new `cortex import` runs will also start a detached background embed worker automatically when needed.
 
 Verify:
 ```bash

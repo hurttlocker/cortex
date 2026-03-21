@@ -191,7 +191,7 @@ func (s *SQLiteStore) listMemoryIDsWithoutEmbeddings(ctx context.Context, source
 		query += " AND m.source_file = ?"
 		args = append(args, sourceFile)
 	}
-	query += " LIMIT ?"
+	query += " ORDER BY m.imported_at DESC, m.id DESC LIMIT ?"
 	args = append(args, limit)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)

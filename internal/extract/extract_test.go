@@ -335,6 +335,22 @@ func TestPipelineExtract_NonAutoCaptureKeepsBooleanState(t *testing.T) {
 	}
 }
 
+func TestPipelineExtract_DropsCurrentTemporalSubjects(t *testing.T) {
+	pipeline := NewPipeline()
+	text := "local: Friday, March 20th, 2026 — 8:48 PM\nutc: 2026-03-21 00:48 UTC"
+
+	facts, err := pipeline.Extract(context.Background(), text, map[string]string{
+		"source_file":    "/tmp/capture.md",
+		"source_section": "Current time",
+	})
+	if err != nil {
+		t.Fatalf("Extract error: %v", err)
+	}
+	if len(facts) != 0 {
+		t.Fatalf("expected current-time section facts to be dropped, got %+v", facts)
+	}
+}
+
 func TestNormalizeSubject_PreservesStructuredHierarchy(t *testing.T) {
 	subj := normalizeSubject("COMPLETED TODAY > Trading Systems", false)
 	if subj != "COMPLETED TODAY > Trading Systems" {

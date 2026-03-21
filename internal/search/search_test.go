@@ -1518,6 +1518,51 @@ func TestApplyLexicalOverlapFilter(t *testing.T) {
 	}
 }
 
+func TestDedupeSameSourceOverlap(t *testing.T) {
+	source := "/tmp/daily-log.md"
+	results := []Result{
+		{
+			MemoryID:   1,
+			SourceFile: source,
+			Content:    "release rollout alpha beta gamma delta epsilon zeta eta theta risk review",
+			Score:      0.95,
+		},
+		{
+			MemoryID:   2,
+			SourceFile: source,
+			Content:    "release rollout alpha beta gamma delta epsilon zeta eta theta launch notes",
+			Score:      0.91,
+		},
+		{
+			MemoryID:   3,
+			SourceFile: "/tmp/docs.md",
+			Content:    "release rollout checklist for docs and onboarding handoff",
+			Score:      0.75,
+		},
+		{
+			MemoryID:   4,
+			SourceFile: "/tmp/comms.md",
+			Content:    "release rollout customer communication timeline and approvals",
+			Score:      0.72,
+		},
+	}
+
+	filtered := dedupeSameSourceOverlap(results, false)
+	if len(filtered) != 3 {
+		t.Fatalf("expected dedupe to keep 3 distinct results, got %d", len(filtered))
+	}
+
+	sameSourceCount := 0
+	for _, r := range filtered {
+		if r.SourceFile == source {
+			sameSourceCount++
+		}
+	}
+	if sameSourceCount != 1 {
+		t.Fatalf("expected same-source overlap dedupe to keep 1 result, got %d", sameSourceCount)
+	}
+}
+
 func TestDetectIntentBucket(t *testing.T) {
 	if got := detectIntentBucket("Crypto Session Range Breakout V23"); got != "trading" {
 		t.Fatalf("expected trading bucket, got %q", got)

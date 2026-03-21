@@ -142,3 +142,36 @@ func TestStoreExtractedFact_SkipsDuplicateObjectAndSupersedesConflicts(t *testin
 		t.Fatalf("expected exactly one active 'running' fact, got %d", activeRunning)
 	}
 }
+
+func TestStoreExtractedFact_DropsDeniedTemporalSubject(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	memoryID, err := s.AddMemory(ctx, &store.Memory{Content: "Current time: Friday", SourceFile: "clock.md"})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	factID, stored, err := StoreExtractedFact(ctx, s, &store.Fact{
+		MemoryID:   memoryID,
+		Subject:    "Current time",
+		Predicate:  "value",
+		Object:     "Friday, March 20th, 2026 — 8:48 PM",
+		FactType:   "temporal",
+		Confidence: 0.9,
+	})
+	if err != nil {
+		t.Fatalf("StoreExtractedFact: %v", err)
+	}
+	if stored {
+		t.Fatalf("expected denied temporal subject to be skipped, got fact id=%d", factID)
+	}
+
+	facts, err := s.ListFacts(ctx, store.ListOpts{Limit: 10, IncludeSuperseded: true})
+	if err != nil {
+		t.Fatalf("ListFacts: %v", err)
+	}
+	if len(facts) != 0 {
+		t.Fatalf("expected no stored facts, got %+v", facts)
+	}
+}

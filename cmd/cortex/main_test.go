@@ -840,6 +840,8 @@ func (m *mockCommandEmbedder) EmbedBatch(ctx context.Context, texts []string) ([
 
 func (m *mockCommandEmbedder) Dimensions() int { return m.dims }
 
+func (m *mockCommandEmbedder) HealthCheck(ctx context.Context) error { return nil }
+
 func TestRunEmbedSource_Help(t *testing.T) {
 	var (
 		runErr error
@@ -1004,6 +1006,120 @@ func TestParseEmbedArgs_EnvFallback(t *testing.T) {
 	_, err := parseEmbedArgs([]string{"--watch"})
 	if err != nil {
 		t.Fatalf("expected env fallback to allow missing positional provider: %v", err)
+	}
+}
+
+func TestParseEmbedArgs_StatusDoesNotRequireProvider(t *testing.T) {
+	opts, err := parseEmbedArgs([]string{"--status"})
+	if err != nil {
+		t.Fatalf("parseEmbedArgs --status: %v", err)
+	}
+	if !opts.status {
+		t.Fatal("expected status=true")
+	}
+	if opts.embedFlag != "" {
+		t.Fatalf("expected empty embedFlag for status, got %q", opts.embedFlag)
+	}
+}
+
+func TestRunEmbed_StatusReportsCoverage(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	oldDBPath := globalDBPath
+	oldReadOnly := globalReadOnly
+	globalDBPath = dbPath
+	globalReadOnly = false
+	t.Cleanup(func() {
+		globalDBPath = oldDBPath
+		globalReadOnly = oldReadOnly
+	})
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	mem1, err := s.AddMemory(ctx, &store.Memory{Content: "alpha", SourceFile: "a.md"})
+	if err != nil {
+		t.Fatalf("AddMemory mem1: %v", err)
+	}
+	if _, err := s.AddMemory(ctx, &store.Memory{Content: "beta", SourceFile: "b.md"}); err != nil {
+		t.Fatalf("AddMemory mem2: %v", err)
+	}
+	if err := s.AddEmbedding(ctx, mem1, []float32{1, 0, 0}); err != nil {
+		t.Fatalf("AddEmbedding: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runEmbed([]string{"--status"})
+	})
+	if runErr != nil {
+		t.Fatalf("runEmbed --status: %v", runErr)
+	}
+	if !strings.Contains(out, "memories=2") {
+		t.Fatalf("expected memory count in status output, got %q", out)
+	}
+	if !strings.Contains(out, "embeddings=1") {
+		t.Fatalf("expected embedding count in status output, got %q", out)
+	}
+	if !strings.Contains(out, "remaining=1") {
+		t.Fatalf("expected remaining count in status output, got %q", out)
+	}
+}
+
+func TestMaybeStartBackgroundEmbedWorker_StartsWatchProcess(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	oldDBPath := globalDBPath
+	oldReadOnly := globalReadOnly
+	oldFactory := newEmbedClient
+	oldSpawner := spawnDetachedBackgroundEmbed
+	globalDBPath = dbPath
+	globalReadOnly = false
+	t.Cleanup(func() {
+		globalDBPath = oldDBPath
+		globalReadOnly = oldReadOnly
+		newEmbedClient = oldFactory
+		spawnDetachedBackgroundEmbed = oldSpawner
+	})
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+
+	newEmbedClient = func(cfg *embed.EmbedConfig) (embed.Embedder, error) {
+		return &mockCommandEmbedder{dims: 8}, nil
+	}
+
+	var spawnedArgs []string
+	spawnDetachedBackgroundEmbed = func(args []string) error {
+		spawnedArgs = append([]string(nil), args...)
+		return nil
+	}
+
+	msg := maybeStartBackgroundEmbedWorker("ollama/nomic-embed-text")
+	if !strings.Contains(msg, "started") {
+		t.Fatalf("expected worker start message, got %q", msg)
+	}
+	if len(spawnedArgs) == 0 {
+		t.Fatal("expected background worker to be spawned")
+	}
+	joined := strings.Join(spawnedArgs, " ")
+	for _, want := range []string{"embed", "ollama/nomic-embed-text", "--watch", "--interval", "--batch-size"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("spawned args missing %q: %v", want, spawnedArgs)
+		}
 	}
 }
 
@@ -2618,6 +2734,77 @@ func TestRunSearch_UnknownMode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "badmode") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunCleanup_PrunesTemporalNoiseFacts(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	oldDBPath := globalDBPath
+	oldReadOnly := globalReadOnly
+	globalDBPath = dbPath
+	globalReadOnly = false
+	t.Cleanup(func() {
+		globalDBPath = oldDBPath
+		globalReadOnly = oldReadOnly
+	})
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memNoise, err := s.AddMemory(ctx, &store.Memory{Content: "current time value with enough context to survive base cleanup", SourceFile: "noise.md"})
+	if err != nil {
+		t.Fatalf("AddMemory noise: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:   memNoise,
+		Subject:    "Current time",
+		Predicate:  "value",
+		Object:     "Friday, March 20th, 2026 — 8:48 PM",
+		FactType:   "temporal",
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("AddFact noise: %v", err)
+	}
+	memKeep, err := s.AddMemory(ctx, &store.Memory{Content: "service is running with enough context to survive base cleanup", SourceFile: "keep.md"})
+	if err != nil {
+		t.Fatalf("AddMemory keep: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:   memKeep,
+		Subject:    "service",
+		Predicate:  "status",
+		Object:     "running",
+		FactType:   "state",
+		Confidence: 0.9,
+	}); err != nil {
+		t.Fatalf("AddFact keep: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+
+	if err := runCleanup([]string{"--prune-temporal-noise"}); err != nil {
+		t.Fatalf("runCleanup: %v", err)
+	}
+
+	s, err = store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("Reopen store: %v", err)
+	}
+	defer s.Close()
+
+	facts, err := s.ListFacts(ctx, store.ListOpts{Limit: 20, IncludeSuperseded: true})
+	if err != nil {
+		t.Fatalf("ListFacts: %v", err)
+	}
+	if len(facts) != 1 {
+		t.Fatalf("expected 1 fact after pruning, got %d", len(facts))
+	}
+	if facts[0].Subject != "service" {
+		t.Fatalf("expected non-noise fact to remain, got %+v", facts[0])
 	}
 }
 

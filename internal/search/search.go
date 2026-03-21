@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -48,6 +49,9 @@ const (
 	maxLexicalFilterSuppressedReport   = 3
 	intentPriorStrongBoost             = 1.15
 	intentPriorMildBoost               = 1.07
+	searchDedupeOverlapThreshold       = 0.60
+	searchDedupeShingleSize            = 5
+	searchDedupeMinExpandedLimit       = 25
 )
 
 var lowSignalIntentQueries = map[string]struct{}{
@@ -83,6 +87,8 @@ var operatorCueTokens = map[string]struct{}{
 	"heartbeat": {}, "workflow": {}, "operator": {}, "summary": {}, "audit": {}, "session": {},
 	"assistant": {}, "user": {}, "system": {}, "format": {}, "output": {}, "current": {}, "time": {},
 }
+
+var searchDedupeTokenSplitRE = regexp.MustCompile(`[^a-z0-9]+`)
 
 var (
 	tradingIntentTokens = map[string]struct{}{
@@ -182,6 +188,7 @@ type Options struct {
 	SourceBoosts      []SourceBoost // Optional score boosts by source prefix
 	IncludeSuperseded bool          // Include memories backed only by superseded facts
 	Explain           bool          // Attach explainability/provenance payloads to results
+	DisableDedupe     bool          // Keep overlapping same-source results instead of collapsing them
 }
 
 // Default minimum score thresholds by mode.
@@ -455,6 +462,19 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	if opts.Limit <= 0 {
 		opts.Limit = requestedLimit
 	}
+	expandedLimit := opts.Limit
+	if !opts.DisableDedupe {
+		candidate := requestedLimit * 5
+		if candidate < searchDedupeMinExpandedLimit {
+			candidate = searchDedupeMinExpandedLimit
+		}
+		if candidate > 1000 {
+			candidate = 1000
+		}
+		if candidate > expandedLimit {
+			expandedLimit = candidate
+		}
+	}
 	// When source filter is set, search a wider candidate set first,
 	// then apply the hard source filter and trim back to requested limit.
 	if strings.TrimSpace(opts.Source) != "" {
@@ -465,9 +485,12 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		if expanded > 500 {
 			expanded = 500
 		}
-		if expanded > opts.Limit {
-			opts.Limit = expanded
+		if expanded > expandedLimit {
+			expandedLimit = expanded
 		}
+	}
+	if expandedLimit > opts.Limit {
+		opts.Limit = expandedLimit
 	}
 
 	intent, intentErr := normalizeIntent(opts.Intent)
@@ -545,6 +568,10 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 
 	if opts.Explain {
 		attachQueryShapeExplain(results, queryShape)
+	}
+
+	if !opts.DisableDedupe {
+		results = dedupeSameSourceOverlap(results, opts.Explain)
 	}
 
 	if len(results) > requestedLimit {
@@ -1374,6 +1401,141 @@ func filterByIntent(results []Result, intent string) []Result {
 		}
 	}
 	return filtered
+}
+
+type contentOverlapFingerprint struct {
+	tokens   map[string]struct{}
+	shingles map[string]struct{}
+}
+
+func dedupeSameSourceOverlap(results []Result, explain bool) []Result {
+	if len(results) < 2 {
+		return results
+	}
+
+	filtered := make([]Result, 0, len(results))
+	filteredSources := make([]string, 0, len(results))
+	filteredPrints := make([]contentOverlapFingerprint, 0, len(results))
+	suppressedBySource := make(map[string]int)
+
+	for _, result := range results {
+		sourceKey := strings.ToLower(strings.TrimSpace(result.SourceFile))
+		if sourceKey == "" {
+			filtered = append(filtered, result)
+			filteredSources = append(filteredSources, sourceKey)
+			filteredPrints = append(filteredPrints, buildContentOverlapFingerprint(result.Content))
+			continue
+		}
+
+		candidatePrint := buildContentOverlapFingerprint(result.Content)
+		duplicate := false
+		for i := range filtered {
+			if filteredSources[i] != sourceKey {
+				continue
+			}
+			if contentOverlapCoefficient(filteredPrints[i], candidatePrint) > searchDedupeOverlapThreshold {
+				duplicate = true
+				suppressedBySource[sourceKey]++
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+
+		filtered = append(filtered, result)
+		filteredSources = append(filteredSources, sourceKey)
+		filteredPrints = append(filteredPrints, candidatePrint)
+	}
+
+	if explain {
+		for i := range filtered {
+			sourceKey := filteredSources[i]
+			if sourceKey == "" || suppressedBySource[sourceKey] == 0 {
+				continue
+			}
+			ensureExplain(&filtered[i])
+			msg := fmt.Sprintf("same-source dedupe collapsed %d overlapping result(s)", suppressedBySource[sourceKey])
+			if filtered[i].Explain.Why == "" {
+				filtered[i].Explain.Why = msg
+			} else {
+				filtered[i].Explain.Why += "; " + msg
+			}
+			suppressedBySource[sourceKey] = 0
+		}
+	}
+
+	return filtered
+}
+
+func buildContentOverlapFingerprint(content string) contentOverlapFingerprint {
+	normalized := strings.ToLower(strings.TrimSpace(content))
+	if normalized == "" {
+		return contentOverlapFingerprint{}
+	}
+
+	rawTokens := searchDedupeTokenSplitRE.Split(normalized, -1)
+	tokens := make([]string, 0, len(rawTokens))
+	tokenSet := make(map[string]struct{}, len(rawTokens))
+	for _, token := range rawTokens {
+		if len(token) < 2 {
+			continue
+		}
+		tokens = append(tokens, token)
+		tokenSet[token] = struct{}{}
+	}
+
+	if len(tokens) == 0 {
+		return contentOverlapFingerprint{}
+	}
+
+	fingerprint := contentOverlapFingerprint{tokens: tokenSet}
+	if len(tokens) < searchDedupeShingleSize {
+		return fingerprint
+	}
+
+	shingles := make(map[string]struct{}, len(tokens)-searchDedupeShingleSize+1)
+	for i := 0; i <= len(tokens)-searchDedupeShingleSize; i++ {
+		shingle := strings.Join(tokens[i:i+searchDedupeShingleSize], " ")
+		shingles[shingle] = struct{}{}
+	}
+	fingerprint.shingles = shingles
+	return fingerprint
+}
+
+func contentOverlapCoefficient(a, b contentOverlapFingerprint) float64 {
+	left := a.shingles
+	right := b.shingles
+	if len(left) == 0 || len(right) == 0 {
+		left = a.tokens
+		right = b.tokens
+	}
+	if len(left) == 0 || len(right) == 0 {
+		return 0
+	}
+
+	intersection := 0
+	if len(left) > len(right) {
+		left, right = right, left
+	}
+	for token := range left {
+		if _, ok := right[token]; ok {
+			intersection++
+		}
+	}
+	if intersection == 0 {
+		return 0
+	}
+
+	denominator := len(left)
+	if len(right) < denominator {
+		denominator = len(right)
+	}
+	if denominator == 0 {
+		return 0
+	}
+
+	return float64(intersection) / float64(denominator)
 }
 
 func isMemorySource(sourceFile string) bool {

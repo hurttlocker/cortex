@@ -425,6 +425,60 @@ func (s *SQLiteStore) getFactsByMemoryIDs(ctx context.Context, memoryIDs []int64
 	return facts, rows.Err()
 }
 
+// DeleteFactsByIDs removes a specific set of facts and their dependent rows.
+// It is intentionally scoped to SQLiteStore because it is used by maintenance
+// paths that need direct, destructive cleanup.
+func (s *SQLiteStore) DeleteFactsByIDs(ctx context.Context, factIDs []int64) (int64, error) {
+	if len(factIDs) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin fact deletion tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	placeholders := make([]string, len(factIDs))
+	args := make([]any, len(factIDs))
+	for i, id := range factIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	inClause := strings.Join(placeholders, ",")
+
+	cleanupStatements := []struct {
+		query string
+		args  []any
+	}{
+		{fmt.Sprintf(`UPDATE facts SET superseded_by = NULL WHERE superseded_by IN (%s)`, inClause), args},
+		{fmt.Sprintf(`DELETE FROM alerts WHERE fact_id IN (%s) OR related_fact_id IN (%s)`, inClause, inClause), append(append([]any{}, args...), args...)},
+		{fmt.Sprintf(`DELETE FROM fact_accesses_v1 WHERE fact_id IN (%s)`, inClause), args},
+		{fmt.Sprintf(`DELETE FROM fact_edges_v1 WHERE source_fact_id IN (%s) OR target_fact_id IN (%s)`, inClause, inClause), append(append([]any{}, args...), args...)},
+		{fmt.Sprintf(`DELETE FROM fact_cooccurrence_v1 WHERE fact_id_a IN (%s) OR fact_id_b IN (%s)`, inClause, inClause), append(append([]any{}, args...), args...)},
+	}
+
+	for _, stmt := range cleanupStatements {
+		if _, err := tx.ExecContext(ctx, stmt.query, stmt.args...); err != nil {
+			return 0, fmt.Errorf("cleaning dependent rows for fact delete: %w", err)
+		}
+	}
+
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM facts WHERE id IN (%s)`, inClause), args...)
+	if err != nil {
+		return 0, fmt.Errorf("deleting facts by ids: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("checking deleted fact rows: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit fact deletion tx: %w", err)
+	}
+	return deleted, nil
+}
+
 // DeleteFactsByMemoryID removes all facts linked to a memory.
 // Returns number of rows deleted.
 func (s *SQLiteStore) DeleteFactsByMemoryID(ctx context.Context, memoryID int64) (int64, error) {

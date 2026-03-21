@@ -557,6 +557,12 @@ func runImport(args []string) error {
 		opts.Metadata = meta
 	}
 
+	if embedFlag != "" {
+		if _, _, err := resolveBackgroundEmbedConfig(embedFlag, true); err != nil {
+			return err
+		}
+	}
+
 	if len(paths) == 0 {
 		return fmt.Errorf("no path specified")
 	}
@@ -711,17 +717,12 @@ func runImport(args []string) error {
 		}
 	}
 
-	// Run embedding if requested
-	if embedFlag != "" && !opts.DryRun && totalResult.MemoriesNew > 0 {
-		fmt.Println("\nGenerating embeddings...")
-		embedStats, err := runEmbeddingOnImportedMemories(ctx, s, embedFlag, totalResult.NewMemoryIDs)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  Embedding error: %v\n", err)
-		} else {
-			fmt.Printf("  Embeddings generated: %d\n", embedStats.EmbeddingsAdded)
-			if embedStats.HNSWRebuilt {
-				fmt.Printf("  HNSW rebuilt: %d vectors\n", embedStats.HNSWVectorCount)
-			}
+	// Newly imported memories are implicitly queued for embedding because they have
+	// no embedding row yet. Start or reuse the detached worker to process them
+	// asynchronously so import stays non-blocking.
+	if !opts.DryRun && totalResult.MemoriesNew > 0 {
+		if msg := maybeStartBackgroundEmbedWorker(embedFlag); msg != "" {
+			fmt.Fprintf(os.Stderr, "%s\n", msg)
 		}
 	}
 
@@ -766,6 +767,7 @@ func runSearch(args []string) error {
 	showMetadata := false
 	explain := false
 	includeSuperseded := false
+	dedupe := true
 	expandFlag := false
 	llmFlag := ""
 
@@ -844,6 +846,10 @@ func runSearch(args []string) error {
 			explain = true
 		case args[i] == "--include-superseded":
 			includeSuperseded = true
+		case args[i] == "--dedupe":
+			dedupe = true
+		case args[i] == "--no-dedupe":
+			dedupe = false
 		case args[i] == "--expand":
 			expandFlag = true
 		case args[i] == "--llm" && i+1 < len(args):
@@ -904,7 +910,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--explain] [--json] [--agent <id>] [--channel <name>] [--session-key <key>] [--boost-agent <id>] [--boost-channel <name>] [--boost-session-key <key>] [--source <provider>] [--intent memory|import|connector|all] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--dedupe|--no-dedupe] [--explain] [--json] [--agent <id>] [--channel <name>] [--session-key <key>] [--boost-agent <id>] [--boost-channel <name>] [--boost-session-key <key>] [--source <provider>] [--intent memory|import|connector|all] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 	if limit < 1 || limit > 1000 {
 		return fmt.Errorf("--limit must be between 1 and 1000")
@@ -1008,6 +1014,7 @@ func runSearch(args []string) error {
 		SourceBoosts:      parsedSourceBoosts,
 		IncludeSuperseded: includeSuperseded,
 		Explain:           explain,
+		DisableDedupe:     !dedupe,
 		BoostAgent:        boostAgentFlag,
 		BoostChannel:      boostChannelFlag,
 		BoostSessionKey:   boostSessionKeyFlag,
@@ -3774,6 +3781,9 @@ func runEnrichmentOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 				DecayRate:   ef.DecayRate,
 				SourceQuote: ef.SourceQuote,
 			}
+			if !ingest.ShouldStoreExtractedFact(fact) {
+				continue
+			}
 
 			factID, err := s.AddFact(ctx, fact)
 			if err != nil {
@@ -5642,6 +5652,7 @@ Notes:
 func runCleanup(args []string) error {
 	dryRun := false
 	purgeNoise := false
+	pruneTemporalNoise := false
 	dedupFacts := false
 	resolveConflicts := false
 	conflictThreshold := 0.85
@@ -5653,6 +5664,8 @@ func runCleanup(args []string) error {
 			dryRun = true
 		case args[i] == "--purge-noise":
 			purgeNoise = true
+		case args[i] == "--prune-temporal-noise":
+			pruneTemporalNoise = true
 		case args[i] == "--dedup-facts":
 			dedupFacts = true
 		case args[i] == "--resolve-conflicts":
@@ -5690,7 +5703,7 @@ func runCleanup(args []string) error {
 			agentFlag = strings.TrimPrefix(args[i], "--agent=")
 		default:
 			if strings.HasPrefix(args[i], "-") {
-				return fmt.Errorf("unknown flag: %s\nUsage: cortex cleanup [--dry-run] [--purge-noise] [--dedup-facts] [--resolve-conflicts] [--threshold 0.85] [--dedup-threshold 0.90] [--agent <id>]", args[i])
+				return fmt.Errorf("unknown flag: %s\nUsage: cortex cleanup [--dry-run] [--purge-noise] [--prune-temporal-noise] [--dedup-facts] [--resolve-conflicts] [--threshold 0.85] [--dedup-threshold 0.90] [--agent <id>]", args[i])
 			}
 			return fmt.Errorf("unexpected argument: %s", args[i])
 		}
@@ -5724,17 +5737,21 @@ func runCleanup(args []string) error {
 	_ = memAgentArgs // used below in queries
 	_ = factAgentArgs
 
-	if dryRun && !purgeNoise && !dedupFacts && !resolveConflicts {
+	if dryRun && !purgeNoise && !pruneTemporalNoise && !dedupFacts && !resolveConflicts {
 		// Count what would be cleaned without deleting (#57)
-		var shortCount, numericCount, factsCount int
+		var shortCount, numericCount, factsCount, temporalNoiseCount int
 		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories WHERE LENGTH(content) < 20 AND deleted_at IS NULL`+memAgentWhere, memAgentArgs...).Scan(&shortCount)
 		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM memories WHERE content GLOB '[0-9]*' AND content NOT GLOB '*[^0-9]*' AND deleted_at IS NULL`+memAgentWhere, memAgentArgs...).Scan(&numericCount)
 		_ = ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM facts WHERE (subject IS NULL OR subject = '')`+factAgentWhere, factAgentArgs...).Scan(&factsCount)
+		if ids, err := listTemporalNoiseFactIDs(ctx, ss, agentFlag); err == nil {
+			temporalNoiseCount = len(ids)
+		}
 
 		fmt.Printf("Cleanup dry run (no changes made):\n")
 		fmt.Printf("  Short memories to delete:   %d\n", shortCount)
 		fmt.Printf("  Numeric memories to delete: %d\n", numericCount)
 		fmt.Printf("  Headless facts to delete:   %d\n", factsCount)
+		fmt.Printf("  Temporal noise facts:       %d\n", temporalNoiseCount)
 		return nil
 	}
 
@@ -5801,6 +5818,20 @@ func runCleanup(args []string) error {
 					pair.Similarity,
 				)
 			}
+		}
+	}
+
+	if pruneTemporalNoise || purgeNoise {
+		pruned, err := pruneTemporalNoiseFacts(ctx, ss, dryRun, agentFlag)
+		if err != nil {
+			return fmt.Errorf("pruning temporal noise facts: %w", err)
+		}
+		if dryRun {
+			fmt.Printf("\nTemporal noise prune:\n")
+			fmt.Printf("  Facts to purge: %d (dry run)\n", pruned)
+		} else {
+			fmt.Printf("\nTemporal noise prune:\n")
+			fmt.Printf("  Facts purged: %d\n", pruned)
 		}
 	}
 
@@ -5889,6 +5920,51 @@ func runCleanup(args []string) error {
 	}
 
 	return nil
+}
+
+func temporalNoiseFactWhereClause() string {
+	return `(
+		LOWER(TRIM(COALESCE(subject, ''))) IN ('current time', 'current date', 'current_time')
+		OR LOWER(TRIM(COALESCE(subject, ''))) LIKE 'current%timeout%'
+		OR LOWER(TRIM(COALESCE(subject, ''))) LIKE 'current%date%'
+	)`
+}
+
+func listTemporalNoiseFactIDs(ctx context.Context, ss *store.SQLiteStore, agentFlag string) ([]int64, error) {
+	query := `SELECT id FROM facts WHERE ` + temporalNoiseFactWhereClause()
+	args := []any{}
+	if agentFlag != "" {
+		query += ` AND agent_id = ?`
+		args = append(args, agentFlag)
+	}
+	query += ` ORDER BY id DESC`
+
+	rows, err := ss.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func pruneTemporalNoiseFacts(ctx context.Context, ss *store.SQLiteStore, dryRun bool, agentFlag string) (int64, error) {
+	ids, err := listTemporalNoiseFactIDs(ctx, ss, agentFlag)
+	if err != nil {
+		return 0, err
+	}
+	if dryRun || len(ids) == 0 {
+		return int64(len(ids)), nil
+	}
+	return ss.DeleteFactsByIDs(ctx, ids)
 }
 
 // purgeNoiseFacts deletes facts that fail the governor's quality filters.
@@ -6295,9 +6371,11 @@ func runIndex(args []string) error {
 var errEmbedLockHeld = errors.New("embed lock is already held")
 
 const (
-	defaultEmbedBatchSize = 10
-	defaultEmbedInterval  = 30 * time.Minute
-	embedLockStaleAfter   = 12 * time.Hour
+	defaultEmbedBatchSize       = 10
+	defaultEmbedInterval        = 30 * time.Minute
+	defaultAutoEmbedInterval    = 2 * time.Minute
+	defaultAutoEmbedHealthCheck = 5 * time.Second
+	embedLockStaleAfter         = 12 * time.Hour
 )
 
 type embedCmdOptions struct {
@@ -6307,6 +6385,7 @@ type embedCmdOptions struct {
 	forceReembed bool
 	watch        bool
 	interval     time.Duration
+	status       bool
 }
 
 type embedRunLock struct {
@@ -6324,10 +6403,36 @@ var newEmbedClient = func(cfg *embed.EmbedConfig) (embed.Embedder, error) {
 	return embed.NewClient(cfg)
 }
 
+var spawnDetachedBackgroundEmbed = func(args []string) error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolving cortex executable: %w", err)
+	}
+
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", os.DevNull, err)
+	}
+	defer devNull.Close()
+
+	cmd := exec.Command(exePath, args...)
+	cmd.Stdin = nil
+	cmd.Stdout = devNull
+	cmd.Stderr = devNull
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
 func runEmbed(args []string) error {
 	opts, err := parseEmbedArgs(args)
 	if err != nil {
 		return err
+	}
+
+	if opts.status {
+		return runEmbedStatus()
 	}
 
 	lockPath := getEmbedLockPath()
@@ -6448,6 +6553,73 @@ Examples:
 	return nil
 }
 
+func runEmbedStatus() error {
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	stats, err := s.Stats(ctx)
+	if err != nil {
+		return fmt.Errorf("loading store stats: %w", err)
+	}
+
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("embed status requires SQLiteStore backend")
+	}
+
+	var remaining int64
+	err = sqlStore.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM memories m
+		LEFT JOIN embeddings e ON e.memory_id = m.id
+		WHERE m.deleted_at IS NULL
+		  AND e.memory_id IS NULL
+	`).Scan(&remaining)
+	if err != nil {
+		return fmt.Errorf("counting memories without embeddings: %w", err)
+	}
+
+	dims := 0
+	if stats.EmbeddingCount > 0 {
+		if got, err := s.GetEmbeddingDimensions(ctx); err == nil {
+			dims = got
+		}
+	}
+
+	coverage := 0.0
+	if stats.MemoryCount > 0 {
+		coverage = (float64(stats.EmbeddingCount) / float64(stats.MemoryCount)) * 100
+	}
+
+	running := isEmbedWorkerRunning()
+	if !isTTY() {
+		fmt.Printf("embed_status memories=%d embeddings=%d remaining=%d coverage_pct=%.2f worker_running=%t dimensions=%d\n",
+			stats.MemoryCount,
+			stats.EmbeddingCount,
+			remaining,
+			coverage,
+			running,
+			dims,
+		)
+		return nil
+	}
+
+	fmt.Println("Embedding status:")
+	fmt.Printf("  Memories:        %d\n", stats.MemoryCount)
+	fmt.Printf("  Embedded:        %d\n", stats.EmbeddingCount)
+	fmt.Printf("  Remaining:       %d\n", remaining)
+	fmt.Printf("  Coverage:        %.1f%%\n", coverage)
+	if dims > 0 {
+		fmt.Printf("  Dimensions:      %d\n", dims)
+	}
+	fmt.Printf("  Worker running:  %t\n", running)
+	return nil
+}
+
 func parseEmbedArgs(args []string) (embedCmdOptions, error) {
 	opts := embedCmdOptions{
 		batchSize: defaultEmbedBatchSize,
@@ -6456,6 +6628,8 @@ func parseEmbedArgs(args []string) (embedCmdOptions, error) {
 
 	for i := 0; i < len(args); i++ {
 		switch {
+		case args[i] == "--status":
+			opts.status = true
 		case args[i] == "--batch-size" && i+1 < len(args):
 			i++
 			n, err := strconv.Atoi(args[i])
@@ -6502,11 +6676,17 @@ func parseEmbedArgs(args []string) (embedCmdOptions, error) {
 	if opts.interval <= 0 {
 		return opts, fmt.Errorf("--interval must be > 0")
 	}
+	if opts.status {
+		if opts.embedFlag != "" {
+			return opts, fmt.Errorf("--status does not accept a provider/model argument")
+		}
+		return opts, nil
+	}
 	if opts.watch && opts.forceReembed {
 		return opts, fmt.Errorf("--watch cannot be used with --force")
 	}
 	if opts.embedFlag == "" && os.Getenv("CORTEX_EMBED") == "" {
-		return opts, fmt.Errorf("usage: cortex embed [provider/model] [--watch] [--interval 30m] [--batch-size N] [--force]\n       (or set CORTEX_EMBED)")
+		return opts, fmt.Errorf("usage: cortex embed [provider/model] [--watch] [--interval 30m] [--batch-size N] [--force]\n       cortex embed --status\n       (or set CORTEX_EMBED)")
 	}
 
 	return opts, nil
@@ -6701,6 +6881,97 @@ func newEmbedEngineForFlag(s store.Store, embedFlag string) (*ingest.EmbedEngine
 	return ingest.NewEmbedEngine(s, embedder), nil
 }
 
+func resolveBackgroundEmbedConfig(embedFlag string, explicit bool) (*embed.EmbedConfig, string, error) {
+	embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
+	if err != nil {
+		if explicit {
+			return nil, "", fmt.Errorf("configuring embedder: %w", err)
+		}
+		return nil, "", nil
+	}
+	if embedConfig == nil {
+		return nil, "", nil
+	}
+	if err := embedConfig.Validate(); err != nil {
+		if explicit {
+			return nil, "", fmt.Errorf("invalid embedding configuration: %w", err)
+		}
+		return nil, "", nil
+	}
+	return embedConfig, fmt.Sprintf("%s/%s", embedConfig.Provider, embedConfig.Model), nil
+}
+
+func resolveAutoEmbedBatchSize() int {
+	raw := strings.TrimSpace(os.Getenv("CORTEX_EMBED_BATCH_SIZE"))
+	if raw == "" {
+		return defaultEmbedBatchSize
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return defaultEmbedBatchSize
+	}
+	return n
+}
+
+func resolveAutoEmbedInterval() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("CORTEX_EMBED_INTERVAL"))
+	if raw == "" {
+		return defaultAutoEmbedInterval
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return defaultAutoEmbedInterval
+	}
+	return d
+}
+
+func maybeStartBackgroundEmbedWorker(explicitEmbedFlag string) string {
+	if isEmbedWorkerRunning() {
+		return "Background embedding worker already running; new memories will be picked up on the next pass."
+	}
+
+	embedConfig, resolvedFlag, err := resolveBackgroundEmbedConfig(explicitEmbedFlag, explicitEmbedFlag != "")
+	if err != nil {
+		return fmt.Sprintf("Background embedding skipped: %v", err)
+	}
+	if embedConfig == nil || strings.TrimSpace(resolvedFlag) == "" {
+		return "Background embedding skipped: no embedding provider configured. Imported memories remain pending until `cortex embed --watch` is started."
+	}
+
+	embedder, err := newEmbedClient(embedConfig)
+	if err != nil {
+		return fmt.Sprintf("Background embedding skipped: creating embedder failed: %v", err)
+	}
+	if checker, ok := embedder.(interface{ HealthCheck(context.Context) error }); ok {
+		ctx, cancel := context.WithTimeout(context.Background(), defaultAutoEmbedHealthCheck)
+		defer cancel()
+		if err := checker.HealthCheck(ctx); err != nil {
+			return fmt.Sprintf("Background embedding skipped: provider unavailable (%v). Imported memories remain pending.", err)
+		}
+	}
+
+	interval := resolveAutoEmbedInterval()
+	batchSize := resolveAutoEmbedBatchSize()
+
+	args := make([]string, 0, 10)
+	if dbPath := getDBPath(); dbPath != "" {
+		args = append(args, "--db", dbPath)
+	}
+	args = append(args,
+		"embed",
+		resolvedFlag,
+		"--watch",
+		"--interval", interval.String(),
+		"--batch-size", strconv.Itoa(batchSize),
+	)
+
+	if err := spawnDetachedBackgroundEmbed(args); err != nil {
+		return fmt.Sprintf("Background embedding failed to start: %v", err)
+	}
+
+	return fmt.Sprintf("Background embedding worker started (%s, batch-size=%d, interval=%s).", resolvedFlag, batchSize, interval)
+}
+
 func printEmbedPassSummary(summary *embedPassSummary, elapsed time.Duration) {
 	if summary == nil || summary.result == nil {
 		return
@@ -6818,6 +7089,18 @@ func getEmbedLockPath() string {
 		return filepath.Join(os.TempDir(), "cortex-embed.lock")
 	}
 	return filepath.Join(filepath.Dir(dbPath), "embed.lock")
+}
+
+func isEmbedWorkerRunning() bool {
+	lockPath := getEmbedLockPath()
+	if _, err := os.Stat(lockPath); err != nil {
+		return false
+	}
+	if isStaleEmbedLock(lockPath, embedLockStaleAfter) {
+		_ = os.Remove(lockPath)
+		return false
+	}
+	return true
 }
 
 func acquireEmbedRunLock(path string) (*embedRunLock, error) {
@@ -10317,9 +10600,9 @@ LLM:
 
 Maintenance:
   doctor                Health check (DB, embeddings, connectors, LLM keys)
-  cleanup               Remove garbage memories and headless facts
+  cleanup               Remove garbage memories, headless facts, and prune noise
   optimize              DB maintenance (integrity check, VACUUM, ANALYZE)
-  embed <provider/model> Generate or refresh embeddings
+  embed <provider/model> Generate embeddings, run/watch the worker, or show status
   embed-source <path>   Finish embeddings for one source file
   tag                   Tag memories by project
 

@@ -387,6 +387,11 @@ var nlDateSubjectRE = regexp.MustCompile(
 		`(\s+\d{1,2},?)?\s+\d{4}\b`,
 )
 
+// currentTemporalSubjectRE catches transient headers like "Current time",
+// "current_time", "Current date", and similar variants that should never
+// become durable fact subjects.
+var currentTemporalSubjectRE = regexp.MustCompile(`(?i)^current.*(?:time|date)`)
+
 // isGenericSubject detects subjects that carry no useful signal.
 // Empty subjects are allowed (means source wasn't labeled, not necessarily noise).
 // Generic labels, timestamp-prefixed headers, and overly long subjects are dropped.
@@ -446,6 +451,10 @@ func isGenericSubject(subj string) bool {
 	// Natural-language date subjects ("Feb 18, 2026", "March 2026") are date-stamped
 	// section headers from journals, not entity names.
 	if nlDateSubjectRE.MatchString(trimmed) {
+		return true
+	}
+
+	if currentTemporalSubjectRE.MatchString(trimmed) {
 		return true
 	}
 

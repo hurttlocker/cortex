@@ -3,10 +3,49 @@ package ingest
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/hurttlocker/cortex/internal/store"
 )
+
+var (
+	deniedExtractedFactSubjects = map[string]struct{}{
+		"current time": {},
+		"current_time": {},
+		"current date": {},
+	}
+	deniedExtractedFactSubjectRE = regexp.MustCompile(`(?i)^current.*(?:time|date)`)
+)
+
+// IsDeniedExtractedFactSubject returns true when an extracted fact subject
+// is known ingestion noise and should never be persisted.
+func IsDeniedExtractedFactSubject(subject string) bool {
+	trimmed := strings.TrimSpace(subject)
+	if trimmed == "" {
+		return false
+	}
+
+	lower := strings.ToLower(trimmed)
+	if _, ok := deniedExtractedFactSubjects[lower]; ok {
+		return true
+	}
+	if normalized := strings.ReplaceAll(lower, "_", " "); normalized != lower {
+		if _, ok := deniedExtractedFactSubjects[normalized]; ok {
+			return true
+		}
+	}
+	return deniedExtractedFactSubjectRE.MatchString(trimmed)
+}
+
+// ShouldStoreExtractedFact applies hard ingest-level deny rules for extracted
+// facts. This is intentionally narrower than generic AddFact validation.
+func ShouldStoreExtractedFact(fact *store.Fact) bool {
+	if fact == nil {
+		return false
+	}
+	return !IsDeniedExtractedFactSubject(fact.Subject)
+}
 
 type activeFactMatch struct {
 	ID     int64
@@ -61,6 +100,9 @@ func findActiveFactMatchesBySubjectPredicate(ctx context.Context, s store.Store,
 func StoreExtractedFact(ctx context.Context, s store.Store, fact *store.Fact) (factID int64, stored bool, err error) {
 	if fact == nil {
 		return 0, false, fmt.Errorf("fact is nil")
+	}
+	if !ShouldStoreExtractedFact(fact) {
+		return 0, false, nil
 	}
 
 	subject := strings.TrimSpace(fact.Subject)

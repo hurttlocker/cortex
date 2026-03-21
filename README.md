@@ -93,7 +93,8 @@ cortex connect sync --all --extract   # Import + extract facts in one step
 
 # Add semantic search (requires Ollama)
 ollama pull nomic-embed-text
-cortex embed ollama/nomic-embed-text
+cortex embed ollama/nomic-embed-text --status
+cortex embed ollama/nomic-embed-text --watch --interval 30m
 cortex search "API design" --mode hybrid   # BM25 + semantic
 
 # Explore your knowledge graph
@@ -288,8 +289,9 @@ cortex connect sync --all [--extract]           # Sync + extract facts
 cortex connect status                           # Connector health
 cortex export [--format json|markdown|csv]      # Take your memory anywhere
 cortex mcp [--embed ollama/nomic-embed-text]    # MCP server for agents
-cortex cleanup                                  # Purge noise
-cortex embed <provider/model>                   # Generate semantic embeddings
+cortex cleanup --prune-temporal-noise           # Remove "Current time" fact pollution
+cortex embed <provider/model>                   # Generate/watch embeddings
+cortex embed --status                           # Coverage + remaining memories
 ```
 
 ## Semantic search (optional)
@@ -299,9 +301,12 @@ BM25 keyword search works out of the box. For semantic search, add an embedding 
 ```bash
 ollama pull nomic-embed-text
 cortex embed ollama/nomic-embed-text --batch-size 10
+cortex embed --status
 cortex search "conceptually related query" --mode hybrid --embed ollama/nomic-embed-text
 cortex search "conceptually related query" --mode rrf --embed ollama/nomic-embed-text
 ```
+
+Once an embed provider is configured, `cortex import ...` will automatically start a detached background embed worker if one is not already running. New memories stay import-fast and are embedded asynchronously.
 
 Supports Ollama (free/local), OpenAI, DeepSeek, OpenRouter, or any OpenAI-compatible endpoint.
 

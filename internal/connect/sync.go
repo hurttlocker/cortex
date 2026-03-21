@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/extract"
+	"github.com/hurttlocker/cortex/internal/ingest"
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
@@ -329,6 +330,9 @@ func (se *SyncEngine) extractFacts(ctx context.Context, memoryIDs []int64, llmFl
 				Confidence:  ef.Confidence,
 				DecayRate:   ef.DecayRate,
 				SourceQuote: ef.SourceQuote,
+			}
+			if !ingest.ShouldStoreExtractedFact(fact) {
+				continue
 			}
 			id, err := se.memStore.AddFact(ctx, fact)
 			if err != nil {
