@@ -3,9 +3,11 @@ package ingest
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 
+	cfgresolver "github.com/hurttlocker/cortex/internal/config"
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
@@ -15,7 +17,13 @@ var (
 		"current_time": {},
 		"current date": {},
 	}
-	deniedExtractedFactSubjectRE = regexp.MustCompile(`(?i)^current.*(?:time|date)`)
+	deniedExtractedFactSubjectRE = regexp.MustCompile(`(?i)^current.*(?:time|date|timestamp)`)
+	heartbeatFactSubjectRE       = regexp.MustCompile(`(?i)^(heartbeat|heartbeat_status)`)
+	specificDatetimeRE           = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}(?:[ t]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?)?(?:z|[+-]\d{2}:?\d{2}| utc)?\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s+\d{4})?(?:\s+[—-]\s+\d{1,2}:\d{2}\s*(?:am|pm))?`)
+	bareNumberObjectRE           = regexp.MustCompile(`^\d+(?:\.\d+)?$`)
+	objectTokenSplitRE           = regexp.MustCompile(`[^a-z0-9]+`)
+
+	configuredFactSuppressions []cfgresolver.DenylistEntry
 )
 
 // IsDeniedExtractedFactSubject returns true when an extracted fact subject
@@ -38,18 +46,61 @@ func IsDeniedExtractedFactSubject(subject string) bool {
 	return deniedExtractedFactSubjectRE.MatchString(trimmed)
 }
 
+func SetConfiguredFactSuppressions(entries []cfgresolver.DenylistEntry) {
+	configuredFactSuppressions = append([]cfgresolver.DenylistEntry(nil), entries...)
+}
+
+func matchesConfiguredFactSuppression(fact *store.Fact) bool {
+	if fact == nil || len(configuredFactSuppressions) == 0 {
+		return false
+	}
+	text := strings.TrimSpace(strings.Join([]string{fact.Subject, fact.Predicate, fact.Object, fact.SourceQuote}, " "))
+	for _, entry := range configuredFactSuppressions {
+		if entry.Matches(text) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSpecificDatetime(s string) bool {
+	return specificDatetimeRE.MatchString(strings.ToLower(strings.TrimSpace(s)))
+}
+
+func isBareNumberObject(s string) bool {
+	return bareNumberObjectRE.MatchString(strings.TrimSpace(s))
+}
+
 // ShouldStoreExtractedFact applies hard ingest-level deny rules for extracted
 // facts. This is intentionally narrower than generic AddFact validation.
 func ShouldStoreExtractedFact(fact *store.Fact) bool {
 	if fact == nil {
 		return false
 	}
-	return !IsDeniedExtractedFactSubject(fact.Subject)
+	subject := strings.TrimSpace(fact.Subject)
+	object := strings.TrimSpace(fact.Object)
+	if IsDeniedExtractedFactSubject(subject) {
+		return false
+	}
+	if heartbeatFactSubjectRE.MatchString(subject) {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(fact.FactType), "temporal") && hasSpecificDatetime(object) {
+		return false
+	}
+	if isBareNumberObject(object) {
+		return false
+	}
+	if matchesConfiguredFactSuppression(fact) {
+		return false
+	}
+	return true
 }
 
 type activeFactMatch struct {
-	ID     int64
-	Object string
+	ID         int64
+	Object     string
+	Confidence float64
 }
 
 func findActiveFactMatchesBySubjectPredicate(ctx context.Context, s store.Store, subject, predicate, agentID string) ([]activeFactMatch, error) {
@@ -59,7 +110,7 @@ func findActiveFactMatchesBySubjectPredicate(ctx context.Context, s store.Store,
 	}
 
 	rows, err := sqlStore.GetDB().QueryContext(ctx,
-		`SELECT id, object
+		`SELECT id, object, confidence
 		   FROM facts
 		  WHERE superseded_by IS NULL
 		    AND LOWER(TRIM(subject)) = LOWER(TRIM(?))
@@ -77,7 +128,7 @@ func findActiveFactMatchesBySubjectPredicate(ctx context.Context, s store.Store,
 	matches := make([]activeFactMatch, 0)
 	for rows.Next() {
 		var match activeFactMatch
-		if err := rows.Scan(&match.ID, &match.Object); err != nil {
+		if err := rows.Scan(&match.ID, &match.Object, &match.Confidence); err != nil {
 			return nil, fmt.Errorf("scanning active fact match: %w", err)
 		}
 		matches = append(matches, match)
@@ -87,6 +138,39 @@ func findActiveFactMatchesBySubjectPredicate(ctx context.Context, s store.Store,
 	}
 
 	return matches, nil
+}
+
+func normalizedObjectTokens(s string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, tok := range objectTokenSplitRE.Split(strings.ToLower(strings.TrimSpace(s)), -1) {
+		if len(tok) < 2 {
+			continue
+		}
+		out[tok] = struct{}{}
+	}
+	return out
+}
+
+func objectWordOverlap(a, b string) float64 {
+	left := normalizedObjectTokens(a)
+	right := normalizedObjectTokens(b)
+	if len(left) == 0 || len(right) == 0 {
+		if strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b)) {
+			return 1
+		}
+		return 0
+	}
+	intersection := 0
+	for tok := range left {
+		if _, ok := right[tok]; ok {
+			intersection++
+		}
+	}
+	denom := math.Min(float64(len(left)), float64(len(right)))
+	if denom == 0 {
+		return 0
+	}
+	return float64(intersection) / denom
 }
 
 // StoreExtractedFact writes an extracted fact through the ingest-layer conflict-prevention policy.
@@ -119,25 +203,23 @@ func StoreExtractedFact(ctx context.Context, s store.Store, fact *store.Fact) (f
 
 	candidateObject := strings.TrimSpace(fact.Object)
 	var winnerID int64
-	conflictingIDs := make([]int64, 0, len(matches))
+	bestOverlap := 0.0
+	bestConfidence := -1.0
 	for _, match := range matches {
-		if strings.TrimSpace(match.Object) == candidateObject {
-			if winnerID == 0 {
+		overlap := objectWordOverlap(strings.TrimSpace(match.Object), candidateObject)
+		if overlap >= 0.80 {
+			if winnerID == 0 || overlap > bestOverlap || (overlap == bestOverlap && match.Confidence > bestConfidence) {
 				winnerID = match.ID
+				bestOverlap = overlap
+				bestConfidence = match.Confidence
 			}
 			continue
 		}
-		conflictingIDs = append(conflictingIDs, match.ID)
 	}
 
 	if winnerID != 0 {
-		for _, oldFactID := range conflictingIDs {
-			if oldFactID <= 0 || oldFactID == winnerID {
-				continue
-			}
-			if err := s.SupersedeFact(ctx, oldFactID, winnerID, "auto-supersede on extract: existing active fact matches imported object"); err != nil {
-				return winnerID, false, err
-			}
+		if err := s.ReinforceFact(ctx, winnerID); err != nil {
+			return winnerID, false, err
 		}
 		return winnerID, false, nil
 	}
@@ -145,15 +227,6 @@ func StoreExtractedFact(ctx context.Context, s store.Store, fact *store.Fact) (f
 	factID, err = s.AddFact(ctx, fact)
 	if err != nil {
 		return 0, false, err
-	}
-
-	for _, oldFactID := range conflictingIDs {
-		if oldFactID <= 0 || oldFactID == factID {
-			continue
-		}
-		if err := s.SupersedeFact(ctx, oldFactID, factID, "auto-supersede on extract: updated object for same subject+predicate"); err != nil {
-			return factID, true, err
-		}
 	}
 
 	return factID, true, nil

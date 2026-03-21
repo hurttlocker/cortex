@@ -53,10 +53,11 @@ type Report struct {
 }
 
 type Runner struct {
-	st       store.Store
-	sqlite   *store.SQLiteStore
-	policies cfgresolver.PolicyConfig
-	now      time.Time
+	st         store.Store
+	sqlite     *store.SQLiteStore
+	policies   cfgresolver.PolicyConfig
+	now        time.Time
+	aggressive bool
 }
 
 func NewRunner(st store.Store, policies cfgresolver.PolicyConfig) (*Runner, error) {
@@ -65,6 +66,10 @@ func NewRunner(st store.Store, policies cfgresolver.PolicyConfig) (*Runner, erro
 		return nil, fmt.Errorf("lifecycle runner requires sqlite store")
 	}
 	return &Runner{st: st, sqlite: sqlite, policies: policies, now: time.Now().UTC()}, nil
+}
+
+func (r *Runner) SetAggressive(v bool) {
+	r.aggressive = v
 }
 
 func (r *Runner) Run(ctx context.Context, dryRun bool) (*Report, error) {
@@ -284,24 +289,9 @@ func (r *Runner) applyConflictSupersede(ctx context.Context, dryRun bool) ([]Act
 	for _, c := range conflicts {
 		f1 := c.Fact1
 		f2 := c.Fact2
-		confDelta := f1.Confidence - f2.Confidence
-		if confDelta < 0 {
-			confDelta = -confDelta
-		}
-		if confDelta < cfg.MinConfidenceDelta {
-			stats.SkipReasons["confidence_delta_too_small"]++
-			stats.Skipped++
-			continue
-		}
-
-		winner := f1
-		loser := f2
-		if f2.Confidence > f1.Confidence {
-			winner = f2
-			loser = f1
-		}
-		if cfg.RequireStrictlyNewer && !winner.CreatedAt.After(loser.CreatedAt) {
-			stats.SkipReasons["not_strictly_newer"]++
+		winner, loser, reason, ok, skipReason := r.pickConflictWinner(cfg, f1, f2)
+		if !ok {
+			stats.SkipReasons[skipReason]++
 			stats.Skipped++
 			continue
 		}
@@ -316,11 +306,11 @@ func (r *Runner) applyConflictSupersede(ctx context.Context, dryRun bool) ([]Act
 			Action:   "supersede",
 			WinnerID: winner.ID,
 			LoserID:  loser.ID,
-			Reason:   fmt.Sprintf("winner confidence %.3f > %.3f by %.3f%s", winner.Confidence, loser.Confidence, confDelta, newerSuffix(cfg.RequireStrictlyNewer)),
+			Reason:   reason,
 			Applied:  false,
 		}
 		if !dryRun {
-			if err := r.st.SupersedeFact(ctx, loser.ID, winner.ID, "lifecycle conflict-supersede"); err != nil {
+			if err := r.st.SupersedeFact(ctx, loser.ID, winner.ID, reason); err != nil {
 				act.Reason += "; apply_error: " + err.Error()
 			} else {
 				act.Applied = true
@@ -331,6 +321,49 @@ func (r *Runner) applyConflictSupersede(ctx context.Context, dryRun bool) ([]Act
 		stats.Acted++
 	}
 	return actions, stats, nil
+}
+
+func (r *Runner) pickConflictWinner(cfg cfgresolver.ConflictSupersedePolicy, f1, f2 store.Fact) (winner, loser store.Fact, reason string, ok bool, skipReason string) {
+	obj1 := strings.ToLower(strings.TrimSpace(f1.Object))
+	obj2 := strings.ToLower(strings.TrimSpace(f2.Object))
+	if obj1 != "" && obj2 != "" && obj1 != obj2 {
+		switch {
+		case strings.Contains(obj1, obj2) && len(obj1) > len(obj2):
+			return f1, f2, fmt.Sprintf("fact %d object is more specific than fact %d (substring match)", f1.ID, f2.ID), true, ""
+		case strings.Contains(obj2, obj1) && len(obj2) > len(obj1):
+			return f2, f1, fmt.Sprintf("fact %d object is more specific than fact %d (substring match)", f2.ID, f1.ID), true, ""
+		}
+	}
+
+	ageGap := f1.CreatedAt.Sub(f2.CreatedAt)
+	if ageGap < 0 {
+		ageGap = -ageGap
+	}
+	if r.aggressive && ageGap > 30*24*time.Hour {
+		if f1.CreatedAt.After(f2.CreatedAt) {
+			return f1, f2, fmt.Sprintf("fact %d is newer; fact %d is older by more than 30 days", f1.ID, f2.ID), true, ""
+		}
+		return f2, f1, fmt.Sprintf("fact %d is newer; fact %d is older by more than 30 days", f2.ID, f1.ID), true, ""
+	}
+
+	confDelta := f1.Confidence - f2.Confidence
+	if confDelta < 0 {
+		confDelta = -confDelta
+	}
+	if confDelta < cfg.MinConfidenceDelta {
+		return store.Fact{}, store.Fact{}, "", false, "confidence_delta_too_small"
+	}
+
+	winner = f1
+	loser = f2
+	if f2.Confidence > f1.Confidence {
+		winner = f2
+		loser = f1
+	}
+	if cfg.RequireStrictlyNewer && !r.aggressive && !winner.CreatedAt.After(loser.CreatedAt) {
+		return store.Fact{}, store.Fact{}, "", false, "not_strictly_newer"
+	}
+	return winner, loser, fmt.Sprintf("fact %d confidence %.3f > fact %d %.3f by %.3f%s", winner.ID, winner.Confidence, loser.ID, loser.Confidence, confDelta, newerSuffix(cfg.RequireStrictlyNewer && !r.aggressive)), true, ""
 }
 
 func newerSuffix(required bool) string {

@@ -246,3 +246,76 @@ func TestRunner_SkipStats_ActedCount(t *testing.T) {
 		t.Errorf("total skip-stats scanned (%d) != report.Scanned (%d)", totalScanned, report.Scanned)
 	}
 }
+
+func TestRunner_AggressiveSupersedesOlderFact(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	si, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer si.Close()
+	s := si.(*store.SQLiteStore)
+	ctx := context.Background()
+
+	m1, _ := s.AddMemory(ctx, &store.Memory{Content: "old timezone", SourceFile: "old.md"})
+	m2, _ := s.AddMemory(ctx, &store.Memory{Content: "new timezone", SourceFile: "new.md"})
+	oldID, _ := s.AddFact(ctx, &store.Fact{MemoryID: m1, Subject: "Q", Predicate: "timezone", Object: "EST", FactType: "identity", Confidence: 0.80})
+	newID, _ := s.AddFact(ctx, &store.Fact{MemoryID: m2, Subject: "Q", Predicate: "timezone", Object: "EST/EDT", FactType: "identity", Confidence: 0.81})
+	oldTime := time.Now().UTC().AddDate(0, 0, -45)
+	newTime := time.Now().UTC().AddDate(0, 0, -5)
+	_, _ = s.ExecContext(ctx, `UPDATE facts SET created_at=? WHERE id=?`, oldTime, oldID)
+	_, _ = s.ExecContext(ctx, `UPDATE facts SET created_at=? WHERE id=?`, newTime, newID)
+
+	p := cfgresolver.DefaultPolicyConfig()
+	r, err := NewRunner(s, p)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	r.SetAggressive(true)
+	report, err := r.Run(ctx, false)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if report.Applied == 0 {
+		t.Fatalf("expected aggressive lifecycle to apply at least one action")
+	}
+
+	oldFact, _ := s.GetFact(ctx, oldID)
+	if oldFact.SupersededBy == nil || *oldFact.SupersededBy != newID {
+		t.Fatalf("expected older fact superseded by newer one, got %+v", oldFact)
+	}
+}
+
+func TestRunner_SubstringSpecificityWins(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "cortex.db")
+	si, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer si.Close()
+	s := si.(*store.SQLiteStore)
+	ctx := context.Background()
+
+	m1, _ := s.AddMemory(ctx, &store.Memory{Content: "short object", SourceFile: "a.md"})
+	m2, _ := s.AddMemory(ctx, &store.Memory{Content: "long object", SourceFile: "b.md"})
+	shortID, _ := s.AddFact(ctx, &store.Fact{MemoryID: m1, Subject: "Q", Predicate: "prefers", Object: "green", FactType: "preference", Confidence: 0.90})
+	longID, _ := s.AddFact(ctx, &store.Fact{MemoryID: m2, Subject: "Q", Predicate: "prefers", Object: "green for additions", FactType: "preference", Confidence: 0.89})
+
+	p := cfgresolver.DefaultPolicyConfig()
+	r, err := NewRunner(s, p)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	report, err := r.Run(ctx, false)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if report.Applied == 0 {
+		t.Fatalf("expected substring specificity rule to apply")
+	}
+
+	shortFact, _ := s.GetFact(ctx, shortID)
+	if shortFact.SupersededBy == nil || *shortFact.SupersededBy != longID {
+		t.Fatalf("expected shorter object fact to be superseded, got %+v", shortFact)
+	}
+}

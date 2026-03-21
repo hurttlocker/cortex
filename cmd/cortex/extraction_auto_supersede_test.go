@@ -28,7 +28,7 @@ func importAndExtractFacts(t *testing.T, ctx context.Context, engine *ingest.Eng
 	return importResult, extractionStats
 }
 
-func TestRunExtractionOnImportedMemories_AutoSupersedesChangedObject(t *testing.T) {
+func TestRunExtractionOnImportedMemories_LeavesChangedObjectAsConflict(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "cortex.db")
 
@@ -100,26 +100,14 @@ func TestRunExtractionOnImportedMemories_AutoSupersedesChangedObject(t *testing.
 		t.Fatalf("expected 2 facts for same subject+predicate after value change, got %d", len(matching))
 	}
 
-	var activeFact *store.Fact
-	var supersededFact *store.Fact
+	activeFacts := 0
 	for _, f := range matching {
 		if f.SupersededBy == nil {
-			activeFact = f
-		} else {
-			supersededFact = f
+			activeFacts++
 		}
 	}
-	if activeFact == nil || supersededFact == nil {
-		t.Fatalf("expected one active + one superseded fact, got active=%v superseded=%v", activeFact != nil, supersededFact != nil)
-	}
-	if !strings.EqualFold(strings.TrimSpace(activeFact.Object), "stopped") {
-		t.Fatalf("expected active object to be 'stopped', got %q", activeFact.Object)
-	}
-	if supersededFact.SupersededBy == nil || *supersededFact.SupersededBy != activeFact.ID {
-		t.Fatalf("expected old fact to be superseded by new fact (%d), got %v", activeFact.ID, supersededFact.SupersededBy)
-	}
-	if !strings.EqualFold(strings.TrimSpace(supersededFact.State), store.FactStateSuperseded) {
-		t.Fatalf("expected superseded fact state=%q, got %q", store.FactStateSuperseded, supersededFact.State)
+	if activeFacts != 2 {
+		t.Fatalf("expected both facts to remain active for lifecycle resolution, got %d active", activeFacts)
 	}
 
 	engineObs := observe.NewEngine(s, dbPath)
@@ -127,8 +115,8 @@ func TestRunExtractionOnImportedMemories_AutoSupersedesChangedObject(t *testing.
 	if err != nil {
 		t.Fatalf("GetConflicts: %v", err)
 	}
-	if len(conflicts) != 0 {
-		t.Fatalf("expected no active conflicts after auto-supersede, got %d", len(conflicts))
+	if len(conflicts) == 0 {
+		t.Fatalf("expected active conflict after changed object import")
 	}
 }
 

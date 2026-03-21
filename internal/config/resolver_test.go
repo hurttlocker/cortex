@@ -219,6 +219,13 @@ search:
   source_boosts:
     - prefix: "memory/"
       weight: 1.4
+extract:
+  suppress_patterns:
+    - pattern: "^heartbeat"
+      reason: "protocol noise"
+policies:
+  decay_rates:
+    temporal: 0.2
 `
 	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -239,6 +246,12 @@ search:
 	}
 	if resolved.Search.SourceBoosts[0].Prefix != "memory/" || resolved.Search.SourceBoosts[0].Weight != 1.4 {
 		t.Fatalf("unexpected search source boost: %+v", resolved.Search.SourceBoosts[0])
+	}
+	if len(resolved.Extract.SuppressPatterns) != 1 || !resolved.Extract.SuppressPatterns[0].Matches("heartbeat_status") {
+		t.Fatalf("expected compiled extract suppression pattern, got %+v", resolved.Extract.SuppressPatterns)
+	}
+	if resolved.Policies.DecayRates["temporal"] != 0.2 {
+		t.Fatalf("expected decay rate override, got %+v", resolved.Policies.DecayRates)
 	}
 }
 

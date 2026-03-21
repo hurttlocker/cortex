@@ -57,6 +57,10 @@ type ImportConfig struct {
 	Denylist []DenylistEntry `yaml:"denylist" json:"denylist"`
 }
 
+type ExtractConfig struct {
+	SuppressPatterns []DenylistEntry `yaml:"suppress_patterns" json:"suppress_patterns"`
+}
+
 type SearchSourceBoostConfig struct {
 	Prefix string  `yaml:"prefix" json:"prefix"`
 	Weight float64 `yaml:"weight" json:"weight"`
@@ -97,6 +101,7 @@ type PolicyConfig struct {
 	ReinforcePromote  ReinforcePromotePolicy  `yaml:"reinforce_promote" json:"reinforce_promote"`
 	DecayRetire       DecayRetirePolicy       `yaml:"decay_retire" json:"decay_retire"`
 	ConflictSupersede ConflictSupersedePolicy `yaml:"conflict_supersede" json:"conflict_supersede"`
+	DecayRates        map[string]float64      `yaml:"decay_rates" json:"decay_rates"`
 }
 
 type AgentTrustRule struct {
@@ -155,7 +160,18 @@ func DefaultPolicyConfig() PolicyConfig {
 		ConflictSupersede: ConflictSupersedePolicy{
 			Enabled:              true,
 			RequireStrictlyNewer: true,
-			MinConfidenceDelta:   0.10,
+			MinConfidenceDelta:   0.02,
+		},
+		DecayRates: map[string]float64{
+			"identity":     0.01,
+			"preference":   0.02,
+			"config":       0.03,
+			"decision":     0.05,
+			"state":        0.10,
+			"temporal":     0.15,
+			"kv":           0.05,
+			"relationship": 0.02,
+			"location":     0.03,
 		},
 	}
 }
@@ -176,6 +192,7 @@ type ResolvedConfig struct {
 	Policies       PolicyConfig             `json:"policies"`
 	ObsidianExport ObsidianExportConfig     `json:"obsidian_export"`
 	Import         ImportConfig             `json:"import"`
+	Extract        ExtractConfig            `json:"extract"`
 	Search         SearchConfig             `json:"search"`
 	LLMKeys        map[string]ResolvedValue `json:"llm_keys,omitempty"`
 }
@@ -198,6 +215,7 @@ type fileConfig struct {
 		Endpoint string `yaml:"endpoint"`
 	} `yaml:"embed"`
 	Import   ImportConfig              `yaml:"import"`
+	Extract  ExtractConfig             `yaml:"extract"`
 	Search   SearchConfig              `yaml:"search"`
 	Policies PolicyConfig              `yaml:"policies"`
 	Agents   map[string]AgentTrustRule `yaml:"agents"`
@@ -233,6 +251,7 @@ func ResolveConfig(opts ResolveOptions) (ResolvedConfig, error) {
 		out.Policies = cfg.Policies
 		out.ObsidianExport = cfg.Export.Obsidian
 		out.Import = cfg.Import
+		out.Extract = cfg.Extract
 		out.Search = cfg.Search
 		apply(&out.DBPath, cfg.DBPath, SourceConfig, path)
 		apply(&out.LLMProvider, cfg.LLM.Provider, SourceConfig, path)
@@ -455,6 +474,11 @@ func loadConfig(path string) (*fileConfig, error) {
 	for i := range cfg.Import.Denylist {
 		if err := cfg.Import.Denylist[i].Compile(); err != nil {
 			return nil, fmt.Errorf("parsing %s import.denylist[%d].pattern: %w", path, i, err)
+		}
+	}
+	for i := range cfg.Extract.SuppressPatterns {
+		if err := cfg.Extract.SuppressPatterns[i].Compile(); err != nil {
+			return nil, fmt.Errorf("parsing %s extract.suppress_patterns[%d].pattern: %w", path, i, err)
 		}
 	}
 	return &cfg, nil

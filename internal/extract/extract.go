@@ -32,17 +32,29 @@ type ExtractedFact struct {
 	DecayRate        float64 `json:"decay_rate"`        // Assigned based on fact type
 }
 
-// DecayRates maps fact types to their decay rates.
-// Lower decay rate means slower forgetting (longer half-life).
-var DecayRates = map[string]float64{
-	"identity":     0.001, // half-life: 693 days
-	"decision":     0.002, // half-life: 347 days
-	"relationship": 0.003, // half-life: 231 days
-	"location":     0.005, // half-life: 139 days
-	"preference":   0.01,  // half-life: 69 days
-	"state":        0.05,  // half-life: 14 days
-	"temporal":     0.1,   // half-life: 7 days
-	"kv":           0.01,  // half-life: 69 days (default)
+// BaseDecayRates holds the built-in default decay rates by fact type.
+var BaseDecayRates = map[string]float64{
+	"identity":     0.01,
+	"preference":   0.02,
+	"relationship": 0.02,
+	"location":     0.03,
+	"config":       0.03,
+	"decision":     0.05,
+	"kv":           0.05,
+	"state":        0.10,
+	"temporal":     0.15,
+}
+
+// DecayRates is the runtime decay rate table. Commands may override it from
+// config for the lifetime of the current process.
+var DecayRates = CloneDecayRates(BaseDecayRates)
+
+func CloneDecayRates(in map[string]float64) map[string]float64 {
+	out := make(map[string]float64, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // Pipeline orchestrates the extraction process using rule-based extraction

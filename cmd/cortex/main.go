@@ -83,6 +83,8 @@ func main() {
 		exitWithError(runBeliefs(args[1:]))
 	case "stats":
 		exitWithError(runStats(args[1:]))
+	case "health":
+		exitWithError(runHealth(args[1:]))
 	case "list":
 		exitWithError(runList(args[1:]))
 	case "export":
@@ -305,6 +307,42 @@ func getDBPath() string {
 // getStoreConfig returns a StoreConfig with the global DB path and read-only flag.
 func getStoreConfig() store.StoreConfig {
 	return store.StoreConfig{DBPath: getDBPath(), ReadOnly: globalReadOnly}
+}
+
+func applyExtractionRuntimeConfig(resolved cfgresolver.ResolvedConfig) {
+	extract.DecayRates = extract.CloneDecayRates(extract.BaseDecayRates)
+	if len(resolved.Policies.DecayRates) > 0 {
+		for k, v := range resolved.Policies.DecayRates {
+			extract.DecayRates[strings.ToLower(strings.TrimSpace(k))] = v
+		}
+	}
+	ingest.SetConfiguredFactSuppressions(resolved.Extract.SuppressPatterns)
+}
+
+func setMetaTimestamp(ctx context.Context, ss *store.SQLiteStore, key string, at time.Time) error {
+	if ss == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	_, err := ss.ExecContext(ctx, `
+		INSERT INTO meta (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, key, at.UTC().Format(time.RFC3339))
+	return err
+}
+
+func getMetaTimestamp(ctx context.Context, ss *store.SQLiteStore, key string) (time.Time, bool) {
+	if ss == nil || strings.TrimSpace(key) == "" {
+		return time.Time{}, false
+	}
+	var raw string
+	if err := ss.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, key).Scan(&raw); err != nil {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t.UTC(), true
 }
 
 // wireWebhook sets up webhook notification on a SQLiteStore if CORTEX_ALERT_WEBHOOK_URL is set.
@@ -567,6 +605,7 @@ func runImport(args []string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+	applyExtractionRuntimeConfig(resolvedCfg)
 	opts.Denylist = resolvedCfg.Import.Denylist
 
 	if len(paths) == 0 {
@@ -734,6 +773,9 @@ func runImport(args []string) error {
 				fmt.Fprintf(os.Stderr, "  Lifecycle apply error: %v\n", err)
 			} else {
 				lifecycleApplied = report.Applied
+				if ss, ok := s.(*store.SQLiteStore); ok {
+					_ = setMetaTimestamp(ctx, ss, "last_lifecycle_run_at", time.Now().UTC())
+				}
 				fmt.Fprintf(os.Stderr, "  Lifecycle auto-run applied to %d facts\n", lifecycleApplied)
 			}
 		}
@@ -1425,7 +1467,7 @@ func runAnswer(args []string) error {
 
 func runLifecycle(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex lifecycle run [--dry-run] [--json]")
+		return fmt.Errorf("usage: cortex lifecycle run [--dry-run] [--json] [--aggressive]")
 	}
 	if args[0] != "run" {
 		return fmt.Errorf("unknown lifecycle subcommand %q (expected: run)", args[0])
@@ -1433,14 +1475,17 @@ func runLifecycle(args []string) error {
 
 	dryRun := false
 	jsonOutput := false
+	aggressive := false
 	for i := 1; i < len(args); i++ {
 		switch args[i] {
 		case "--dry-run", "-n":
 			dryRun = true
 		case "--json":
 			jsonOutput = true
+		case "--aggressive":
+			aggressive = true
 		default:
-			return fmt.Errorf("unknown flag: %s\nusage: cortex lifecycle run [--dry-run] [--json]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: cortex lifecycle run [--dry-run] [--json] [--aggressive]", args[i])
 		}
 	}
 
@@ -1459,9 +1504,15 @@ func runLifecycle(args []string) error {
 	if err != nil {
 		return err
 	}
+	runner.SetAggressive(aggressive)
 	report, err := runner.Run(context.Background(), dryRun)
 	if err != nil {
 		return err
+	}
+	if !dryRun {
+		if ss, ok := s.(*store.SQLiteStore); ok {
+			_ = setMetaTimestamp(context.Background(), ss, "last_lifecycle_run_at", time.Now().UTC())
+		}
 	}
 
 	if jsonOutput || !isTTY() {
@@ -1473,6 +1524,9 @@ func runLifecycle(args []string) error {
 	mode := "apply"
 	if dryRun {
 		mode = "dry-run"
+	}
+	if aggressive {
+		mode += ", aggressive"
 	}
 	fmt.Printf("Lifecycle run (%s):\n", mode)
 	fmt.Printf("  Scanned: %d\n", report.Scanned)
@@ -2206,6 +2260,241 @@ func runStats(args []string) error {
 	}
 
 	return outputEnhancedStatsTTY(observeStats, dateRange)
+}
+
+type healthReport struct {
+	Memories            int64    `json:"memories"`
+	Embeddings          int64    `json:"embeddings"`
+	EmbeddingCoverage   float64  `json:"embedding_coverage"`
+	Facts               int64    `json:"facts"`
+	ActiveFacts         int64    `json:"active_facts"`
+	RetiredFacts        int64    `json:"retired_facts"`
+	SupersededFacts     int64    `json:"superseded_facts"`
+	UnresolvedConflicts int      `json:"unresolved_conflicts"`
+	StaleFacts          int      `json:"stale_facts"`
+	DBBytes             int64    `json:"db_bytes"`
+	HNSWBytes           int64    `json:"hnsw_bytes"`
+	LastImportAt        string   `json:"last_import_at,omitempty"`
+	LastLifecycleAt     string   `json:"last_lifecycle_at,omitempty"`
+	LastOptimizeAt      string   `json:"last_optimize_at,omitempty"`
+	Recommendations     []string `json:"recommendations"`
+}
+
+func runHealth(args []string) error {
+	jsonOutput := false
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			jsonOutput = true
+		case "--help", "-h":
+			fmt.Println("usage: cortex health [--json]")
+			return nil
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return fmt.Errorf("unknown flag: %s\nusage: cortex health [--json]", arg)
+			}
+			return fmt.Errorf("unexpected argument: %s\nusage: cortex health [--json]", arg)
+		}
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	ss, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("health requires SQLiteStore backend")
+	}
+
+	ctx := context.Background()
+	stats, err := s.Stats(ctx)
+	if err != nil {
+		return fmt.Errorf("loading store stats: %w", err)
+	}
+	obs := observe.NewEngine(s, getDBPath())
+
+	active, err := countActiveLikeFacts(ctx, ss)
+	if err != nil {
+		return err
+	}
+	retired, err := countFactsByState(ctx, ss, store.FactStateRetired, "")
+	if err != nil {
+		return err
+	}
+	superseded, err := countFactsByState(ctx, ss, store.FactStateSuperseded, "")
+	if err != nil {
+		return err
+	}
+
+	conflicts, err := s.GetAttributeConflictsLimitWithSuperseded(ctx, 10000, false)
+	if err != nil {
+		return fmt.Errorf("loading unresolved conflicts: %w", err)
+	}
+	unresolvedGroups := countConflictGroups(conflicts)
+
+	staleFacts, err := obs.GetStaleFacts(ctx, observe.StaleOpts{
+		MaxConfidence: 0.3,
+		MaxDays:       30,
+		Limit:         100000,
+	})
+	if err != nil {
+		return fmt.Errorf("loading stale facts: %w", err)
+	}
+
+	report := healthReport{
+		Memories:            stats.MemoryCount,
+		Embeddings:          stats.EmbeddingCount,
+		Facts:               stats.FactCount,
+		ActiveFacts:         active,
+		RetiredFacts:        retired,
+		SupersededFacts:     superseded,
+		UnresolvedConflicts: unresolvedGroups,
+		StaleFacts:          len(staleFacts),
+		DBBytes:             stats.DBSizeBytes,
+	}
+	if stats.MemoryCount > 0 {
+		report.EmbeddingCoverage = (float64(stats.EmbeddingCount) / float64(stats.MemoryCount)) * 100
+	}
+
+	if lastImport, ok := latestImportTimestamp(ctx, ss); ok {
+		report.LastImportAt = lastImport.Format(time.RFC3339)
+	}
+	if ts, ok := getMetaTimestamp(ctx, ss, "last_lifecycle_run_at"); ok {
+		report.LastLifecycleAt = ts.Format(time.RFC3339)
+	}
+	if ts, ok := getMetaTimestamp(ctx, ss, "last_optimize_run_at"); ok {
+		report.LastOptimizeAt = ts.Format(time.RFC3339)
+	}
+
+	hnswPath := getHNSWPath()
+	if info, err := os.Stat(hnswPath); err == nil {
+		report.HNSWBytes = info.Size()
+	}
+
+	report.Recommendations = buildHealthRecommendations(report)
+
+	if jsonOutput || !isTTY() {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+
+	fmt.Println("Cortex Health Report")
+	fmt.Println("━━━━━━━━━━━━━━━━━━━")
+	fmt.Printf("Memories:     %d (%d embedded, %.1f%% coverage)\n", report.Memories, report.Embeddings, report.EmbeddingCoverage)
+	fmt.Printf("Facts:        %d (%d active, %d retired, %d superseded)\n", report.Facts, report.ActiveFacts, report.RetiredFacts, report.SupersededFacts)
+	fmt.Printf("Conflicts:    %d unresolved\n", report.UnresolvedConflicts)
+	fmt.Printf("Stale (>30d): %d facts below 0.3 confidence\n", report.StaleFacts)
+	fmt.Printf("Storage:      %s (DB) + %s (HNSW index)\n", formatBytes(report.DBBytes), formatBytes(report.HNSWBytes))
+	if report.LastImportAt != "" {
+		if t, err := time.Parse(time.RFC3339, report.LastImportAt); err == nil {
+			fmt.Printf("Last import:  %s\n", relativeTimeString(t))
+		}
+	}
+	if report.LastLifecycleAt != "" {
+		if t, err := time.Parse(time.RFC3339, report.LastLifecycleAt); err == nil {
+			fmt.Printf("Last lifecycle: %s\n", relativeTimeString(t))
+		}
+	}
+	if report.LastOptimizeAt != "" {
+		if t, err := time.Parse(time.RFC3339, report.LastOptimizeAt); err == nil {
+			fmt.Printf("Last optimize: %s\n", relativeTimeString(t))
+		}
+	}
+	fmt.Println()
+	fmt.Println("Recommendations:")
+	for _, rec := range report.Recommendations {
+		fmt.Println(rec)
+	}
+	return nil
+}
+
+func countActiveLikeFacts(ctx context.Context, ss *store.SQLiteStore) (int64, error) {
+	var n int64
+	if err := ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM facts WHERE LOWER(COALESCE(state,'')) IN ('active','core')`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting active facts: %w", err)
+	}
+	return n, nil
+}
+
+func latestImportTimestamp(ctx context.Context, ss *store.SQLiteStore) (time.Time, bool) {
+	var raw string
+	if err := ss.QueryRowContext(ctx, `SELECT COALESCE(MAX(imported_at), '') FROM memories WHERE deleted_at IS NULL`).Scan(&raw); err != nil || strings.TrimSpace(raw) == "" {
+		return time.Time{}, false
+	}
+	t, err := parseDBTimestamp(raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+func parseDBTimestamp(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	layouts := []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		time.RFC3339,
+		time.RFC3339Nano,
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported timestamp format: %q", raw)
+}
+
+func countConflictGroups(conflicts []store.Conflict) int {
+	seen := map[string]struct{}{}
+	for _, c := range conflicts {
+		key := strings.ToLower(strings.TrimSpace(c.Fact1.Subject)) + "|" + strings.ToLower(strings.TrimSpace(c.Fact1.Predicate))
+		seen[key] = struct{}{}
+	}
+	return len(seen)
+}
+
+func relativeTimeString(t time.Time) string {
+	d := time.Since(t.UTC()).Round(time.Minute)
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%d minutes ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%d hours ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%d days ago", int(d.Hours()/24))
+	}
+}
+
+func buildHealthRecommendations(report healthReport) []string {
+	recs := make([]string, 0, 4)
+	if report.EmbeddingCoverage < 10 {
+		recs = append(recs, "⚠ Embedding coverage low — run: cortex embed ollama/nomic-embed-text")
+	} else {
+		recs = append(recs, "✓ Embedding coverage healthy")
+	}
+	if report.UnresolvedConflicts > 0 {
+		recs = append(recs, "⚠ Unresolved conflicts remain — run: cortex lifecycle run --aggressive")
+	} else {
+		recs = append(recs, "✓ No unresolved conflicts")
+	}
+	if report.StaleFacts > 0 {
+		recs = append(recs, "⚠ Stale facts accumulating — run: cortex stale --days 30 --min-confidence 0.3")
+	} else {
+		recs = append(recs, "✓ No stale facts need immediate attention")
+	}
+	if report.LastOptimizeAt != "" {
+		recs = append(recs, "✓ Database optimized")
+	} else {
+		recs = append(recs, "⚠ Database optimize history missing — run: cortex optimize")
+	}
+	return recs
 }
 
 func runStale(args []string) error {
@@ -2982,6 +3271,12 @@ func runExtract(args []string) error {
 	// Configure old LLM for tier-2 extraction (if provider is compatible).
 	// When --enrich is set, skip old tier-2 entirely — the new internal/llm
 	// enrichment replaces it with better quality and no retry storms.
+	resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{})
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	applyExtractionRuntimeConfig(resolvedCfg)
+
 	var llmConfig *extract.LLMConfig
 	if llmFlag != "" && !enrichFlag {
 		var err error
@@ -5191,12 +5486,15 @@ func runReimport(args []string) error {
 
 	engine := ingest.NewEngine(s)
 	ctx := context.Background()
-
 	opts := ingest.ImportOptions{
 		Recursive: recursive,
 		ProgressFn: func(current, total int, file string) {
 			fmt.Printf("  [%d/%d] %s\n", current, total, file)
 		},
+	}
+	if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+		applyExtractionRuntimeConfig(resolvedCfg)
+		opts.Denylist = resolvedCfg.Import.Denylist
 	}
 
 	totalResult := &ingest.ImportResult{}
@@ -5453,6 +5751,10 @@ Examples:
 			fmt.Printf("  [%d/%d] %s\n", current, total, file)
 		},
 	}
+	if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+		applyExtractionRuntimeConfig(resolvedCfg)
+		opts.Denylist = resolvedCfg.Import.Denylist
+	}
 
 	result, err := engine.ImportFile(ctx, absPath, opts)
 	if err != nil {
@@ -5645,6 +5947,11 @@ Notes:
 	if runAnalyze {
 		if _, err := ss.ExecContext(ctx, "ANALYZE"); err != nil {
 			return fmt.Errorf("analyze failed: %w", err)
+		}
+	}
+	if runVacuum || runAnalyze {
+		if err := setMetaTimestamp(ctx, ss, "last_optimize_run_at", time.Now().UTC()); err != nil {
+			return fmt.Errorf("recording optimize run: %w", err)
 		}
 	}
 
@@ -9417,6 +9724,9 @@ func runConnectInit() error {
 		return fmt.Errorf("opening store: %w", err)
 	}
 	defer st.Close()
+	if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+		applyExtractionRuntimeConfig(resolvedCfg)
+	}
 
 	// Migration already runs on NewStore, so the connectors table exists now
 	fmt.Println("✓ Connector system initialized")
@@ -9519,6 +9829,9 @@ func runConnectSync(args []string) error {
 		return fmt.Errorf("opening store: %w", err)
 	}
 	defer st.Close()
+	if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
+		applyExtractionRuntimeConfig(resolvedCfg)
+	}
 
 	sqliteSt, ok := st.(*store.SQLiteStore)
 	if !ok {
@@ -10607,7 +10920,7 @@ func execCommand(name string, args ...string) error {
 var cortexCommands = []string{
 	"import", "reimport", "refresh-source", "search", "query", "list", "export", "update", "demo",
 	"extract", "classify", "reinforce", "supersede", "fact-history",
-	"stats", "stale", "conflicts", "agents", "projects",
+	"stats", "health", "stale", "conflicts", "agents", "projects",
 	"graph", "cluster",
 	"reason", "bench",
 	"cleanup", "optimize", "embed", "tag", "answer", "lifecycle", "beliefs",
@@ -10706,6 +11019,7 @@ Facts:
 
 Observe:
   stats                 Memory statistics, health, and growth
+  health                Actionable production health report
   stale                 Find outdated facts (confidence decay)
   conflicts             Detect contradictory facts
   agents                List known agents with per-agent stats

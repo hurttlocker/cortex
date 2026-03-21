@@ -2806,6 +2806,49 @@ func TestRunSearch_FactsJSON(t *testing.T) {
 	}
 }
 
+func TestRunHealth_JSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	oldDBPath := globalDBPath
+	oldReadOnly := globalReadOnly
+	globalDBPath = dbPath
+	globalReadOnly = false
+	t.Cleanup(func() {
+		globalDBPath = oldDBPath
+		globalReadOnly = oldReadOnly
+	})
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memID, err := s.AddMemory(ctx, &store.Memory{Content: "health seed", SourceFile: "health.md"})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "Q", Predicate: "status", Object: "active", FactType: "state", Confidence: 0.9}); err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runHealth([]string{"--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runHealth --json: %v", runErr)
+	}
+	if !strings.Contains(out, "\"memories\"") || !strings.Contains(out, "\"recommendations\"") {
+		t.Fatalf("unexpected health output: %q", out)
+	}
+}
+
 func TestRunCleanup_PrunesTemporalNoiseFacts(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "cortex.db")

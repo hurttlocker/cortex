@@ -8,7 +8,7 @@ import (
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
-func TestStoreExtractedFact_AutoSupersedesChangedObject(t *testing.T) {
+func TestStoreExtractedFact_StoresChangedObjectAsConflictCandidate(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
@@ -54,15 +54,12 @@ func TestStoreExtractedFact_AutoSupersedesChangedObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFact old: %v", err)
 	}
-	if oldFact == nil || oldFact.SupersededBy == nil || *oldFact.SupersededBy != newFactID {
-		t.Fatalf("expected old fact to be superseded by %d, got %+v", newFactID, oldFact)
-	}
-	if !strings.EqualFold(oldFact.State, store.FactStateSuperseded) {
-		t.Fatalf("expected old fact state=%q, got %q", store.FactStateSuperseded, oldFact.State)
+	if oldFact == nil || oldFact.SupersededBy != nil {
+		t.Fatalf("expected old fact to remain active for lifecycle conflict resolution, got %+v", oldFact)
 	}
 }
 
-func TestStoreExtractedFact_SkipsDuplicateObjectAndSupersedesConflicts(t *testing.T) {
+func TestStoreExtractedFact_SkipsFuzzyDuplicateObjectWithoutSupersedingConflicts(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
@@ -106,7 +103,7 @@ func TestStoreExtractedFact_SkipsDuplicateObjectAndSupersedesConflicts(t *testin
 		MemoryID:   memoryC,
 		Subject:    "service-status",
 		Predicate:  "status",
-		Object:     "running",
+		Object:     "service is running",
 		FactType:   "state",
 		Confidence: 0.92,
 	})
@@ -124,8 +121,8 @@ func TestStoreExtractedFact_SkipsDuplicateObjectAndSupersedesConflicts(t *testin
 	if err != nil {
 		t.Fatalf("GetFact loser: %v", err)
 	}
-	if loserFact == nil || loserFact.SupersededBy == nil || *loserFact.SupersededBy != winnerID {
-		t.Fatalf("expected conflicting loser to be superseded by %d, got %+v", winnerID, loserFact)
+	if loserFact == nil || loserFact.SupersededBy != nil {
+		t.Fatalf("expected conflicting loser to remain unresolved for lifecycle, got %+v", loserFact)
 	}
 
 	allFacts, err := s.ListFacts(ctx, store.ListOpts{Limit: 50, IncludeSuperseded: true})
