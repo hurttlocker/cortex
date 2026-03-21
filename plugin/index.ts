@@ -55,6 +55,7 @@ interface CortexConfig {
   dbPath: string;
   embedProvider: string;
   searchMode: "hybrid" | "bm25" | "semantic";
+  recallMode: "facts" | "memories";
   autoCapture: boolean;
   autoRecall: boolean;
   recallLimit: number;
@@ -75,6 +76,23 @@ interface CortexSearchResult {
   match_type: string;
   memory_id: number;
   snippet?: string;
+}
+
+interface CortexFactSearchResult {
+  fact_id: number;
+  memory_id: number;
+  subject: string;
+  predicate: string;
+  object: string;
+  content?: string;
+  fact_type: string;
+  confidence: number;
+  source_file: string;
+  source_line?: number;
+  source_section?: string;
+  source_tier?: string;
+  score: number;
+  match_type?: string;
 }
 
 interface CortexSearchOptions {
@@ -191,6 +209,7 @@ function parseConfig(raw: unknown): CortexConfig {
     dbPath,
     embedProvider: typeof cfg.embedProvider === "string" ? cfg.embedProvider : "ollama/nomic-embed-text",
     searchMode: (cfg.searchMode as CortexConfig["searchMode"]) ?? "hybrid",
+    recallMode: (cfg.recallMode as CortexConfig["recallMode"]) ?? "facts",
     autoCapture: cfg.autoCapture === true,
     autoRecall: cfg.autoRecall !== false, // Default ON
     recallLimit: typeof cfg.recallLimit === "number" ? cfg.recallLimit : 3,
@@ -240,7 +259,7 @@ function parseConfig(raw: unknown): CortexConfig {
 const canonicalOpenClawSetupDoc = "docs/openclaw-happy-path.md";
 const minimumRecommendedCortexVersion = "1.2.4";
 const knownPluginConfigKeys = new Set([
-  "binaryPath", "dbPath", "embedProvider", "searchMode", "autoCapture", "autoRecall", "recallLimit", "recallBudgetChars", "minScore",
+  "binaryPath", "dbPath", "embedProvider", "searchMode", "recallMode", "autoCapture", "autoRecall", "recallLimit", "recallBudgetChars", "minScore",
   "captureMaxChars", "extractFacts", "capture", "recallDedupe",
 ]);
 
@@ -446,6 +465,53 @@ class CortexCLI {
 
     try {
       return JSON.parse(output) as CortexSearchResult[];
+    } catch {
+      return [];
+    }
+  }
+
+  async searchFacts(
+    query: string,
+    limit = 5,
+    mode?: string,
+    minScore?: number,
+    options?: CortexSearchOptions,
+  ): Promise<CortexSearchResult[]> {
+    const searchMode = mode ?? this.defaultMode;
+    const args = ["search", query, "--facts", "--limit", String(limit), "--json"];
+
+    if (searchMode === "hybrid" || searchMode === "semantic") {
+      args.push("--mode", searchMode, "--embed", this.embedProvider);
+    } else {
+      args.push("--mode", searchMode);
+    }
+
+    if (minScore !== undefined) {
+      args.push("--min-score", String(minScore));
+    }
+
+    if (options?.agent) args.push("--agent", options.agent);
+    if (options?.channel) args.push("--channel", options.channel);
+    if (options?.sessionKey) args.push("--session-key", options.sessionKey);
+    if (options?.boostAgent) args.push("--boost-agent", options.boostAgent);
+    if (options?.boostChannel) args.push("--boost-channel", options.boostChannel);
+    if (options?.boostSessionKey) args.push("--boost-session-key", options.boostSessionKey);
+    if (options?.after) args.push("--after", options.after);
+
+    const output = await this.exec(args);
+    if (!output || output === "null" || output === "[]") return [];
+
+    try {
+      const rows = JSON.parse(output) as CortexFactSearchResult[];
+      return rows.map((row) => ({
+        content: row.content || `${row.subject} ${row.predicate} ${row.object}`.trim(),
+        source_file: row.source_file,
+        source_line: row.source_line ?? 0,
+        source_section: row.source_section ?? "",
+        score: row.score,
+        match_type: row.match_type ?? "fact",
+        memory_id: row.memory_id,
+      }));
     } catch {
       return [];
     }
@@ -1181,9 +1247,11 @@ const cortexPlugin = {
             }
           };
 
+          const recallSearch = cfg.recallMode === "facts" ? cli.searchFacts.bind(cli) : cli.search.bind(cli);
+
           if (typeof ctx?.sessionKey === "string" && ctx.sessionKey.trim() !== "") {
             appendResults(
-              await cli.search(event.prompt, fetchLimit, cfg.searchMode, cfg.minScore, {
+              await recallSearch(event.prompt, fetchLimit, cfg.searchMode, cfg.minScore, {
                 ...baseSearchOptions,
                 sessionKey: ctx.sessionKey,
                 after: compactionMode ? todayKey : undefined,
@@ -1192,7 +1260,7 @@ const cortexPlugin = {
 
             if (mergedRawResults.length === 0 && compactionMode) {
               appendResults(
-                await cli.search(event.prompt, fetchLimit, cfg.searchMode, cfg.minScore, {
+                await recallSearch(event.prompt, fetchLimit, cfg.searchMode, cfg.minScore, {
                   ...baseSearchOptions,
                   sessionKey: ctx.sessionKey,
                   after: yesterdayKey,
@@ -1203,7 +1271,7 @@ const cortexPlugin = {
 
           if (mergedRawResults.length < cfg.recallLimit) {
             appendResults(
-              await cli.search(event.prompt, fetchLimit, cfg.searchMode, cfg.minScore, {
+              await recallSearch(event.prompt, fetchLimit, cfg.searchMode, cfg.minScore, {
                 ...baseSearchOptions,
                 agent: typeof ctx?.agentId === "string" ? ctx.agentId : undefined,
                 after: compactionMode ? yesterdayKey : undefined,

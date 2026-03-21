@@ -36,6 +36,7 @@ import (
 	"github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
 	"github.com/mark3labs/mcp-go/server"
+	"gopkg.in/yaml.v3"
 )
 
 // version is set by goreleaser via ldflags at build time.
@@ -97,6 +98,8 @@ func main() {
 		exitWithError(runReinforce(args[1:]))
 	case "supersede":
 		exitWithError(runSupersede(args[1:]))
+	case "fact":
+		exitWithError(runFactCommand(args[1:]))
 	case "fact-history":
 		exitWithError(runFactHistory(args[1:]))
 	case "edge":
@@ -117,6 +120,10 @@ func main() {
 		exitWithError(runCleanup(args[1:]))
 	case "optimize":
 		exitWithError(runOptimize(args[1:]))
+	case "suppress":
+		exitWithError(runSuppress(args[1:]))
+	case "source-weight":
+		exitWithError(runSourceWeight(args[1:]))
 	case "projects":
 		exitWithError(runProjects(args[1:]))
 	case "agents":
@@ -1891,6 +1898,265 @@ Notes:
 
 	fmt.Printf("Updated %d fact(s) to state=%s\n", updated, state)
 	return nil
+}
+
+func runFactCommand(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex fact <keep|drop> <fact_id> [fact_id...]")
+	}
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "keep":
+		return runBeliefs(append([]string{"set", "core"}, args[1:]...))
+	case "drop":
+		return runBeliefs(append([]string{"set", "retired"}, args[1:]...))
+	default:
+		return fmt.Errorf("unknown fact subcommand %q (expected: keep, drop)", args[0])
+	}
+}
+
+func loadMutableConfig(path string) (map[string]any, string, error) {
+	cfgPath := strings.TrimSpace(path)
+	if cfgPath == "" {
+		cfgPath = cfgresolver.DefaultConfigPath()
+	}
+	cfgPath = expandUserPath(cfgPath)
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]any{}, cfgPath, nil
+		}
+		return nil, cfgPath, err
+	}
+	out := map[string]any{}
+	if err := yaml.Unmarshal(data, &out); err != nil {
+		return nil, cfgPath, err
+	}
+	return out, cfgPath, nil
+}
+
+func writeMutableConfig(path string, cfg map[string]any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+func getNestedMap(root map[string]any, key string) map[string]any {
+	if existing, ok := root[key].(map[string]any); ok {
+		return existing
+	}
+	child := map[string]any{}
+	root[key] = child
+	return child
+}
+
+func getPatternEntries(root map[string]any, section, key string) []map[string]any {
+	sectionMap := getNestedMap(root, section)
+	raw, ok := sectionMap[key]
+	if !ok {
+		return []map[string]any{}
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(arr))
+	for _, item := range arr {
+		if m, ok := item.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func setPatternEntries(root map[string]any, section, key string, entries []map[string]any) {
+	sectionMap := getNestedMap(root, section)
+	arr := make([]any, 0, len(entries))
+	for _, entry := range entries {
+		arr = append(arr, entry)
+	}
+	sectionMap[key] = arr
+}
+
+func runSuppress(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex suppress <list|add|remove> [pattern] [--reason <text>]")
+	}
+	cfg, path, err := loadMutableConfig("")
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "list":
+		entries := getPatternEntries(cfg, "extract", "suppress_patterns")
+		if len(entries) == 0 {
+			fmt.Println("No extract suppression patterns configured.")
+			return nil
+		}
+		for i, entry := range entries {
+			fmt.Printf("%d. %s", i+1, entry["pattern"])
+			if reason, ok := entry["reason"]; ok && strings.TrimSpace(fmt.Sprint(reason)) != "" {
+				fmt.Printf("  # %s", reason)
+			}
+			fmt.Println()
+		}
+		return nil
+	case "add":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: cortex suppress add <pattern> [--reason <text>]")
+		}
+		pattern := args[1]
+		reason := ""
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--reason" && i+1 < len(args) {
+				i++
+				reason = args[i]
+			}
+		}
+		entries := getPatternEntries(cfg, "extract", "suppress_patterns")
+		for _, entry := range entries {
+			if fmt.Sprint(entry["pattern"]) == pattern {
+				return fmt.Errorf("suppression pattern already exists")
+			}
+		}
+		entries = append(entries, map[string]any{"pattern": pattern, "reason": reason})
+		setPatternEntries(cfg, "extract", "suppress_patterns", entries)
+		if err := writeMutableConfig(path, cfg); err != nil {
+			return fmt.Errorf("writing config: %w", err)
+		}
+		fmt.Printf("Added suppression pattern to %s\n", path)
+		return nil
+	case "remove":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: cortex suppress remove <pattern>")
+		}
+		pattern := args[1]
+		entries := getPatternEntries(cfg, "extract", "suppress_patterns")
+		filtered := make([]map[string]any, 0, len(entries))
+		removed := false
+		for _, entry := range entries {
+			if fmt.Sprint(entry["pattern"]) == pattern {
+				removed = true
+				continue
+			}
+			filtered = append(filtered, entry)
+		}
+		if !removed {
+			return fmt.Errorf("pattern not found")
+		}
+		setPatternEntries(cfg, "extract", "suppress_patterns", filtered)
+		if err := writeMutableConfig(path, cfg); err != nil {
+			return fmt.Errorf("writing config: %w", err)
+		}
+		fmt.Printf("Removed suppression pattern from %s\n", path)
+		return nil
+	default:
+		return fmt.Errorf("unknown suppress subcommand %q (expected: list, add, remove)", args[0])
+	}
+}
+
+func runSourceWeight(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex source-weight <list|add|remove> [prefix] [weight]")
+	}
+	cfg, path, err := loadMutableConfig("")
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	searchMap := getNestedMap(cfg, "search")
+	getEntries := func() []map[string]any {
+		raw, ok := searchMap["source_boosts"]
+		if !ok {
+			return []map[string]any{}
+		}
+		arr, ok := raw.([]any)
+		if !ok {
+			return []map[string]any{}
+		}
+		out := make([]map[string]any, 0, len(arr))
+		for _, item := range arr {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	setEntries := func(entries []map[string]any) {
+		arr := make([]any, 0, len(entries))
+		for _, entry := range entries {
+			arr = append(arr, entry)
+		}
+		searchMap["source_boosts"] = arr
+	}
+
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "list":
+		entries := getEntries()
+		if len(entries) == 0 {
+			fmt.Println("No source weights configured.")
+			return nil
+		}
+		for i, entry := range entries {
+			fmt.Printf("%d. %s => %v\n", i+1, entry["prefix"], entry["weight"])
+		}
+		return nil
+	case "add":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: cortex source-weight add <prefix> <weight>")
+		}
+		weight, err := strconv.ParseFloat(args[2], 64)
+		if err != nil {
+			return fmt.Errorf("invalid weight %q", args[2])
+		}
+		entries := getEntries()
+		updated := false
+		for _, entry := range entries {
+			if fmt.Sprint(entry["prefix"]) == args[1] {
+				entry["weight"] = weight
+				updated = true
+			}
+		}
+		if !updated {
+			entries = append(entries, map[string]any{"prefix": args[1], "weight": weight})
+		}
+		setEntries(entries)
+		if err := writeMutableConfig(path, cfg); err != nil {
+			return fmt.Errorf("writing config: %w", err)
+		}
+		fmt.Printf("Saved source weight in %s\n", path)
+		return nil
+	case "remove":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: cortex source-weight remove <prefix>")
+		}
+		entries := getEntries()
+		filtered := make([]map[string]any, 0, len(entries))
+		removed := false
+		for _, entry := range entries {
+			if fmt.Sprint(entry["prefix"]) == args[1] {
+				removed = true
+				continue
+			}
+			filtered = append(filtered, entry)
+		}
+		if !removed {
+			return fmt.Errorf("prefix not found")
+		}
+		setEntries(filtered)
+		if err := writeMutableConfig(path, cfg); err != nil {
+			return fmt.Errorf("writing config: %w", err)
+		}
+		fmt.Printf("Removed source weight from %s\n", path)
+		return nil
+	default:
+		return fmt.Errorf("unknown source-weight subcommand %q (expected: list, add, remove)", args[0])
+	}
 }
 
 func resolveBeliefFilterState(raw string) (string, error) {
@@ -10932,11 +11198,11 @@ func execCommand(name string, args ...string) error {
 // cortexCommands is the authoritative list of top-level commands for completion.
 var cortexCommands = []string{
 	"import", "reimport", "refresh-source", "search", "query", "list", "export", "update", "demo",
-	"extract", "classify", "reinforce", "supersede", "fact-history",
+	"extract", "classify", "reinforce", "supersede", "fact", "fact-history",
 	"stats", "health", "stale", "conflicts", "agents", "projects",
 	"graph", "cluster",
 	"reason", "bench",
-	"cleanup", "optimize", "embed", "tag", "answer", "lifecycle", "beliefs",
+	"cleanup", "optimize", "embed", "tag", "answer", "lifecycle", "beliefs", "suppress", "source-weight",
 	"connect",
 	"mcp", "doctor", "completion", "version", "help",
 }
@@ -11029,6 +11295,8 @@ Facts:
   classify              Reclassify kv facts using LLM
   reinforce <id>        Reset decay timer on a fact
   supersede <id>        Mark a fact as superseded by a newer one
+  fact keep <id>        Mark a fact as core / operator-kept
+  fact drop <id>        Retire a fact
 
 Observe:
   stats                 Memory statistics, health, and growth
@@ -11054,6 +11322,8 @@ Maintenance:
   optimize              DB maintenance (integrity check, VACUUM, ANALYZE)
   embed <provider/model> Generate embeddings, run/watch the worker, or show status
   embed-source <path>   Finish embeddings for one source file
+  suppress              Manage extract suppression patterns in config
+  source-weight         Manage search source weights in config
   tag                   Tag memories by project
 
 Connectors:

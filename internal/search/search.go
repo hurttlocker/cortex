@@ -245,15 +245,20 @@ type Result struct {
 
 // FactResult is a direct fact-level search hit.
 type FactResult struct {
-	FactID     int64   `json:"fact_id"`
-	Subject    string  `json:"subject"`
-	Predicate  string  `json:"predicate"`
-	Object     string  `json:"object"`
-	FactType   string  `json:"fact_type"`
-	Confidence float64 `json:"confidence"`
-	SourceFile string  `json:"source_file"`
-	SourceTier string  `json:"source_tier,omitempty"`
-	Score      float64 `json:"score"`
+	FactID        int64   `json:"fact_id"`
+	MemoryID      int64   `json:"memory_id,omitempty"`
+	Subject       string  `json:"subject"`
+	Predicate     string  `json:"predicate"`
+	Object        string  `json:"object"`
+	Content       string  `json:"content,omitempty"`
+	FactType      string  `json:"fact_type"`
+	Confidence    float64 `json:"confidence"`
+	SourceFile    string  `json:"source_file"`
+	SourceLine    int     `json:"source_line,omitempty"`
+	SourceSection string  `json:"source_section,omitempty"`
+	SourceTier    string  `json:"source_tier,omitempty"`
+	Score         float64 `json:"score"`
+	MatchType     string  `json:"match_type,omitempty"`
 }
 
 // ExplainDetails surfaces provenance and ranking factors for operator trust/debugging.
@@ -674,15 +679,20 @@ func (e *Engine) SearchFacts(ctx context.Context, query string, opts Options) ([
 		score *= 0.75 + 0.25*clamp01(fact.Confidence)
 
 		results = append(results, FactResult{
-			FactID:     fact.ID,
-			Subject:    fact.Subject,
-			Predicate:  fact.Predicate,
-			Object:     fact.Object,
-			FactType:   fact.FactType,
-			Confidence: fact.Confidence,
-			SourceFile: memory.SourceFile,
-			SourceTier: sourceTierForFile(memory.SourceFile),
-			Score:      score,
+			FactID:        fact.ID,
+			MemoryID:      fact.MemoryID,
+			Subject:       fact.Subject,
+			Predicate:     fact.Predicate,
+			Object:        fact.Object,
+			Content:       strings.TrimSpace(strings.Join([]string{fact.Subject, fact.Predicate, fact.Object}, " ")),
+			FactType:      fact.FactType,
+			Confidence:    fact.Confidence,
+			SourceFile:    memory.SourceFile,
+			SourceLine:    memory.SourceLine,
+			SourceSection: memory.SourceSection,
+			SourceTier:    sourceTierForFile(memory.SourceFile),
+			Score:         score,
+			MatchType:     "fact",
 		})
 	}
 

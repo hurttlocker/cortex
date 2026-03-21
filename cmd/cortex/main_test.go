@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2846,6 +2847,102 @@ func TestRunHealth_JSON(t *testing.T) {
 	}
 	if !strings.Contains(out, "\"memories\"") || !strings.Contains(out, "\"recommendations\"") {
 		t.Fatalf("unexpected health output: %q", out)
+	}
+}
+
+func TestRunSuppress_AddListRemove(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgDir := filepath.Join(home, ".cortex")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	if err := runSuppress([]string{"add", "^NO_REPLY$", "--reason", "protocol noise"}); err != nil {
+		t.Fatalf("runSuppress add: %v", err)
+	}
+
+	out := captureStdout(func() {
+		if err := runSuppress([]string{"list"}); err != nil {
+			t.Fatalf("runSuppress list: %v", err)
+		}
+	})
+	if !strings.Contains(out, "^NO_REPLY$") {
+		t.Fatalf("expected suppression pattern in list output, got %q", out)
+	}
+
+	if err := runSuppress([]string{"remove", "^NO_REPLY$"}); err != nil {
+		t.Fatalf("runSuppress remove: %v", err)
+	}
+}
+
+func TestRunSourceWeight_AddListRemove(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgDir := filepath.Join(home, ".cortex")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	if err := runSourceWeight([]string{"add", "memory/", "1.4"}); err != nil {
+		t.Fatalf("runSourceWeight add: %v", err)
+	}
+
+	out := captureStdout(func() {
+		if err := runSourceWeight([]string{"list"}); err != nil {
+			t.Fatalf("runSourceWeight list: %v", err)
+		}
+	})
+	if !strings.Contains(out, "memory/") || !strings.Contains(out, "1.4") {
+		t.Fatalf("expected source weight in list output, got %q", out)
+	}
+
+	if err := runSourceWeight([]string{"remove", "memory/"}); err != nil {
+		t.Fatalf("runSourceWeight remove: %v", err)
+	}
+}
+
+func TestRunFactCommand_KeepAndDrop(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	oldDBPath := globalDBPath
+	oldReadOnly := globalReadOnly
+	globalDBPath = dbPath
+	globalReadOnly = false
+	t.Cleanup(func() {
+		globalDBPath = oldDBPath
+		globalReadOnly = oldReadOnly
+	})
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memID, _ := s.AddMemory(ctx, &store.Memory{Content: "fact command seed", SourceFile: "fact.md"})
+	factID, _ := s.AddFact(ctx, &store.Fact{MemoryID: memID, Subject: "Q", Predicate: "status", Object: "active", FactType: "state", Confidence: 0.9})
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+
+	if err := runFactCommand([]string{"keep", strconv.FormatInt(factID, 10)}); err != nil {
+		t.Fatalf("runFactCommand keep: %v", err)
+	}
+	s, _ = store.NewStore(store.StoreConfig{DBPath: dbPath})
+	fact, _ := s.GetFact(ctx, factID)
+	if fact.State != store.FactStateCore {
+		t.Fatalf("expected core state after keep, got %q", fact.State)
+	}
+	s.Close()
+
+	if err := runFactCommand([]string{"drop", strconv.FormatInt(factID, 10)}); err != nil {
+		t.Fatalf("runFactCommand drop: %v", err)
+	}
+	s, _ = store.NewStore(store.StoreConfig{DBPath: dbPath})
+	defer s.Close()
+	fact, _ = s.GetFact(ctx, factID)
+	if fact.State != store.FactStateRetired {
+		t.Fatalf("expected retired state after drop, got %q", fact.State)
 	}
 }
 
