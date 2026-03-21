@@ -242,6 +242,18 @@ type Result struct {
 	Explain       *ExplainDetails `json:"explain,omitempty"`
 }
 
+// FactResult is a direct fact-level search hit.
+type FactResult struct {
+	FactID     int64   `json:"fact_id"`
+	Subject    string  `json:"subject"`
+	Predicate  string  `json:"predicate"`
+	Object     string  `json:"object"`
+	FactType   string  `json:"fact_type"`
+	Confidence float64 `json:"confidence"`
+	SourceFile string  `json:"source_file"`
+	Score      float64 `json:"score"`
+}
+
 // ExplainDetails surfaces provenance and ranking factors for operator trust/debugging.
 type ExplainDetails struct {
 	Provenance     ExplainProvenance  `json:"provenance"`
@@ -581,6 +593,108 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	return results, nil
 }
 
+// SearchFacts returns direct fact hits ranked by lexical relevance, confidence,
+// and source-aware weighting. It is intentionally additive and does not change
+// the default memory-chunk search behavior.
+func (e *Engine) SearchFacts(ctx context.Context, query string, opts Options) ([]FactResult, error) {
+	rawQuery := strings.TrimSpace(query)
+	if rawQuery == "" {
+		return nil, nil
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+
+	facts, err := e.store.ListFacts(ctx, store.ListOpts{
+		Limit:             math.MaxInt32,
+		IncludeSuperseded: opts.IncludeSuperseded,
+		Agent:             opts.Agent,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing facts for fact search: %w", err)
+	}
+
+	memories, err := e.store.ListMemories(ctx, store.ListOpts{
+		Limit:  math.MaxInt32,
+		Agent:  opts.Agent,
+		After:  opts.After,
+		Before: opts.Before,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing memories for fact search: %w", err)
+	}
+
+	memoryByID := make(map[int64]*store.Memory, len(memories))
+	for _, memory := range memories {
+		memoryByID[memory.ID] = memory
+	}
+
+	queryLower := strings.ToLower(rawQuery)
+	queryTokens := queryTokenSet(rawQuery)
+	minScore := effectiveMinScore(ModeKeyword, opts.MinScore)
+	results := make([]FactResult, 0, limit)
+
+	for _, fact := range facts {
+		memory, ok := memoryByID[fact.MemoryID]
+		if !ok {
+			continue
+		}
+		if opts.Project != "" && !strings.EqualFold(memory.Project, opts.Project) {
+			continue
+		}
+		if opts.Source != "" && !matchesSourcePrefix(strings.ToLower(strings.TrimSpace(memory.SourceFile)), strings.ToLower(strings.TrimSpace(opts.Source))) {
+			continue
+		}
+		if opts.SessionKey != "" && (memory.Metadata == nil || !strings.EqualFold(memory.Metadata.SessionKey, opts.SessionKey)) {
+			continue
+		}
+		if opts.Channel != "" && !matchMemoryChannel(memory, opts.Channel) {
+			continue
+		}
+		if len(opts.Classes) > 0 && !memoryClassAllowed(memory.MemoryClass, opts.Classes) {
+			continue
+		}
+		if !factMatchesIntent(memory.SourceFile, opts.Intent) {
+			continue
+		}
+
+		score := factTextScore(queryLower, queryTokens, fact)
+		if score < minScore {
+			continue
+		}
+
+		score *= sourceWeightForFile(memory.SourceFile)
+		if boost, _ := sourceBoostForResult(memory.SourceFile, opts.SourceBoosts); boost > 0 {
+			score *= boost
+		}
+		score *= 0.75 + 0.25*clamp01(fact.Confidence)
+
+		results = append(results, FactResult{
+			FactID:     fact.ID,
+			Subject:    fact.Subject,
+			Predicate:  fact.Predicate,
+			Object:     fact.Object,
+			FactType:   fact.FactType,
+			Confidence: fact.Confidence,
+			SourceFile: memory.SourceFile,
+			Score:      score,
+		})
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Score == results[j].Score {
+			return results[i].FactID > results[j].FactID
+		}
+		return results[i].Score > results[j].Score
+	})
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
 // filterByMetadata applies metadata-based filters to search results.
 func filterByMetadata(results []Result, opts Options) []Result {
 	var filtered []Result
@@ -603,6 +717,86 @@ func filterByMetadata(results []Result, opts Options) []Result {
 		filtered = append(filtered, r)
 	}
 	return filtered
+}
+
+func matchMemoryChannel(memory *store.Memory, channel string) bool {
+	if memory == nil || memory.Metadata == nil {
+		return false
+	}
+	return strings.EqualFold(memory.Metadata.Channel, channel) || strings.EqualFold(memory.Metadata.ChannelName, channel)
+}
+
+func memoryClassAllowed(memoryClass string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	normalized := store.NormalizeMemoryClass(memoryClass)
+	for _, c := range allowed {
+		if normalized == store.NormalizeMemoryClass(c) {
+			return true
+		}
+	}
+	return false
+}
+
+func factMatchesIntent(sourceFile, intent string) bool {
+	switch strings.ToLower(strings.TrimSpace(intent)) {
+	case "", IntentAll:
+		return true
+	case IntentMemory:
+		return isMemorySource(sourceFile)
+	case IntentImport:
+		return !isConnectorSource(sourceFile) && !isMemorySource(sourceFile)
+	case IntentConnector:
+		return isConnectorSource(sourceFile)
+	default:
+		return true
+	}
+}
+
+func factTextScore(queryLower string, queryTokens map[string]struct{}, fact *store.Fact) float64 {
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{fact.Subject, fact.Predicate, fact.Object}, " ")))
+	if text == "" {
+		return 0
+	}
+
+	score := tokenOverlapRatio(queryTokens, queryTokenSet(text))
+	if queryLower != "" && strings.Contains(text, queryLower) {
+		score += 0.35
+	}
+	if queryLower != "" && strings.Contains(strings.ToLower(strings.TrimSpace(fact.Subject)), queryLower) {
+		score += 0.15
+	}
+	if queryLower != "" && strings.Contains(strings.ToLower(strings.TrimSpace(fact.Predicate)), queryLower) {
+		score += 0.10
+	}
+	return score
+}
+
+func tokenOverlapRatio(queryTokens, candidateTokens map[string]struct{}) float64 {
+	if len(queryTokens) == 0 || len(candidateTokens) == 0 {
+		return 0
+	}
+	matches := 0
+	for tok := range queryTokens {
+		if _, ok := candidateTokens[tok]; ok {
+			matches++
+		}
+	}
+	if matches == 0 {
+		return 0
+	}
+	return float64(matches) / float64(len(queryTokens))
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 func filterByClass(results []Result, allowed []string) []Result {
@@ -1276,6 +1470,11 @@ const (
 	// Connector sources use format "provider:path", manual sources are file paths.
 	sourceWeightManual    = 1.05 // Boost for manually imported files
 	sourceWeightConnector = 0.97 // Slight penalty for connector-imported records
+	sourceWeightMemoryMD  = 1.50
+	sourceWeightDailyNote = 1.30
+	sourceWeightSharedCtx = 1.20
+	sourceWeightTempDir   = 0.70
+	sourceWeightCapture   = 0.60
 )
 
 // applyMetadataBoosts boosts results that match the calling agent/channel/session context.
@@ -1574,12 +1773,7 @@ func isConnectorSource(sourceFile string) bool {
 // Optional source boosts can further increase weights for matching source prefixes.
 func applySourceWeight(results []Result, boosts []SourceBoost, explain bool) []Result {
 	for i := range results {
-		var weight float64
-		if isConnectorSource(results[i].SourceFile) {
-			weight = sourceWeightConnector
-		} else {
-			weight = sourceWeightManual
-		}
+		weight := sourceWeightForFile(results[i].SourceFile)
 
 		score := results[i].Score * weight
 		boostMult, boostPrefix := sourceBoostForResult(results[i].SourceFile, boosts)
@@ -1603,6 +1797,36 @@ func applySourceWeight(results []Result, boosts []SourceBoost, explain bool) []R
 	})
 
 	return results
+}
+
+func sourceWeightForFile(sourceFile string) float64 {
+	lower := strings.ToLower(strings.TrimSpace(sourceFile))
+	if lower == "" {
+		return 1.0
+	}
+
+	weight := sourceWeightManual
+	if isConnectorSource(sourceFile) {
+		weight = sourceWeightConnector
+	}
+
+	if strings.HasPrefix(lower, "/var/folders/") || strings.HasPrefix(lower, "/tmp/") {
+		weight *= sourceWeightTempDir
+	}
+	if strings.Contains(lower, "auto-capture") {
+		weight *= sourceWeightCapture
+	}
+
+	switch {
+	case lower == "memory.md", strings.HasSuffix(lower, "/memory.md"):
+		weight *= sourceWeightMemoryMD
+	case strings.HasSuffix(lower, ".md") && (strings.HasPrefix(lower, "memory/") || strings.Contains(lower, "/memory/")):
+		weight *= sourceWeightDailyNote
+	case strings.HasPrefix(lower, "shared-context/"), strings.Contains(lower, "/shared-context/"):
+		weight *= sourceWeightSharedCtx
+	}
+
+	return weight
 }
 
 func sourceBoostForResult(sourceFile string, boosts []SourceBoost) (float64, string) {

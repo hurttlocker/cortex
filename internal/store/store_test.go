@@ -822,6 +822,9 @@ func TestStats(t *testing.T) {
 	if stats.MemoryCount != 0 || stats.FactCount != 0 {
 		t.Error("expected zero counts for empty store")
 	}
+	if stats.DeniedAtImportCount != 0 {
+		t.Errorf("expected 0 denied-at-import count, got %d", stats.DeniedAtImportCount)
+	}
 
 	// Add some data
 	for i := 0; i < 3; i++ {
@@ -831,6 +834,9 @@ func TestStats(t *testing.T) {
 	}
 	s.LogEvent(ctx, &MemoryEvent{EventType: "add", Source: "test"})
 	s.LogEvent(ctx, &MemoryEvent{EventType: "add", Source: "test"})
+	if err := s.(*SQLiteStore).IncrementDeniedAtImportCount(ctx, 2); err != nil {
+		t.Fatalf("IncrementDeniedAtImportCount failed: %v", err)
+	}
 
 	stats, err = s.Stats(ctx)
 	if err != nil {
@@ -847,6 +853,9 @@ func TestStats(t *testing.T) {
 	}
 	if stats.EventCount != 2 {
 		t.Errorf("expected 2 events, got %d", stats.EventCount)
+	}
+	if stats.DeniedAtImportCount != 2 {
+		t.Errorf("expected 2 denied-at-import count, got %d", stats.DeniedAtImportCount)
 	}
 }
 

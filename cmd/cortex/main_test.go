@@ -1022,6 +1022,19 @@ func TestParseEmbedArgs_StatusDoesNotRequireProvider(t *testing.T) {
 	}
 }
 
+func TestParseEmbedArgs_BatchAliasAndWorkers(t *testing.T) {
+	opts, err := parseEmbedArgs([]string{"ollama/nomic-embed-text", "--batch", "60", "--workers", "3"})
+	if err != nil {
+		t.Fatalf("parseEmbedArgs: %v", err)
+	}
+	if opts.batchSize != 60 {
+		t.Fatalf("batchSize = %d, want 60", opts.batchSize)
+	}
+	if opts.workers != 3 {
+		t.Fatalf("workers = %d, want 3", opts.workers)
+	}
+}
+
 func TestRunEmbed_StatusReportsCoverage(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "cortex.db")
@@ -2734,6 +2747,62 @@ func TestRunSearch_UnknownMode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "badmode") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunSearch_FactsJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	oldDBPath := globalDBPath
+	oldReadOnly := globalReadOnly
+	globalDBPath = dbPath
+	globalReadOnly = false
+	t.Cleanup(func() {
+		globalDBPath = oldDBPath
+		globalReadOnly = oldReadOnly
+	})
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memID, err := s.AddMemory(ctx, &store.Memory{
+		Content:    "Q prefers green for additions and blue for deletions in diffs",
+		SourceFile: "memory/2026-03-18.md",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "Q",
+		Predicate:  "prefers",
+		Object:     "green for additions and blue for deletions in code diffs",
+		FactType:   "preference",
+		Confidence: 0.95,
+	}); err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+
+	var (
+		runErr error
+		out    string
+	)
+	out = captureStdout(func() {
+		runErr = runSearch([]string{"green blue code diffs", "--facts", "--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runSearch --facts --json: %v", runErr)
+	}
+	if !strings.Contains(out, "\"fact_id\"") {
+		t.Fatalf("expected fact_id in JSON output, got %q", out)
+	}
+	if !strings.Contains(out, "\"predicate\": \"prefers\"") {
+		t.Fatalf("expected fact payload in JSON output, got %q", out)
 	}
 }
 

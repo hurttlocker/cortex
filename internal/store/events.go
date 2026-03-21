@@ -50,6 +50,11 @@ func (s *SQLiteStore) Stats(ctx context.Context) (*StoreStats, error) {
 			return nil, fmt.Errorf("querying stats (%s): %w", q.query, err)
 		}
 	}
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT CAST(COALESCE((SELECT value FROM meta WHERE key = 'denied_at_import_count'), '0') AS INTEGER)
+	`).Scan(&stats.DeniedAtImportCount); err != nil {
+		return nil, fmt.Errorf("querying stats (denied_at_import_count): %w", err)
+	}
 
 	// Get DB size (only works for file-based DBs)
 	if s.dbPath != ":memory:" {
@@ -60,6 +65,21 @@ func (s *SQLiteStore) Stats(ctx context.Context) (*StoreStats, error) {
 	}
 
 	return stats, nil
+}
+
+func (s *SQLiteStore) IncrementDeniedAtImportCount(ctx context.Context, delta int64) error {
+	if delta <= 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO meta (key, value)
+		VALUES ('denied_at_import_count', CAST(? AS TEXT))
+		ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(COALESCE(meta.value, '0') AS INTEGER) + excluded.value AS TEXT)
+	`, delta)
+	if err != nil {
+		return fmt.Errorf("incrementing denied_at_import_count: %w", err)
+	}
+	return nil
 }
 
 // ExtendedStats returns source file count and date range using efficient SQL.

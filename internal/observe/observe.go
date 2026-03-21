@@ -24,6 +24,7 @@ type Stats struct {
 	TotalFacts             int                           `json:"facts"`
 	TotalSources           int                           `json:"sources"`
 	StorageBytes           int64                         `json:"storage_bytes"`
+	DeniedAtImportCount    int64                         `json:"denied_at_import_count"`
 	AvgConfidence          float64                       `json:"avg_confidence"`
 	FactsByType            map[string]int                `json:"facts_by_type"`
 	Freshness              Freshness                     `json:"freshness"`
@@ -133,6 +134,7 @@ func (e *Engine) GetStats(ctx context.Context) (*Stats, error) {
 	stats.TotalMemories = int(storeStats.MemoryCount)
 	stats.TotalFacts = int(storeStats.FactCount)
 	stats.StorageBytes = storeStats.DBSizeBytes
+	stats.DeniedAtImportCount = storeStats.DeniedAtImportCount
 
 	// Get storage size from file if store doesn't provide it
 	if stats.StorageBytes == 0 && e.dbPath != ":memory:" {

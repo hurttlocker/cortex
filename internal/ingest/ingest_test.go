@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	cfgresolver "github.com/hurttlocker/cortex/internal/config"
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
@@ -728,6 +729,65 @@ func TestEngine_DryRun(t *testing.T) {
 	}
 	if stats.MemoryCount != 0 {
 		t.Errorf("Expected 0 memories in store after dry run, got %d", stats.MemoryCount)
+	}
+}
+
+func TestEngine_DryRun_ShowsDeniedByImportDenylist(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	e := NewEngine(s)
+
+	path := filepath.Join(t.TempDir(), "heartbeat.txt")
+	if err := os.WriteFile(path, []byte("HEARTBEAT_OK"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	entry := cfgresolver.DenylistEntry{Pattern: "^(HEARTBEAT_OK|NO_REPLY)$", Reason: "protocol noise"}
+	if err := entry.Compile(); err != nil {
+		t.Fatalf("compile denylist: %v", err)
+	}
+
+	result, err := e.ImportFile(ctx, path, ImportOptions{DryRun: true, Denylist: []cfgresolver.DenylistEntry{entry}})
+	if err != nil {
+		t.Fatalf("DryRun import failed: %v", err)
+	}
+	if result.MemoriesDenied != 1 {
+		t.Fatalf("expected 1 denied memory, got %d", result.MemoriesDenied)
+	}
+	if len(result.DeniedDetails) != 1 {
+		t.Fatalf("expected deny detail, got %+v", result.DeniedDetails)
+	}
+}
+
+func TestEngine_ImportFile_IncrementsDeniedAtImportStats(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	e := NewEngine(s)
+
+	path := filepath.Join(t.TempDir(), "heartbeat.txt")
+	if err := os.WriteFile(path, []byte("HEARTBEAT_OK"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	entry := cfgresolver.DenylistEntry{Pattern: "^(HEARTBEAT_OK|NO_REPLY)$", Reason: "protocol noise"}
+	if err := entry.Compile(); err != nil {
+		t.Fatalf("compile denylist: %v", err)
+	}
+
+	result, err := e.ImportFile(ctx, path, ImportOptions{Denylist: []cfgresolver.DenylistEntry{entry}})
+	if err != nil {
+		t.Fatalf("ImportFile failed: %v", err)
+	}
+	if result.MemoriesDenied != 1 {
+		t.Fatalf("expected denied count=1, got %d", result.MemoriesDenied)
+	}
+
+	stats, err := s.Stats(ctx)
+	if err != nil {
+		t.Fatalf("Stats failed: %v", err)
+	}
+	if stats.DeniedAtImportCount != 1 {
+		t.Fatalf("expected denied_at_import_count=1, got %d", stats.DeniedAtImportCount)
 	}
 }
 

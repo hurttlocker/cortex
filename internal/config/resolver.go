@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -23,6 +24,46 @@ type ResolvedValue struct {
 	Value  string      `json:"value"`
 	Source ValueSource `json:"source"`
 	From   string      `json:"from,omitempty"`
+}
+
+type DenylistEntry struct {
+	Pattern  string         `yaml:"pattern" json:"pattern"`
+	Reason   string         `yaml:"reason" json:"reason"`
+	Compiled *regexp.Regexp `yaml:"-" json:"-"`
+}
+
+func (d *DenylistEntry) Compile() error {
+	pattern := strings.TrimSpace(d.Pattern)
+	if pattern == "" {
+		d.Compiled = nil
+		return nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return err
+	}
+	d.Compiled = re
+	return nil
+}
+
+func (d DenylistEntry) Matches(text string) bool {
+	if d.Compiled == nil {
+		return false
+	}
+	return d.Compiled.MatchString(text)
+}
+
+type ImportConfig struct {
+	Denylist []DenylistEntry `yaml:"denylist" json:"denylist"`
+}
+
+type SearchSourceBoostConfig struct {
+	Prefix string  `yaml:"prefix" json:"prefix"`
+	Weight float64 `yaml:"weight" json:"weight"`
+}
+
+type SearchConfig struct {
+	SourceBoosts []SearchSourceBoostConfig `yaml:"source_boosts" json:"source_boosts"`
 }
 
 type ResolveOptions struct {
@@ -134,6 +175,8 @@ type ResolvedConfig struct {
 
 	Policies       PolicyConfig             `json:"policies"`
 	ObsidianExport ObsidianExportConfig     `json:"obsidian_export"`
+	Import         ImportConfig             `json:"import"`
+	Search         SearchConfig             `json:"search"`
 	LLMKeys        map[string]ResolvedValue `json:"llm_keys,omitempty"`
 }
 
@@ -154,6 +197,8 @@ type fileConfig struct {
 		APIKey   string `yaml:"api_key"`
 		Endpoint string `yaml:"endpoint"`
 	} `yaml:"embed"`
+	Import   ImportConfig              `yaml:"import"`
+	Search   SearchConfig              `yaml:"search"`
 	Policies PolicyConfig              `yaml:"policies"`
 	Agents   map[string]AgentTrustRule `yaml:"agents"`
 	Export   struct {
@@ -187,6 +232,8 @@ func ResolveConfig(opts ResolveOptions) (ResolvedConfig, error) {
 	if cfg != nil {
 		out.Policies = cfg.Policies
 		out.ObsidianExport = cfg.Export.Obsidian
+		out.Import = cfg.Import
+		out.Search = cfg.Search
 		apply(&out.DBPath, cfg.DBPath, SourceConfig, path)
 		apply(&out.LLMProvider, cfg.LLM.Provider, SourceConfig, path)
 		apply(&out.LLMEnrichModel, firstNonEmpty(cfg.LLM.EnrichModel, cfg.LLM.EnrichProvider), SourceConfig, path)
@@ -404,6 +451,11 @@ func loadConfig(path string) (*fileConfig, error) {
 	cfg.Export.Obsidian = DefaultObsidianExportConfig()
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	for i := range cfg.Import.Denylist {
+		if err := cfg.Import.Denylist[i].Compile(); err != nil {
+			return nil, fmt.Errorf("parsing %s import.denylist[%d].pattern: %w", path, i, err)
+		}
 	}
 	return &cfg, nil
 }

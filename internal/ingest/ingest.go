@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	cfgresolver "github.com/hurttlocker/cortex/internal/config"
 	"github.com/hurttlocker/cortex/internal/extract"
 	"github.com/hurttlocker/cortex/internal/store"
 )
@@ -297,6 +298,29 @@ func filterByExtension(files []string, include, exclude []string) []string {
 // processMemory handles dedup and storage for a single memory chunk.
 func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOptions, result *ImportResult) error {
 	opts.Normalize()
+
+	if entry, denied := matchImportDenylist(raw.Content, opts.Denylist); denied {
+		result.MemoriesDenied++
+		if opts.DryRun {
+			result.DeniedDetails = append(result.DeniedDetails, DeniedImport{
+				File:    raw.SourceFile,
+				Line:    raw.SourceLine,
+				Pattern: entry.Pattern,
+				Reason:  entry.Reason,
+			})
+		}
+		if !opts.DryRun {
+			if counter, ok := e.store.(interface {
+				IncrementDeniedAtImportCount(context.Context, int64) error
+			}); ok {
+				if err := counter.IncrementDeniedAtImportCount(ctx, 1); err != nil {
+					return fmt.Errorf("incrementing denied-at-import count: %w", err)
+				}
+			}
+		}
+		return nil
+	}
+
 	hash := store.HashMemoryContent(raw.Content, raw.SourceFile)
 
 	// Check for existing memory with same hash (dedup)
@@ -415,6 +439,19 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 	return nil
 }
 
+func matchImportDenylist(content string, entries []cfgresolver.DenylistEntry) (cfgresolver.DenylistEntry, bool) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" || len(entries) == 0 {
+		return cfgresolver.DenylistEntry{}, false
+	}
+	for _, entry := range entries {
+		if entry.Matches(trimmed) {
+			return entry, true
+		}
+	}
+	return cfgresolver.DenylistEntry{}, false
+}
+
 func isDuplicateMemoryInsert(err error) bool {
 	if err == nil {
 		return false
@@ -517,8 +554,21 @@ func FormatImportResult(r *ImportResult) string {
 		r.FilesScanned, r.FilesImported, r.FilesSkipped))
 	sb.WriteString(fmt.Sprintf("  Memories: %d new, %d updated, %d unchanged\n",
 		r.MemoriesNew, r.MemoriesUpdated, r.MemoriesUnchanged))
+	if r.MemoriesDenied > 0 {
+		sb.WriteString(fmt.Sprintf("  Denied:   %d denied at import\n", r.MemoriesDenied))
+	}
 	if r.MemoriesNearDuped > 0 {
 		sb.WriteString(fmt.Sprintf("  Hygiene:  %d near-duplicates suppressed\n", r.MemoriesNearDuped))
+	}
+	if len(r.DeniedDetails) > 0 {
+		sb.WriteString(fmt.Sprintf("  Denylist: %d matches\n", len(r.DeniedDetails)))
+		for _, d := range r.DeniedDetails {
+			if d.Line > 0 {
+				sb.WriteString(fmt.Sprintf("    - %s:%d: denied by %q (%s)\n", d.File, d.Line, d.Pattern, d.Reason))
+			} else {
+				sb.WriteString(fmt.Sprintf("    - %s: denied by %q (%s)\n", d.File, d.Pattern, d.Reason))
+			}
+		}
 	}
 
 	if len(r.Errors) > 0 {

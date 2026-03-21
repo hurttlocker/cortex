@@ -4,7 +4,11 @@
 // and feeds them into the storage layer.
 package ingest
 
-import "context"
+import (
+	"context"
+
+	cfgresolver "github.com/hurttlocker/cortex/internal/config"
+)
 
 // RawMemory is a parsed chunk of content ready for storage.
 type RawMemory struct {
@@ -33,7 +37,9 @@ type ImportResult struct {
 	MemoriesUpdated   int
 	MemoriesUnchanged int
 	MemoriesNearDuped int // Suppressed by near-duplicate hygiene
+	MemoriesDenied    int
 	NewMemoryIDs      []int64
+	DeniedDetails     []DeniedImport
 	Errors            []ImportError
 }
 
@@ -46,7 +52,9 @@ func (r *ImportResult) Add(other *ImportResult) {
 	r.MemoriesUpdated += other.MemoriesUpdated
 	r.MemoriesUnchanged += other.MemoriesUnchanged
 	r.MemoriesNearDuped += other.MemoriesNearDuped
+	r.MemoriesDenied += other.MemoriesDenied
 	r.NewMemoryIDs = append(r.NewMemoryIDs, other.NewMemoryIDs...)
+	r.DeniedDetails = append(r.DeniedDetails, other.DeniedDetails...)
 	r.Errors = append(r.Errors, other.Errors...)
 }
 
@@ -55,6 +63,13 @@ type ImportError struct {
 	File    string
 	Line    int
 	Message string
+}
+
+type DeniedImport struct {
+	File    string
+	Line    int
+	Pattern string
+	Reason  string
 }
 
 // ImportOptions configures an import operation.
@@ -69,6 +84,7 @@ type ImportOptions struct {
 	ProgressFn  func(current, total int, file string)
 	Include     []string // Only import files with these extensions (e.g. ".md", ".txt")
 	Exclude     []string // Skip files with these extensions (e.g. ".go", ".js")
+	Denylist    []cfgresolver.DenylistEntry
 
 	// Capture hygiene controls (Issue #36).
 	// Conservative defaults are applied by Normalize().

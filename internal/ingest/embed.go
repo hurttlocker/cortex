@@ -12,6 +12,7 @@ import (
 // EmbedOptions configures an embedding operation.
 type EmbedOptions struct {
 	BatchSize         int                                             // Number of texts to embed per API call (default: 50)
+	Workers           int                                             // Concurrent embedding workers (default: 2)
 	AdaptiveBatching  bool                                            // Halve batch size on failure (default: true)
 	HealthCheckEvery  int                                             // Run health check every N batches (default: 5, 0 = disabled)
 	ProgressFn        func(current, total int)                        // Progress callback
@@ -24,6 +25,7 @@ type EmbedOptions struct {
 func DefaultEmbedOptions() EmbedOptions {
 	return EmbedOptions{
 		BatchSize:        50,
+		Workers:          2,
 		AdaptiveBatching: true,
 		HealthCheckEvery: 5,
 	}
@@ -73,6 +75,18 @@ func (e *EmbedEngine) EmbedMemories(ctx context.Context, opts EmbedOptions) (*Em
 	}
 
 	result.MemoriesProcessed = len(memories)
+
+	workers := opts.Workers
+	if workers <= 0 {
+		workers = 2
+	}
+	if workers == 1 {
+		return e.embedMemoriesSequential(ctx, memories, opts, result)
+	}
+	return e.embedMemoriesConcurrent(ctx, memories, opts, result)
+}
+
+func (e *EmbedEngine) embedMemoriesSequential(ctx context.Context, memories []*store.Memory, opts EmbedOptions, result *EmbedResult) (*EmbedResult, error) {
 
 	// Process in batches with adaptive sizing
 	batchSize := opts.BatchSize
@@ -241,6 +255,84 @@ func (e *EmbedEngine) EmbedMemories(ctx context.Context, opts EmbedOptions) (*Em
 	return result, nil
 }
 
+func (e *EmbedEngine) embedMemoriesConcurrent(ctx context.Context, memories []*store.Memory, opts EmbedOptions, result *EmbedResult) (*EmbedResult, error) {
+	batchSize := opts.BatchSize
+	if batchSize <= 0 {
+		batchSize = 50
+	}
+	workers := opts.Workers
+	if workers <= 0 {
+		workers = 2
+	}
+
+	if opts.VerboseProgressFn != nil {
+		opts.VerboseProgressFn(0, len(memories), batchSize, fmt.Sprintf("Starting: %d memories to embed (%d workers)", len(memories), workers))
+	}
+
+	type workResult struct {
+		processed int
+		result    *batchResult
+		err       error
+	}
+
+	jobCh := make(chan []*store.Memory)
+	resultCh := make(chan workResult, workers)
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			for batch := range jobCh {
+				br, err := e.processBatchAdaptive(ctx, batch, opts)
+				resultCh <- workResult{processed: len(batch), result: br, err: err}
+			}
+		}()
+	}
+
+	totalBatches := 0
+	for i := 0; i < len(memories); i += batchSize {
+		end := i + batchSize
+		if end > len(memories) {
+			end = len(memories)
+		}
+		totalBatches++
+	}
+	go func() {
+		defer close(jobCh)
+		for i := 0; i < len(memories); i += batchSize {
+			end := i + batchSize
+			if end > len(memories) {
+				end = len(memories)
+			}
+			jobCh <- memories[i:end]
+		}
+	}()
+
+	processed := 0
+	for i := 0; i < totalBatches; i++ {
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		case wr := <-resultCh:
+			if wr.err != nil {
+				return result, wr.err
+			}
+			if wr.result != nil {
+				result.EmbeddingsAdded += wr.result.Added
+				result.EmbeddingsSkipped += wr.result.Skipped
+				result.Errors = append(result.Errors, wr.result.Errors...)
+			}
+			processed += wr.processed
+			if opts.ProgressFn != nil {
+				opts.ProgressFn(processed, len(memories))
+			}
+			if opts.VerboseProgressFn != nil {
+				opts.VerboseProgressFn(processed, len(memories), batchSize, "")
+			}
+		}
+	}
+
+	return result, nil
+}
+
 // batchResult holds results for a single batch.
 type batchResult struct {
 	Added   int
@@ -295,6 +387,65 @@ func (e *EmbedEngine) processBatch(ctx context.Context, memories []*store.Memory
 	}
 
 	return result, nil
+}
+
+func (e *EmbedEngine) processBatchAdaptive(ctx context.Context, memories []*store.Memory, opts EmbedOptions) (*batchResult, error) {
+	result, err := e.processBatch(ctx, memories)
+	if err == nil {
+		return result, nil
+	}
+
+	if opts.AdaptiveBatching && len(memories) > 1 {
+		mid := len(memories) / 2
+		left, err := e.processBatchAdaptive(ctx, memories[:mid], opts)
+		if err != nil {
+			return nil, err
+		}
+		right, err := e.processBatchAdaptive(ctx, memories[mid:], opts)
+		if err != nil {
+			return nil, err
+		}
+		return mergeBatchResults(left, right), nil
+	}
+
+	if len(memories) == 1 {
+		single := &batchResult{}
+		finalErr := err
+		if embed.IsRetryableError(err) {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(5 * time.Second):
+			}
+			retryResult, retryErr := e.processBatch(ctx, memories)
+			if retryErr == nil {
+				return retryResult, nil
+			}
+			finalErr = retryErr
+		}
+		single.Errors = append(single.Errors, EmbedError{
+			MemoryID: memories[0].ID,
+			Message:  finalErr.Error(),
+		})
+		return single, nil
+	}
+
+	return nil, err
+}
+
+func mergeBatchResults(left, right *batchResult) *batchResult {
+	merged := &batchResult{}
+	if left != nil {
+		merged.Added += left.Added
+		merged.Skipped += left.Skipped
+		merged.Errors = append(merged.Errors, left.Errors...)
+	}
+	if right != nil {
+		merged.Added += right.Added
+		merged.Skipped += right.Skipped
+		merged.Errors = append(merged.Errors, right.Errors...)
+	}
+	return merged
 }
 
 // getMemoriesWithoutEmbeddings retrieves all memories that don't have embeddings yet.

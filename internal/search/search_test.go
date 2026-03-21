@@ -1563,6 +1563,39 @@ func TestDedupeSameSourceOverlap(t *testing.T) {
 	}
 }
 
+func TestSearchFacts_ReturnsDirectFactHits(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	memID, _ := s.AddMemory(ctx, &store.Memory{
+		Content:    "Q prefers green for additions and blue for deletions in code diffs",
+		SourceFile: "memory/2026-03-18.md",
+	})
+	factID, _ := s.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "Q",
+		Predicate:  "prefers",
+		Object:     "green for additions and blue for deletions in code diffs",
+		FactType:   "preference",
+		Confidence: 0.95,
+	})
+
+	engine := NewEngine(s)
+	results, err := engine.SearchFacts(ctx, "green blue code diffs", Options{Limit: 5})
+	if err != nil {
+		t.Fatalf("SearchFacts failed: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected fact search results")
+	}
+	if results[0].FactID != factID {
+		t.Fatalf("expected fact_id=%d first, got %+v", factID, results[0])
+	}
+	if results[0].SourceFile != "memory/2026-03-18.md" {
+		t.Fatalf("unexpected source file: %+v", results[0])
+	}
+}
+
 func TestDetectIntentBucket(t *testing.T) {
 	if got := detectIntentBucket("Crypto Session Range Breakout V23"); got != "trading" {
 		t.Fatalf("expected trading bucket, got %q", got)

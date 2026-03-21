@@ -125,11 +125,12 @@ type SearchResult struct {
 
 // StoreStats holds observability statistics about the store.
 type StoreStats struct {
-	MemoryCount    int64
-	FactCount      int64
-	EmbeddingCount int64
-	EventCount     int64
-	DBSizeBytes    int64
+	MemoryCount         int64
+	FactCount           int64
+	EmbeddingCount      int64
+	EventCount          int64
+	DeniedAtImportCount int64
+	DBSizeBytes         int64
 }
 
 // ConfidenceDistribution holds the distribution of effective confidence across facts.

@@ -563,6 +563,12 @@ func runImport(args []string) error {
 		}
 	}
 
+	resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{})
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	opts.Denylist = resolvedCfg.Import.Denylist
+
 	if len(paths) == 0 {
 		return fmt.Errorf("no path specified")
 	}
@@ -579,6 +585,7 @@ func runImport(args []string) error {
 	ctx := context.Background()
 	importStart := time.Now()
 	totalFactsExtracted := 0
+	lifecycleApplied := 0
 
 	if opts.DryRun {
 		fmt.Println("Dry run mode — no changes will be written")
@@ -717,6 +724,21 @@ func runImport(args []string) error {
 		}
 	}
 
+	if !opts.DryRun && totalResult.MemoriesNew > 100 {
+		runner, err := lifecycle.NewRunner(s, resolvedCfg.Policies)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  Lifecycle runner error: %v\n", err)
+		} else {
+			report, err := runner.Run(ctx, false)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  Lifecycle apply error: %v\n", err)
+			} else {
+				lifecycleApplied = report.Applied
+				fmt.Fprintf(os.Stderr, "  Lifecycle auto-run applied to %d facts\n", lifecycleApplied)
+			}
+		}
+	}
+
 	// Newly imported memories are implicitly queued for embedding because they have
 	// no embedding row yet. Start or reuse the detached worker to process them
 	// asynchronously so import stays non-blocking.
@@ -728,6 +750,12 @@ func runImport(args []string) error {
 
 	fmt.Println()
 	fmt.Print(ingest.FormatImportResult(totalResult))
+	fmt.Fprintf(os.Stderr, "Imported %d, denied %d, deduped %d, lifecycle applied to %d\n",
+		totalResult.MemoriesNew,
+		totalResult.MemoriesDenied,
+		totalResult.MemoriesUnchanged+totalResult.MemoriesNearDuped,
+		lifecycleApplied,
+	)
 	fmt.Fprintf(os.Stderr, "import summary: files=%d imported=%d skipped=%d facts_extracted=%d duration=%s\n",
 		totalResult.FilesScanned,
 		totalResult.FilesImported,
@@ -768,6 +796,7 @@ func runSearch(args []string) error {
 	explain := false
 	includeSuperseded := false
 	dedupe := true
+	factMode := false
 	expandFlag := false
 	llmFlag := ""
 
@@ -846,6 +875,8 @@ func runSearch(args []string) error {
 			explain = true
 		case args[i] == "--include-superseded":
 			includeSuperseded = true
+		case args[i] == "--facts":
+			factMode = true
 		case args[i] == "--dedupe":
 			dedupe = true
 		case args[i] == "--no-dedupe":
@@ -910,7 +941,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--dedupe|--no-dedupe] [--explain] [--json] [--agent <id>] [--channel <name>] [--session-key <key>] [--boost-agent <id>] [--boost-channel <name>] [--boost-session-key <key>] [--source <provider>] [--intent memory|import|connector|all] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--facts] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--dedupe|--no-dedupe] [--explain] [--json] [--agent <id>] [--channel <name>] [--session-key <key>] [--boost-agent <id>] [--boost-channel <name>] [--boost-session-key <key>] [--source <provider>] [--intent memory|import|connector|all] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 	if limit < 1 || limit > 1000 {
 		return fmt.Errorf("--limit must be between 1 and 1000")
@@ -919,6 +950,11 @@ func runSearch(args []string) error {
 	searchMode, err := search.ParseMode(mode)
 	if err != nil {
 		return err
+	}
+
+	resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{})
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
 	}
 
 	// Open store
@@ -989,6 +1025,15 @@ func runSearch(args []string) error {
 	}
 
 	parsedSourceBoosts := make([]search.SourceBoost, 0, len(sourceBoostFlags))
+	for _, boost := range resolvedCfg.Search.SourceBoosts {
+		if strings.TrimSpace(boost.Prefix) == "" || boost.Weight == 0 {
+			continue
+		}
+		parsedSourceBoosts = append(parsedSourceBoosts, search.SourceBoost{
+			Prefix: boost.Prefix,
+			Weight: boost.Weight,
+		})
+	}
 	for _, raw := range sourceBoostFlags {
 		boost, err := parseSourceBoostArg(raw)
 		if err != nil {
@@ -1020,13 +1065,22 @@ func runSearch(args []string) error {
 		BoostSessionKey:   boostSessionKeyFlag,
 	}
 
+	if factMode {
+		factResults, err := engine.SearchFacts(ctx, query, opts)
+		if err != nil {
+			return err
+		}
+		if jsonOutput || !isTTY() {
+			return outputFactSearchJSON(factResults)
+		}
+		return outputTTYFactSearch(query, factResults)
+	}
+
 	// Query expansion: use LLM to generate multiple search queries
 	var expandedQueries []string
 	if expandFlag {
 		if strings.TrimSpace(llmFlag) == "" {
-			if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
-				llmFlag = resolvedCfg.EffectiveLLMModel("expand", "google/gemini-2.5-flash").Value
-			}
+			llmFlag = resolvedCfg.EffectiveLLMModel("expand", "google/gemini-2.5-flash").Value
 			if strings.TrimSpace(llmFlag) == "" {
 				llmFlag = "google/gemini-2.5-flash"
 			}
@@ -6371,7 +6425,7 @@ func runIndex(args []string) error {
 var errEmbedLockHeld = errors.New("embed lock is already held")
 
 const (
-	defaultEmbedBatchSize       = 10
+	defaultEmbedBatchSize       = 50
 	defaultEmbedInterval        = 30 * time.Minute
 	defaultAutoEmbedInterval    = 2 * time.Minute
 	defaultAutoEmbedHealthCheck = 5 * time.Second
@@ -6382,6 +6436,7 @@ type embedCmdOptions struct {
 	embedFlag    string
 	sourceFile   string
 	batchSize    int
+	workers      int
 	forceReembed bool
 	watch        bool
 	interval     time.Duration
@@ -6461,7 +6516,7 @@ func runEmbed(args []string) error {
 	defer stop()
 
 	if opts.watch {
-		fmt.Printf("Starting embed watch mode (interval=%s, batch-size=%d)\n", opts.interval, opts.batchSize)
+		fmt.Printf("Starting embed watch mode (interval=%s, batch-size=%d, workers=%d)\n", opts.interval, opts.batchSize, opts.workers)
 		fmt.Printf("Lock: %s\n", lockPath)
 	}
 
@@ -6481,7 +6536,7 @@ Usage:
   cortex embed-source <path> [provider/model] [--batch-size N]
 
 Flags:
-  --batch-size N       Embedding batch size (default: 10)
+  --batch-size N       Embedding batch size (default: 50)
 
 Examples:
   cortex embed-source /path/to/memory/2026-02-21.md
@@ -6623,6 +6678,7 @@ func runEmbedStatus() error {
 func parseEmbedArgs(args []string) (embedCmdOptions, error) {
 	opts := embedCmdOptions{
 		batchSize: defaultEmbedBatchSize,
+		workers:   2,
 		interval:  defaultEmbedInterval,
 	}
 
@@ -6630,6 +6686,19 @@ func parseEmbedArgs(args []string) (embedCmdOptions, error) {
 		switch {
 		case args[i] == "--status":
 			opts.status = true
+		case args[i] == "--batch" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return opts, fmt.Errorf("invalid --batch value: %s", args[i])
+			}
+			opts.batchSize = n
+		case strings.HasPrefix(args[i], "--batch="):
+			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--batch="))
+			if err != nil {
+				return opts, fmt.Errorf("invalid --batch value: %s", args[i])
+			}
+			opts.batchSize = n
 		case args[i] == "--batch-size" && i+1 < len(args):
 			i++
 			n, err := strconv.Atoi(args[i])
@@ -6643,6 +6712,19 @@ func parseEmbedArgs(args []string) (embedCmdOptions, error) {
 				return opts, fmt.Errorf("invalid --batch-size value: %s", args[i])
 			}
 			opts.batchSize = n
+		case args[i] == "--workers" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return opts, fmt.Errorf("invalid --workers value: %s", args[i])
+			}
+			opts.workers = n
+		case strings.HasPrefix(args[i], "--workers="):
+			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--workers="))
+			if err != nil {
+				return opts, fmt.Errorf("invalid --workers value: %s", args[i])
+			}
+			opts.workers = n
 		case args[i] == "--force" || args[i] == "-f":
 			opts.forceReembed = true
 		case args[i] == "--watch":
@@ -6673,6 +6755,9 @@ func parseEmbedArgs(args []string) (embedCmdOptions, error) {
 	if opts.batchSize <= 0 {
 		return opts, fmt.Errorf("--batch-size must be > 0")
 	}
+	if opts.workers <= 0 {
+		return opts, fmt.Errorf("--workers must be > 0")
+	}
 	if opts.interval <= 0 {
 		return opts, fmt.Errorf("--interval must be > 0")
 	}
@@ -6686,7 +6771,7 @@ func parseEmbedArgs(args []string) (embedCmdOptions, error) {
 		return opts, fmt.Errorf("--watch cannot be used with --force")
 	}
 	if opts.embedFlag == "" && os.Getenv("CORTEX_EMBED") == "" {
-		return opts, fmt.Errorf("usage: cortex embed [provider/model] [--watch] [--interval 30m] [--batch-size N] [--force]\n       cortex embed --status\n       (or set CORTEX_EMBED)")
+		return opts, fmt.Errorf("usage: cortex embed [provider/model] [--watch] [--interval 30m] [--batch N|--batch-size N] [--workers N] [--force]\n       cortex embed --status\n       (or set CORTEX_EMBED)")
 	}
 
 	return opts, nil
@@ -6808,6 +6893,7 @@ func runEmbedPass(ctx context.Context, s store.Store, embedEngine *ingest.EmbedE
 	embedOpts := ingest.DefaultEmbedOptions()
 	embedOpts.SourceFile = opts.sourceFile
 	embedOpts.BatchSize = opts.batchSize
+	embedOpts.Workers = opts.workers
 	embedOpts.AdaptiveBatching = true
 	embedOpts.HealthCheckEvery = 5
 	embedOpts.ProgressFn = func(current, total int) {
@@ -7708,8 +7794,44 @@ func outputJSON(results []search.Result) error {
 	return enc.Encode(results)
 }
 
+func outputFactSearchJSON(results []search.FactResult) error {
+	if results == nil {
+		results = []search.FactResult{}
+	}
+	if len(results) == 0 {
+		fmt.Println("[]")
+		fmt.Fprintln(os.Stderr, "No fact results found. Try different keywords or check `cortex stats`.")
+		return nil
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(results)
+}
+
 func outputTTY(query string, results []search.Result) error {
 	return outputTTYSearch(query, results, false, false, "")
+}
+
+func outputTTYFactSearch(query string, results []search.FactResult) error {
+	if len(results) == 0 {
+		fmt.Printf("No fact results for %q\n", query)
+		return nil
+	}
+
+	fmt.Printf("Fact results for %q (%d match", query, len(results))
+	if len(results) != 1 {
+		fmt.Print("es")
+	}
+	fmt.Println(")")
+	fmt.Println()
+
+	for i, r := range results {
+		fmt.Printf("  %d. [%.2f] #%d %s — %s: %s\n", i+1, r.Score, r.FactID, r.Subject, r.Predicate, r.Object)
+		if r.SourceFile != "" {
+			fmt.Printf("     📁 %s  type:%s  conf:%.2f\n", r.SourceFile, r.FactType, r.Confidence)
+		}
+	}
+	return nil
 }
 
 func outputTTYSearch(query string, results []search.Result, showMetadata bool, explain bool, mode search.Mode) error {
@@ -7885,6 +8007,7 @@ func outputEnhancedStatsTTY(stats *observe.Stats, dateRange string) error {
 	if stats.StorageBytes > 0 {
 		fmt.Printf("│ Storage:         %-27s │\n", formatBytes(stats.StorageBytes))
 	}
+	fmt.Printf("│ Denied import:   %-27d │\n", stats.DeniedAtImportCount)
 	fmt.Printf("│ Avg confidence:  %.2f%-22s │\n", stats.AvgConfidence, "")
 
 	if len(stats.FactsByType) > 0 {
@@ -10565,7 +10688,7 @@ Memory:
   import <path>         Import memories from files or directories
   reimport <path>       Wipe database and reimport from scratch
   refresh-source <path> Refresh one source file without touching the rest of the DB
-  search <query>        Search memories (keyword, semantic, hybrid, or rrf)
+  search <query>        Search memories or facts (keyword, semantic, hybrid, or rrf)
   query                 Filter facts by metadata (--where clauses)
   answer <query>        Search + synthesize short answer with citations
   lifecycle run         Apply built-in lifecycle policies to facts

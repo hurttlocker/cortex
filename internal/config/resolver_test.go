@@ -208,6 +208,40 @@ func TestResolveConfig_ObsidianExportOverrides(t *testing.T) {
 	}
 }
 
+func TestResolveConfig_ImportDenylistAndSearchSourceBoosts(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	yaml := `import:
+  denylist:
+    - pattern: "^(HEARTBEAT_OK|NO_REPLY)$"
+      reason: "protocol noise"
+search:
+  source_boosts:
+    - prefix: "memory/"
+      weight: 1.4
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	resolved, err := ResolveConfig(ResolveOptions{ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+	if len(resolved.Import.Denylist) != 1 {
+		t.Fatalf("expected 1 denylist entry, got %d", len(resolved.Import.Denylist))
+	}
+	if !resolved.Import.Denylist[0].Matches("HEARTBEAT_OK") {
+		t.Fatalf("expected compiled denylist regex to match")
+	}
+	if len(resolved.Search.SourceBoosts) != 1 {
+		t.Fatalf("expected 1 search source boost, got %d", len(resolved.Search.SourceBoosts))
+	}
+	if resolved.Search.SourceBoosts[0].Prefix != "memory/" || resolved.Search.SourceBoosts[0].Weight != 1.4 {
+		t.Fatalf("unexpected search source boost: %+v", resolved.Search.SourceBoosts[0])
+	}
+}
+
 func TestResolveAgentTrustConfig_Valid(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.yaml")

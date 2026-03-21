@@ -1,6 +1,7 @@
 package search
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -259,6 +260,24 @@ func TestApplySourceWeight(t *testing.T) {
 	}
 	if manualScore <= connectorScore {
 		t.Errorf("expected manual score (%f) > connector score (%f)", manualScore, connectorScore)
+	}
+}
+
+func TestSourceWeightForFile_DefaultHeuristics(t *testing.T) {
+	tests := []struct {
+		source string
+		want   float64
+	}{
+		{"MEMORY.md", sourceWeightManual * sourceWeightMemoryMD},
+		{"memory/2026-03-18.md", sourceWeightManual * sourceWeightDailyNote},
+		{"shared-context/notes.md", sourceWeightManual * sourceWeightSharedCtx},
+		{"/tmp/cortex-capture-abc/auto-capture.md", sourceWeightManual * sourceWeightTempDir * sourceWeightCapture},
+	}
+
+	for _, tt := range tests {
+		if got := sourceWeightForFile(tt.source); math.Abs(got-tt.want) > 1e-9 {
+			t.Fatalf("sourceWeightForFile(%q) = %f, want %f", tt.source, got, tt.want)
+		}
 	}
 }
 
