@@ -61,6 +61,15 @@ type ExtractConfig struct {
 	SuppressPatterns []DenylistEntry `yaml:"suppress_patterns" json:"suppress_patterns"`
 }
 
+type QualityProfile string
+
+const (
+	QualityProfilePersonal QualityProfile = "personal"
+	QualityProfileAgentOps QualityProfile = "agent-ops"
+	QualityProfileCodebase QualityProfile = "codebase"
+	QualityProfileTrading  QualityProfile = "trading"
+)
+
 type SearchSourceBoostConfig struct {
 	Prefix string  `yaml:"prefix" json:"prefix"`
 	Weight float64 `yaml:"weight" json:"weight"`
@@ -102,6 +111,7 @@ type PolicyConfig struct {
 	DecayRetire       DecayRetirePolicy       `yaml:"decay_retire" json:"decay_retire"`
 	ConflictSupersede ConflictSupersedePolicy `yaml:"conflict_supersede" json:"conflict_supersede"`
 	DecayRates        map[string]float64      `yaml:"decay_rates" json:"decay_rates"`
+	PredicatePolicies map[string]string       `yaml:"predicate_policies" json:"predicate_policies"`
 }
 
 type AgentTrustRule struct {
@@ -173,11 +183,21 @@ func DefaultPolicyConfig() PolicyConfig {
 			"relationship": 0.02,
 			"location":     0.03,
 		},
+		PredicatePolicies: map[string]string{
+			"references": "append-only",
+			"cites":      "append-only",
+			"tag":        "multi-valued",
+			"tagged":     "multi-valued",
+			"related to": "multi-valued",
+			"supports":   "multi-valued",
+			"uses":       "multi-valued",
+		},
 	}
 }
 
 type ResolvedConfig struct {
 	ConfigPath string `json:"config_path"`
+	Profile    string `json:"profile,omitempty"`
 
 	DBPath           ResolvedValue `json:"db_path"`
 	LLMProvider      ResolvedValue `json:"llm_provider"`
@@ -198,8 +218,9 @@ type ResolvedConfig struct {
 }
 
 type fileConfig struct {
-	DBPath string `yaml:"db_path"`
-	LLM    struct {
+	Profile string `yaml:"profile"`
+	DBPath  string `yaml:"db_path"`
+	LLM     struct {
 		Provider         string `yaml:"provider"`
 		APIKey           string `yaml:"api_key"`
 		EnrichModel      string `yaml:"enrich_model"`
@@ -248,6 +269,7 @@ func ResolveConfig(opts ResolveOptions) (ResolvedConfig, error) {
 	}
 
 	if cfg != nil {
+		out.Profile = strings.TrimSpace(cfg.Profile)
 		out.Policies = cfg.Policies
 		out.ObsidianExport = cfg.Export.Obsidian
 		out.Import = cfg.Import
@@ -471,6 +493,7 @@ func loadConfig(path string) (*fileConfig, error) {
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
+	applyQualityProfileDefaults(&cfg)
 	for i := range cfg.Import.Denylist {
 		if err := cfg.Import.Denylist[i].Compile(); err != nil {
 			return nil, fmt.Errorf("parsing %s import.denylist[%d].pattern: %w", path, i, err)
@@ -482,6 +505,49 @@ func loadConfig(path string) (*fileConfig, error) {
 		}
 	}
 	return &cfg, nil
+}
+
+func applyQualityProfileDefaults(cfg *fileConfig) {
+	if cfg == nil {
+		return
+	}
+	profile := QualityProfile(strings.ToLower(strings.TrimSpace(cfg.Profile)))
+	if profile == "" {
+		return
+	}
+
+	switch profile {
+	case QualityProfilePersonal, QualityProfileAgentOps, QualityProfileCodebase, QualityProfileTrading:
+	default:
+		return
+	}
+
+	if len(cfg.Import.Denylist) == 0 {
+		cfg.Import.Denylist = []DenylistEntry{
+			{Pattern: "^(Pre-compaction memory flush|System:.*Post-compaction)", Reason: "compaction system messages"},
+			{Pattern: "cortex (search|embed|cleanup|optimize|import)", Reason: "cortex CLI commands in transcripts"},
+			{Pattern: "^(HEARTBEAT_OK|NO_REPLY)$", Reason: "agent protocol noise"},
+			{Pattern: "Run these test queries and verify", Reason: "agent task prompts"},
+		}
+	}
+
+	if len(cfg.Extract.SuppressPatterns) == 0 {
+		cfg.Extract.SuppressPatterns = []DenylistEntry{
+			{Pattern: "(?i)^current.*(time|date|timestamp)", Reason: "ephemeral temporal headers"},
+			{Pattern: "(?i)^(heartbeat|heartbeat_status)", Reason: "heartbeat protocol noise"},
+		}
+	}
+
+	if len(cfg.Search.SourceBoosts) == 0 {
+		cfg.Search.SourceBoosts = []SearchSourceBoostConfig{
+			{Prefix: "MEMORY.md", Weight: 1.5},
+			{Prefix: "memory/", Weight: 1.3},
+			{Prefix: "shared-context/", Weight: 1.2},
+			{Prefix: "/var/folders/", Weight: 0.7},
+			{Prefix: "/tmp/", Weight: 0.7},
+			{Prefix: "auto-capture", Weight: 0.6},
+		}
+	}
 }
 
 func firstNonEmpty(values ...string) string {

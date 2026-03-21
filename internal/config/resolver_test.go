@@ -255,6 +255,27 @@ policies:
 	}
 }
 
+func TestResolveConfig_QualityProfileSeedsDefaults(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	yaml := `profile: personal
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	resolved, err := ResolveConfig(ResolveOptions{ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+	if resolved.Profile != "personal" {
+		t.Fatalf("expected profile personal, got %q", resolved.Profile)
+	}
+	if len(resolved.Import.Denylist) == 0 || len(resolved.Extract.SuppressPatterns) == 0 || len(resolved.Search.SourceBoosts) == 0 {
+		t.Fatalf("expected profile to seed defaults, got import=%d extract=%d search=%d", len(resolved.Import.Denylist), len(resolved.Extract.SuppressPatterns), len(resolved.Search.SourceBoosts))
+	}
+}
+
 func TestResolveAgentTrustConfig_Valid(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.yaml")

@@ -117,6 +117,9 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine, defaultAgent
 			mcp.Required(),
 			mcp.Description("Search query string"),
 		),
+		mcp.WithBoolean("facts",
+			mcp.Description("When true, return direct fact hits instead of memory chunks."),
+		),
 		mcp.WithString("mode",
 			mcp.Description("Search mode: bm25, semantic, hybrid, or rrf (default: keyword)"),
 			mcp.Enum("keyword", "bm25", "semantic", "hybrid", "rrf"),
@@ -202,6 +205,15 @@ func registerSearchTool(s *server.MCPServer, engine *search.Engine, defaultAgent
 			opts.SourceBoosts = boosts
 		} else {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid source_boosts: %v", err)), nil
+		}
+
+		if factsMode, err := req.RequireBool("facts"); err == nil && factsMode {
+			results, err := engine.SearchFacts(ctx, query, opts)
+			if err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("search error: %v", err)), nil
+			}
+			data, _ := json.MarshalIndent(results, "", "  ")
+			return mcp.NewToolResultText(string(data)), nil
 		}
 
 		results, err := engine.Search(ctx, query, opts)

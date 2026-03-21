@@ -317,6 +317,7 @@ func applyExtractionRuntimeConfig(resolved cfgresolver.ResolvedConfig) {
 		}
 	}
 	ingest.SetConfiguredFactSuppressions(resolved.Extract.SuppressPatterns)
+	store.SetPredicatePolicies(resolved.Policies.PredicatePolicies)
 }
 
 func setMetaTimestamp(ctx context.Context, ss *store.SQLiteStore, key string, at time.Time) error {
@@ -2319,6 +2320,10 @@ func runHealth(args []string) error {
 	if err != nil {
 		return err
 	}
+	totalFacts, err := countAllFacts(ctx, ss)
+	if err != nil {
+		return err
+	}
 	retired, err := countFactsByState(ctx, ss, store.FactStateRetired, "")
 	if err != nil {
 		return err
@@ -2346,7 +2351,7 @@ func runHealth(args []string) error {
 	report := healthReport{
 		Memories:            stats.MemoryCount,
 		Embeddings:          stats.EmbeddingCount,
-		Facts:               stats.FactCount,
+		Facts:               totalFacts,
 		ActiveFacts:         active,
 		RetiredFacts:        retired,
 		SupersededFacts:     superseded,
@@ -2415,6 +2420,14 @@ func countActiveLikeFacts(ctx context.Context, ss *store.SQLiteStore) (int64, er
 	var n int64
 	if err := ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM facts WHERE LOWER(COALESCE(state,'')) IN ('active','core')`).Scan(&n); err != nil {
 		return 0, fmt.Errorf("counting active facts: %w", err)
+	}
+	return n, nil
+}
+
+func countAllFacts(ctx context.Context, ss *store.SQLiteStore) (int64, error) {
+	var n int64
+	if err := ss.QueryRowContext(ctx, `SELECT COUNT(*) FROM facts`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting all facts: %w", err)
 	}
 	return n, nil
 }

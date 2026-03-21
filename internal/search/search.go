@@ -228,6 +228,7 @@ func effectiveMinScore(mode Mode, configured float64) float64 {
 type Result struct {
 	Content       string          `json:"content"`
 	SourceFile    string          `json:"source_file"`
+	SourceTier    string          `json:"source_tier,omitempty"`
 	SourceLine    int             `json:"source_line"`
 	SourceSection string          `json:"source_section,omitempty"`
 	Project       string          `json:"project,omitempty"`
@@ -251,6 +252,7 @@ type FactResult struct {
 	FactType   string  `json:"fact_type"`
 	Confidence float64 `json:"confidence"`
 	SourceFile string  `json:"source_file"`
+	SourceTier string  `json:"source_tier,omitempty"`
 	Score      float64 `json:"score"`
 }
 
@@ -679,6 +681,7 @@ func (e *Engine) SearchFacts(ctx context.Context, query string, opts Options) ([
 			FactType:   fact.FactType,
 			Confidence: fact.Confidence,
 			SourceFile: memory.SourceFile,
+			SourceTier: sourceTierForFile(memory.SourceFile),
 			Score:      score,
 		})
 	}
@@ -1800,6 +1803,19 @@ func applySourceWeight(results []Result, boosts []SourceBoost, explain bool) []R
 }
 
 func sourceWeightForFile(sourceFile string) float64 {
+	switch sourceTierForFile(sourceFile) {
+	case "core":
+		return sourceWeightManual * sourceWeightMemoryMD
+	case "journal":
+		return sourceWeightManual * sourceWeightDailyNote
+	case "context":
+		return sourceWeightManual * sourceWeightSharedCtx
+	case "capture":
+		return sourceWeightManual * sourceWeightTempDir * sourceWeightCapture
+	case "transient":
+		return sourceWeightManual * sourceWeightTempDir
+	}
+
 	lower := strings.ToLower(strings.TrimSpace(sourceFile))
 	if lower == "" {
 		return 1.0
@@ -1827,6 +1843,24 @@ func sourceWeightForFile(sourceFile string) float64 {
 	}
 
 	return weight
+}
+
+func sourceTierForFile(sourceFile string) string {
+	lower := strings.ToLower(strings.TrimSpace(sourceFile))
+	switch {
+	case lower == "memory.md", strings.HasSuffix(lower, "/memory.md"):
+		return "core"
+	case strings.HasSuffix(lower, ".md") && (strings.HasPrefix(lower, "memory/") || strings.Contains(lower, "/memory/")):
+		return "journal"
+	case strings.HasPrefix(lower, "shared-context/"), strings.Contains(lower, "/shared-context/"):
+		return "context"
+	case strings.Contains(lower, "auto-capture"):
+		return "capture"
+	case strings.HasPrefix(lower, "/var/folders/"), strings.HasPrefix(lower, "/tmp/"):
+		return "transient"
+	default:
+		return ""
+	}
 }
 
 func sourceBoostForResult(sourceFile string, boosts []SourceBoost) (float64, string) {
@@ -2179,6 +2213,7 @@ func (e *Engine) searchBM25(ctx context.Context, query string, opts Options) ([]
 		r := Result{
 			Content:       sr.Memory.Content,
 			SourceFile:    sr.Memory.SourceFile,
+			SourceTier:    sourceTierForFile(sr.Memory.SourceFile),
 			SourceLine:    sr.Memory.SourceLine,
 			SourceSection: sr.Memory.SourceSection,
 			Project:       sr.Memory.Project,
@@ -2376,6 +2411,7 @@ func (e *Engine) searchSemantic(ctx context.Context, query string, opts Options)
 		r := Result{
 			Content:       sr.Memory.Content,
 			SourceFile:    sr.Memory.SourceFile,
+			SourceTier:    sourceTierForFile(sr.Memory.SourceFile),
 			SourceLine:    sr.Memory.SourceLine,
 			SourceSection: sr.Memory.SourceSection,
 			Project:       sr.Memory.Project,
@@ -2440,6 +2476,7 @@ func (e *Engine) searchSemanticHNSW(ctx context.Context, queryVec []float32, opt
 		r := Result{
 			Content:       mem.Content,
 			SourceFile:    mem.SourceFile,
+			SourceTier:    sourceTierForFile(mem.SourceFile),
 			SourceLine:    mem.SourceLine,
 			SourceSection: mem.SourceSection,
 			Project:       mem.Project,

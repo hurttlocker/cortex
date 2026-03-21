@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/store"
@@ -50,6 +51,8 @@ type EmbedEngine struct {
 	store    store.Store
 	embedder embed.Embedder
 }
+
+const maxEmbedInputChars = 4000
 
 // NewEmbedEngine creates a new embedding engine.
 func NewEmbedEngine(s store.Store, e embed.Embedder) *EmbedEngine {
@@ -350,7 +353,7 @@ func (e *EmbedEngine) processBatch(ctx context.Context, memories []*store.Memory
 	// Example: "[2026-02-18 > Cortex Audit] Conflicts query hanging..."
 	texts := make([]string, len(memories))
 	for i, memory := range memories {
-		texts[i] = store.EnrichedContent(memory.Content, memory.SourceFile, memory.SourceSection)
+		texts[i] = clipEmbedText(store.EnrichedContent(memory.Content, memory.SourceFile, memory.SourceSection))
 	}
 
 	// Generate embeddings for batch
@@ -487,4 +490,19 @@ func (e *EmbedEngine) getMemoriesWithoutEmbeddings(ctx context.Context, sourceFi
 	}
 
 	return result, nil
+}
+
+func clipEmbedText(text string) string {
+	if utf8.RuneCountInString(text) <= maxEmbedInputChars {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxEmbedInputChars {
+		return text
+	}
+	keep := maxEmbedInputChars - 3
+	if keep < 1 {
+		keep = 1
+	}
+	return string(runes[:keep]) + "..."
 }

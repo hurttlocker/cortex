@@ -409,56 +409,87 @@ func (s *SQLiteStore) GetAttributeConflictsLimit(ctx context.Context, limit int)
 	return s.GetAttributeConflictsLimitWithSuperseded(ctx, limit, false)
 }
 
-// multivaluedPredicateDenylist contains predicates that are inherently multi-valued
-// (append-only / accumulate-by-design) and should never be flagged as attribute conflicts.
-// These predicates represent reinforcing evidence, tags, or references — not single-valued
-// attributes where two values would genuinely contradict each other.
-var multivaluedPredicateDenylist = []string{
-	"reinforce",
-	"reinforced",
-	"reinforces",
-	"references",
-	"referenced by",
-	"tagged",
-	"tagged as",
-	"has tag",
-	"tag",
-	"cited by",
-	"cites",
-	"related to",
-	"supports",
-	"corroborates",
-	"http",
-	"https",
-	"url",
-	"urls",
-	"link",
-	"links",
-	"timestamp",
-	"current time",
-	"session id",
-	"session key",
-	"message id",
-	"sender_id",
-	"channel",
-	"username",
-	"label",
-	"tag",
-	"assistant",
-	"user",
-	"system",
+const (
+	PredicateModeSingle     = "single-valued"
+	PredicateModeMulti      = "multi-valued"
+	PredicateModeAppendOnly = "append-only"
+)
+
+var defaultPredicatePolicies = map[string]string{
+	"reinforce":     PredicateModeAppendOnly,
+	"reinforced":    PredicateModeAppendOnly,
+	"reinforces":    PredicateModeAppendOnly,
+	"references":    PredicateModeAppendOnly,
+	"referenced by": PredicateModeAppendOnly,
+	"cited by":      PredicateModeAppendOnly,
+	"cites":         PredicateModeAppendOnly,
+	"http":          PredicateModeAppendOnly,
+	"https":         PredicateModeAppendOnly,
+	"url":           PredicateModeAppendOnly,
+	"urls":          PredicateModeAppendOnly,
+	"link":          PredicateModeAppendOnly,
+	"links":         PredicateModeAppendOnly,
+	"timestamp":     PredicateModeAppendOnly,
+	"current time":  PredicateModeAppendOnly,
+	"session id":    PredicateModeAppendOnly,
+	"session key":   PredicateModeAppendOnly,
+	"message id":    PredicateModeAppendOnly,
+	"sender_id":     PredicateModeAppendOnly,
+	"channel":       PredicateModeAppendOnly,
+	"username":      PredicateModeAppendOnly,
+	"label":         PredicateModeAppendOnly,
+	"assistant":     PredicateModeAppendOnly,
+	"user":          PredicateModeAppendOnly,
+	"system":        PredicateModeAppendOnly,
+
+	"tagged":       PredicateModeMulti,
+	"tagged as":    PredicateModeMulti,
+	"has tag":      PredicateModeMulti,
+	"tag":          PredicateModeMulti,
+	"related to":   PredicateModeMulti,
+	"supports":     PredicateModeMulti,
+	"corroborates": PredicateModeMulti,
+	"uses":         PredicateModeMulti,
+}
+
+var predicatePolicies = clonePredicatePolicies(defaultPredicatePolicies)
+
+func clonePredicatePolicies(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func SetPredicatePolicies(overrides map[string]string) {
+	predicatePolicies = clonePredicatePolicies(defaultPredicatePolicies)
+	for k, v := range overrides {
+		key := strings.ToLower(strings.TrimSpace(k))
+		val := strings.ToLower(strings.TrimSpace(v))
+		if key == "" || val == "" {
+			continue
+		}
+		predicatePolicies[key] = val
+	}
 }
 
 // IsMultivaluedPredicate returns true if the predicate is known to be multi-valued
 // and should not trigger attribute-conflict detection.
 func IsMultivaluedPredicate(predicate string) bool {
+	mode := PredicateConflictMode(predicate)
+	return mode == PredicateModeMulti || mode == PredicateModeAppendOnly
+}
+
+func PredicateConflictMode(predicate string) string {
 	p := strings.ToLower(strings.TrimSpace(predicate))
-	for _, deny := range multivaluedPredicateDenylist {
-		if p == deny {
-			return true
-		}
+	if p == "" {
+		return PredicateModeSingle
 	}
-	return false
+	if mode, ok := predicatePolicies[p]; ok {
+		return mode
+	}
+	return PredicateModeSingle
 }
 
 // genericConflictSubjectDenylist contains section-bucket subjects that are useful
@@ -502,9 +533,15 @@ func (s *SQLiteStore) GetAttributeConflictsLimitWithSuperseded(ctx context.Conte
 	// Build SQL exclusion clauses for known noisy predicates and generic section-bucket
 	// subjects. These patterns create false conflicts because they are list containers
 	// or metadata, not single-valued attributes.
-	denyPlaceholders := make([]string, len(multivaluedPredicateDenylist))
-	denyArgs := make([]any, len(multivaluedPredicateDenylist))
-	for i, p := range multivaluedPredicateDenylist {
+	predicateDenylist := make([]string, 0, len(predicatePolicies))
+	for predicate, mode := range predicatePolicies {
+		if mode == PredicateModeMulti || mode == PredicateModeAppendOnly {
+			predicateDenylist = append(predicateDenylist, predicate)
+		}
+	}
+	denyPlaceholders := make([]string, len(predicateDenylist))
+	denyArgs := make([]any, len(predicateDenylist))
+	for i, p := range predicateDenylist {
 		denyPlaceholders[i] = "?"
 		denyArgs[i] = p
 	}
