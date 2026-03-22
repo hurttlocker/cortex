@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/answer"
+	"github.com/hurttlocker/cortex/internal/ask"
 	cfgresolver "github.com/hurttlocker/cortex/internal/config"
 	"github.com/hurttlocker/cortex/internal/connect"
 	"github.com/hurttlocker/cortex/internal/embed"
@@ -78,6 +79,8 @@ func main() {
 		exitWithError(runQuery(args[1:]))
 	case "answer":
 		exitWithError(runAnswer(args[1:]))
+	case "ask":
+		exitWithError(runAsk(args[1:]))
 	case "lifecycle":
 		exitWithError(runLifecycle(args[1:]))
 	case "beliefs":
@@ -120,6 +123,8 @@ func main() {
 		exitWithError(runCleanup(args[1:]))
 	case "optimize":
 		exitWithError(runOptimize(args[1:]))
+	case "backfill-scope":
+		exitWithError(runBackfillScope(args[1:]))
 	case "suppress":
 		exitWithError(runSuppress(args[1:]))
 	case "source-weight":
@@ -1342,6 +1347,324 @@ func searchSourceBoostForResult(sourceFile string, boosts []search.SourceBoost) 
 		}
 	}
 	return bestWeight, bestPrefix
+}
+
+func resolveAskProvider(modelFlag string) (llm.Provider, string, string, error) {
+	modelFlag = strings.TrimSpace(modelFlag)
+	if modelFlag != "" {
+		return answer.ResolveProvider(modelFlag)
+	}
+
+	candidates := []string{
+		"google/gemini-2.5-flash-lite",
+		"google/gemini-2.5-flash",
+		"openrouter/anthropic/claude-haiku-4-5",
+		"openrouter/openai/gpt-4o-mini",
+	}
+	for _, candidate := range candidates {
+		provider, resolvedModel, _, err := answer.ResolveProvider(candidate)
+		if err != nil {
+			return nil, "", "", err
+		}
+		if provider != nil {
+			return provider, resolvedModel, "", nil
+		}
+	}
+	return nil, "", "no_llm_configured", nil
+}
+
+func newSearchEngineForModeStrict(s store.Store, mode search.Mode, embedFlag string) (*search.Engine, error) {
+	needsEmbedder := mode == search.ModeHybrid || mode == search.ModeRRF || mode == search.ModeSemantic
+	embedExplicit := strings.TrimSpace(embedFlag) != ""
+
+	if !needsEmbedder {
+		return search.NewEngine(s), nil
+	}
+
+	if !embedExplicit {
+		autoConfig, autoErr := embed.ResolveEmbedConfig("")
+		if autoErr != nil || autoConfig == nil {
+			return nil, fmt.Errorf("%s search requires an embedder. Use --embed <provider/model> or configure an embedding provider", mode)
+		}
+		if err := autoConfig.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid embedding configuration: %w", err)
+		}
+		embedder, clientErr := newEmbedClient(autoConfig)
+		if clientErr != nil {
+			return nil, fmt.Errorf("creating embedder: %w", clientErr)
+		}
+		engine := search.NewEngineWithEmbedder(s, embedder)
+		loadSearchHNSW(engine, "auto-resolved from config")
+		return engine, nil
+	}
+
+	return newSearchEngineForMode(s, mode, embedFlag)
+}
+
+func runAsk(args []string) error {
+	var queryParts []string
+	mode := "hybrid"
+	limit := 8
+	limitExplicit := false
+	budget := 1500
+	modelFlag := ""
+	embedFlag := ""
+	projectFlag := ""
+	agentFlag := ""
+	channelFlag := ""
+	sessionKeyFlag := ""
+	sourceFlag := ""
+	intentFlag := "all"
+	scopeFlags := []string{}
+	sourceBoostFlags := []string{}
+	jsonOutput := false
+	maxSentences := 6
+
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--mode" && i+1 < len(args):
+			i++
+			mode = args[i]
+		case strings.HasPrefix(args[i], "--mode="):
+			mode = strings.TrimPrefix(args[i], "--mode=")
+		case args[i] == "--limit" && i+1 < len(args):
+			i++
+			v, err := strconv.Atoi(args[i])
+			if err != nil || v < 1 || v > 20 {
+				return fmt.Errorf("--limit must be between 1 and 20")
+			}
+			limit = v
+			limitExplicit = true
+		case strings.HasPrefix(args[i], "--limit="):
+			v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--limit="))
+			if err != nil || v < 1 || v > 20 {
+				return fmt.Errorf("--limit must be between 1 and 20")
+			}
+			limit = v
+			limitExplicit = true
+		case args[i] == "--budget" && i+1 < len(args):
+			i++
+			v, err := strconv.Atoi(args[i])
+			if err != nil || v < 0 {
+				return fmt.Errorf("--budget must be >= 0")
+			}
+			budget = v
+		case strings.HasPrefix(args[i], "--budget="):
+			v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--budget="))
+			if err != nil || v < 0 {
+				return fmt.Errorf("--budget must be >= 0")
+			}
+			budget = v
+		case args[i] == "--model" && i+1 < len(args):
+			i++
+			modelFlag = args[i]
+		case strings.HasPrefix(args[i], "--model="):
+			modelFlag = strings.TrimPrefix(args[i], "--model=")
+		case args[i] == "--embed" && i+1 < len(args):
+			i++
+			embedFlag = args[i]
+		case strings.HasPrefix(args[i], "--embed="):
+			embedFlag = strings.TrimPrefix(args[i], "--embed=")
+		case args[i] == "--project" && i+1 < len(args):
+			i++
+			projectFlag = args[i]
+		case strings.HasPrefix(args[i], "--project="):
+			projectFlag = strings.TrimPrefix(args[i], "--project=")
+		case args[i] == "--agent" && i+1 < len(args):
+			i++
+			agentFlag = args[i]
+		case strings.HasPrefix(args[i], "--agent="):
+			agentFlag = strings.TrimPrefix(args[i], "--agent=")
+		case args[i] == "--channel" && i+1 < len(args):
+			i++
+			channelFlag = args[i]
+		case strings.HasPrefix(args[i], "--channel="):
+			channelFlag = strings.TrimPrefix(args[i], "--channel=")
+		case args[i] == "--session-key" && i+1 < len(args):
+			i++
+			sessionKeyFlag = args[i]
+		case strings.HasPrefix(args[i], "--session-key="):
+			sessionKeyFlag = strings.TrimPrefix(args[i], "--session-key=")
+		case args[i] == "--source" && i+1 < len(args):
+			i++
+			sourceFlag = args[i]
+		case strings.HasPrefix(args[i], "--source="):
+			sourceFlag = strings.TrimPrefix(args[i], "--source=")
+		case args[i] == "--intent" && i+1 < len(args):
+			i++
+			intentFlag = args[i]
+		case strings.HasPrefix(args[i], "--intent="):
+			intentFlag = strings.TrimPrefix(args[i], "--intent=")
+		case args[i] == "--scope" && i+1 < len(args):
+			i++
+			scopeFlags = append(scopeFlags, args[i])
+		case strings.HasPrefix(args[i], "--scope="):
+			scopeFlags = append(scopeFlags, strings.TrimPrefix(args[i], "--scope="))
+		case args[i] == "--source-boost" && i+1 < len(args):
+			i++
+			sourceBoostFlags = append(sourceBoostFlags, args[i])
+		case strings.HasPrefix(args[i], "--source-boost="):
+			sourceBoostFlags = append(sourceBoostFlags, strings.TrimPrefix(args[i], "--source-boost="))
+		case args[i] == "--max-sentences" && i+1 < len(args):
+			i++
+			v, err := strconv.Atoi(args[i])
+			if err != nil || v < 1 || v > 12 {
+				return fmt.Errorf("--max-sentences must be between 1 and 12")
+			}
+			maxSentences = v
+		case strings.HasPrefix(args[i], "--max-sentences="):
+			v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--max-sentences="))
+			if err != nil || v < 1 || v > 12 {
+				return fmt.Errorf("--max-sentences must be between 1 and 12")
+			}
+			maxSentences = v
+		case args[i] == "--json":
+			jsonOutput = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s\nusage: cortex ask <query> [--mode hybrid|bm25|semantic|rrf] [--limit 8] [--budget 1500] [--model provider/model] [--embed <provider/model>] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--json]", args[i])
+		default:
+			queryParts = append(queryParts, args[i])
+		}
+	}
+
+	query := strings.TrimSpace(strings.Join(queryParts, " "))
+	if query == "" {
+		return fmt.Errorf("usage: cortex ask <query> [--mode hybrid|bm25|semantic|rrf] [--limit 8] [--budget 1500] [--model provider/model] [--embed <provider/model>] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--json]")
+	}
+
+	modeParsed, err := search.ParseMode(mode)
+	if err != nil {
+		return err
+	}
+
+	parsedSourceBoosts := make([]search.SourceBoost, 0, len(sourceBoostFlags))
+	for _, raw := range sourceBoostFlags {
+		boost, err := parseSourceBoostArg(raw)
+		if err != nil {
+			return err
+		}
+		parsedSourceBoosts = append(parsedSourceBoosts, boost)
+	}
+	scopeFilters, err := parseSearchScopeFlags(scopeFlags)
+	if err != nil {
+		return err
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	searchEngine, err := newSearchEngineForModeStrict(s, modeParsed, embedFlag)
+	if err != nil {
+		return err
+	}
+
+	provider, resolvedModel, degradeReason, err := resolveAskProvider(modelFlag)
+	if err != nil {
+		return err
+	}
+
+	searchLimit := limit
+	if budget > 0 {
+		if !limitExplicit {
+			searchLimit = 50
+		} else if searchLimit < 50 {
+			searchLimit = 50
+		}
+	}
+
+	results, err := searchEngine.Search(context.Background(), query, search.Options{
+		Mode:              modeParsed,
+		Limit:             searchLimit,
+		Project:           projectFlag,
+		Agent:             agentFlag,
+		Channel:           channelFlag,
+		SessionKey:        sessionKeyFlag,
+		BoostAgent:        agentFlag,
+		Source:            sourceFlag,
+		Intent:            intentFlag,
+		Scope:             scopeFilters,
+		SourceBoosts:      parsedSourceBoosts,
+		IncludeSuperseded: false,
+	})
+	if err != nil {
+		return err
+	}
+
+	candidateCount := len(results)
+	packedTokens := 0
+	if budget > 0 {
+		results, packedTokens = packSearchResultsByBudget(results, budget, limit)
+	} else if len(results) > limit {
+		results = results[:limit]
+	}
+
+	enriched := enrichSearchResultsWithFactIDs(context.Background(), s, results, false)
+	engine := ask.NewEngine(provider, resolvedModel)
+	res, err := engine.Ask(context.Background(), ask.Options{
+		Question:     query,
+		Results:      enriched,
+		MaxSentences: maxSentences,
+		Model:        resolvedModel,
+		Provider:     providerName(provider, resolvedModel),
+		Budget:       budget,
+		PackedTokens: packedTokens,
+	})
+	if err != nil {
+		return err
+	}
+	if res.Degraded && res.Reason == "" && degradeReason != "" {
+		res.Reason = degradeReason
+	}
+	if res.Budget == 0 {
+		res.Budget = budget
+	}
+	if res.PackedTokens == 0 {
+		res.PackedTokens = packedTokens
+	}
+	if jsonOutput || !isTTY() {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(struct {
+			*ask.Result
+			CandidateCount int `json:"candidate_count"`
+		}{
+			Result:         res,
+			CandidateCount: candidateCount,
+		})
+	}
+
+	fmt.Println(res.Answer)
+	fmt.Println()
+	for _, c := range res.Citations {
+		fmt.Printf("[%d] %s", c.Index, c.Source)
+		if len(c.Facts) > 0 {
+			fmt.Printf(" fact_ids=%v", c.Facts)
+		}
+		if c.SourceSection != "" {
+			fmt.Printf(" section=%s", c.SourceSection)
+		}
+		fmt.Printf(" (score %.2f)\n", c.Score)
+	}
+	if budget > 0 {
+		fmt.Printf("\nPacked %d / %d estimated tokens from %d candidate results\n", packedTokens, budget, candidateCount)
+	}
+	if res.Degraded {
+		fmt.Printf("\n(degraded: %s)\n", res.Reason)
+	}
+	return nil
+}
+
+func providerName(provider llm.Provider, model string) string {
+	if provider != nil {
+		return provider.Name()
+	}
+	if idx := strings.IndexByte(model, '/'); idx > 0 {
+		return model[:idx]
+	}
+	return ""
 }
 
 func runAnswer(args []string) error {
@@ -6841,6 +7164,58 @@ Notes:
 	return nil
 }
 
+func runBackfillScope(args []string) error {
+	apply := false
+	jsonOutput := false
+	for _, arg := range args {
+		switch arg {
+		case "--apply":
+			apply = true
+		case "--json":
+			jsonOutput = true
+		default:
+			return fmt.Errorf("unknown flag: %s\nusage: cortex backfill-scope [--apply] [--json]", arg)
+		}
+	}
+
+	s, err := store.NewStore(getStoreConfig())
+	if err != nil {
+		return fmt.Errorf("opening store: %w", err)
+	}
+	defer s.Close()
+
+	sqlStore, ok := s.(*store.SQLiteStore)
+	if !ok {
+		return fmt.Errorf("backfill-scope requires SQLiteStore backend")
+	}
+
+	report, err := sqlStore.BackfillFactScope(context.Background(), apply)
+	if err != nil {
+		return err
+	}
+
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+
+	mode := "dry-run"
+	if apply {
+		mode = "apply"
+	}
+	fmt.Printf("Scope backfill (%s):\n", mode)
+	fmt.Printf("  total facts:    %d\n", report.TotalFacts)
+	fmt.Printf("  already scoped: %d\n", report.AlreadyScoped)
+	fmt.Printf("  inferred:       %d\n", report.Inferred)
+	fmt.Printf("  unable:         %d\n", report.UnableToInfer)
+	if apply {
+		fmt.Printf("  applied:        %d\n", report.Applied)
+	}
+	fmt.Printf("  duration:       %dms\n", report.DurationMs)
+	return nil
+}
+
 func runCleanup(args []string) error {
 	dryRun := false
 	purgeNoise := false
@@ -11862,7 +12237,7 @@ var cortexCommands = []string{
 	"stats", "health", "stale", "conflicts", "agents", "projects",
 	"graph", "cluster",
 	"reason", "bench", "eval",
-	"cleanup", "optimize", "embed", "tag", "answer", "lifecycle", "beliefs", "suppress", "source-weight",
+	"cleanup", "backfill-scope", "optimize", "embed", "tag", "answer", "ask", "lifecycle", "beliefs", "suppress", "source-weight",
 	"connect",
 	"mcp", "doctor", "completion", "version", "help",
 }
@@ -11943,6 +12318,7 @@ Memory:
   search <query>        Search memories or facts (keyword, semantic, hybrid, or rrf)
   query                 Filter facts by metadata (--where clauses)
   answer <query>        Search + synthesize short answer with citations
+  ask <query>           Budget-aware evidence-grounded synthesis with citations
   lifecycle run         Apply built-in lifecycle policies to facts
   beliefs               Belief lifecycle stats + manual state overrides
   list                  List memories or facts
@@ -11980,6 +12356,7 @@ LLM:
 Maintenance:
   doctor                Health check (DB, embeddings, connectors, LLM keys)
   cleanup               Remove garbage memories, headless facts, and prune noise
+  backfill-scope        Infer missing fact scope from linked memory metadata
   optimize              DB maintenance (integrity check, VACUUM, ANALYZE)
   embed <provider/model> Generate embeddings, run/watch the worker, or show status
   embed-source <path>   Finish embeddings for one source file
