@@ -279,6 +279,176 @@ func TestSearchBM25_MultipleTerm(t *testing.T) {
 	}
 }
 
+func TestSearchBM25_UnscopedVsScopedEntity(t *testing.T) {
+	s := newTestStore(t)
+	engine := NewEngine(s)
+	ctx := context.Background()
+
+	memQ, err := s.AddMemory(ctx, &store.Memory{
+		Content:    "Q prefers green for code diffs",
+		SourceFile: "q.md",
+		Project:    "cortex",
+		Metadata: &store.Metadata{
+			AgentID:        "niot",
+			ObservedEntity: "Q",
+			SessionID:      "tab-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddMemory Q: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:       memQ,
+		Subject:        "Q",
+		Predicate:      "prefers",
+		Object:         "green for code diffs",
+		FactType:       "preference",
+		Confidence:     0.95,
+		AgentID:        "niot",
+		ObserverAgent:  "niot",
+		ObservedEntity: "Q",
+		SessionID:      "tab-1",
+		ProjectID:      "cortex",
+	}); err != nil {
+		t.Fatalf("AddFact Q: %v", err)
+	}
+
+	memR, err := s.AddMemory(ctx, &store.Memory{
+		Content:    "R prefers red for code diffs",
+		SourceFile: "r.md",
+		Project:    "cortex",
+		Metadata: &store.Metadata{
+			AgentID:        "niot",
+			ObservedEntity: "R",
+			SessionID:      "tab-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddMemory R: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:       memR,
+		Subject:        "R",
+		Predicate:      "prefers",
+		Object:         "red for code diffs",
+		FactType:       "preference",
+		Confidence:     0.90,
+		AgentID:        "niot",
+		ObserverAgent:  "niot",
+		ObservedEntity: "R",
+		SessionID:      "tab-1",
+		ProjectID:      "cortex",
+	}); err != nil {
+		t.Fatalf("AddFact R: %v", err)
+	}
+
+	unscoped, err := engine.Search(ctx, "prefers code diffs", Options{Mode: ModeKeyword, Limit: 10})
+	if err != nil {
+		t.Fatalf("unscoped search failed: %v", err)
+	}
+	if len(unscoped) != 2 {
+		t.Fatalf("expected 2 unscoped results, got %d", len(unscoped))
+	}
+
+	scoped, err := engine.Search(ctx, "prefers code diffs", Options{
+		Mode:  ModeKeyword,
+		Limit: 10,
+		Scope: ScopeFilters{Entities: []string{"Q"}},
+	})
+	if err != nil {
+		t.Fatalf("scoped search failed: %v", err)
+	}
+	if len(scoped) != 1 {
+		t.Fatalf("expected 1 scoped result, got %d", len(scoped))
+	}
+	if scoped[0].MemoryID != memQ {
+		t.Fatalf("expected scoped result memory %d, got %d", memQ, scoped[0].MemoryID)
+	}
+}
+
+func TestSearchBM25_ScopeRequiresSameFactTuple(t *testing.T) {
+	s := newTestStore(t)
+	engine := NewEngine(s)
+	ctx := context.Background()
+
+	memTab1, err := s.AddMemory(ctx, &store.Memory{
+		Content:    "Q prefers terse review comments in tab one",
+		SourceFile: "tab1.md",
+		Project:    "cortex",
+		Metadata: &store.Metadata{
+			AgentID:        "niot",
+			ObservedEntity: "Q",
+			SessionID:      "tab-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddMemory tab1: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:       memTab1,
+		Subject:        "Q",
+		Predicate:      "prefers",
+		Object:         "terse review comments",
+		FactType:       "preference",
+		Confidence:     0.92,
+		AgentID:        "niot",
+		ObserverAgent:  "niot",
+		ObservedEntity: "Q",
+		SessionID:      "tab-1",
+		ProjectID:      "cortex",
+	}); err != nil {
+		t.Fatalf("AddFact tab1: %v", err)
+	}
+
+	memTab2, err := s.AddMemory(ctx, &store.Memory{
+		Content:    "Q prefers detailed review comments in tab two",
+		SourceFile: "tab2.md",
+		Project:    "cortex",
+		Metadata: &store.Metadata{
+			AgentID:        "niot",
+			ObservedEntity: "Q",
+			SessionID:      "tab-2",
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddMemory tab2: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:       memTab2,
+		Subject:        "Q",
+		Predicate:      "prefers",
+		Object:         "detailed review comments",
+		FactType:       "preference",
+		Confidence:     0.91,
+		AgentID:        "niot",
+		ObserverAgent:  "niot",
+		ObservedEntity: "Q",
+		SessionID:      "tab-2",
+		ProjectID:      "cortex",
+	}); err != nil {
+		t.Fatalf("AddFact tab2: %v", err)
+	}
+
+	results, err := engine.Search(ctx, "review comments", Options{
+		Mode:  ModeKeyword,
+		Limit: 10,
+		Scope: ScopeFilters{
+			Agents:   []string{"niot"},
+			Entities: []string{"Q"},
+			Sessions: []string{"tab-1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("scoped tuple search failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 tuple-scoped result, got %d", len(results))
+	}
+	if results[0].MemoryID != memTab1 {
+		t.Fatalf("expected tab-1 result memory %d, got %d", memTab1, results[0].MemoryID)
+	}
+}
+
 func TestSearchBM25_OR(t *testing.T) {
 	s := newTestStore(t)
 	seedTestData(t, s)
@@ -547,7 +717,6 @@ func TestSearch_AttachesTemporalContext(t *testing.T) {
 		t.Fatalf("unexpected temporal norm %+v", results[0].TemporalNorms[0])
 	}
 }
-
 func TestSanitizeFTSQuery_StripsNaturalLanguagePunctuation(t *testing.T) {
 	got := sanitizeFTSQuery(`When did Melanie read the book "nothing is impossible"?`)
 	want := `When did Melanie read the book "nothing is impossible"`

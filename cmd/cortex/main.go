@@ -827,6 +827,8 @@ func runSearch(args []string) error {
 	var queryParts []string
 	mode := "keyword"
 	limit := 10
+	limitExplicit := false
+	budget := 0
 	minScore := -1.0 // -1 = use mode-dependent defaults (BM25: 0.05, semantic: 0.25, hybrid: 0.05)
 	jsonOutput := false
 	embedFlag := ""
@@ -844,6 +846,7 @@ func runSearch(args []string) error {
 	sourceFlag := ""
 	intentFlag := "all"
 	sourceBoostFlags := []string{}
+	scopeFlags := []string{}
 	showMetadata := false
 	explain := false
 	includeSuperseded := false
@@ -906,6 +909,11 @@ func runSearch(args []string) error {
 			sourceBoostFlags = append(sourceBoostFlags, args[i])
 		case strings.HasPrefix(args[i], "--source-boost="):
 			sourceBoostFlags = append(sourceBoostFlags, strings.TrimPrefix(args[i], "--source-boost="))
+		case args[i] == "--scope" && i+1 < len(args):
+			i++
+			scopeFlags = append(scopeFlags, args[i])
+		case strings.HasPrefix(args[i], "--scope="):
+			scopeFlags = append(scopeFlags, strings.TrimPrefix(args[i], "--scope="))
 		case args[i] == "--show-metadata":
 			showMetadata = true
 		case args[i] == "--boost-agent" && i+1 < len(args):
@@ -952,12 +960,27 @@ func runSearch(args []string) error {
 				return fmt.Errorf("invalid --limit value: %s", args[i])
 			}
 			limit = n
+			limitExplicit = true
 		case strings.HasPrefix(args[i], "--limit="):
 			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--limit="))
 			if err != nil {
 				return fmt.Errorf("invalid --limit value: %s", args[i])
 			}
 			limit = n
+			limitExplicit = true
+		case args[i] == "--budget" && i+1 < len(args):
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				return fmt.Errorf("invalid --budget value: %s", args[i])
+			}
+			budget = n
+		case strings.HasPrefix(args[i], "--budget="):
+			n, err := strconv.Atoi(strings.TrimPrefix(args[i], "--budget="))
+			if err != nil {
+				return fmt.Errorf("invalid --budget value: %s", args[i])
+			}
+			budget = n
 		case (args[i] == "--min-score" || args[i] == "--min-confidence") && i+1 < len(args):
 			i++
 			f, err := strconv.ParseFloat(args[i], 64)
@@ -993,15 +1016,27 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--facts] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--dedupe|--no-dedupe] [--explain] [--json] [--agent <id>] [--channel <name>] [--session-key <key>] [--boost-agent <id>] [--boost-channel <name>] [--boost-session-key <key>] [--source <provider>] [--intent memory|import|connector|all] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--budget N] [--facts] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--dedupe|--no-dedupe] [--explain] [--json] [--agent <id>] [--channel <name>] [--session-key <key>] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--boost-agent <id>] [--boost-channel <name>] [--boost-session-key <key>] [--source <provider>] [--intent memory|import|connector|all] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 	if limit < 1 || limit > 1000 {
 		return fmt.Errorf("--limit must be between 1 and 1000")
+	}
+	if budget < 0 {
+		return fmt.Errorf("--budget must be >= 0")
 	}
 
 	searchMode, err := search.ParseMode(mode)
 	if err != nil {
 		return err
+	}
+
+	searchLimit := limit
+	if budget > 0 {
+		if !limitExplicit {
+			searchLimit = 50
+		} else if searchLimit < 50 {
+			searchLimit = 50
+		}
 	}
 
 	resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{})
@@ -1046,9 +1081,14 @@ func runSearch(args []string) error {
 		parsedSourceBoosts = append(parsedSourceBoosts, boost)
 	}
 
+	scopeFilters, err := parseSearchScopeFlags(scopeFlags)
+	if err != nil {
+		return err
+	}
+
 	opts := search.Options{
 		Mode:              searchMode,
-		Limit:             limit,
+		Limit:             searchLimit,
 		MinScore:          minScore,
 		Project:           projectFlag,
 		Classes:           classes,
@@ -1060,6 +1100,7 @@ func runSearch(args []string) error {
 		Before:            beforeFlag,
 		Source:            sourceFlag,
 		Intent:            intentFlag,
+		Scope:             scopeFilters,
 		SourceBoosts:      parsedSourceBoosts,
 		IncludeSuperseded: includeSuperseded,
 		Explain:           explain,
@@ -1142,6 +1183,16 @@ func runSearch(args []string) error {
 		}
 	}
 
+	candidateCount := len(results)
+	packedTokens := 0
+	if budget > 0 {
+		var capLimit int
+		if limitExplicit {
+			capLimit = limit
+		}
+		results, packedTokens = packSearchResultsByBudget(results, budget, capLimit)
+	}
+
 	if globalVerbose && len(parsedSourceBoosts) > 0 {
 		matched := 0
 		for _, r := range results {
@@ -1157,6 +1208,9 @@ func runSearch(args []string) error {
 	// Determine output format
 	if jsonOutput || !isTTY() {
 		enriched := enrichSearchResultsWithFactIDs(ctx, s, results, includeSuperseded)
+		if budget > 0 {
+			return outputBudgetJSON(query, searchMode, budget, packedTokens, candidateCount, enriched)
+		}
 		return outputJSON(enriched)
 	}
 
@@ -1173,7 +1227,13 @@ func runSearch(args []string) error {
 		fmt.Println()
 	}
 
-	return outputTTYSearch(query, results, showMetadata, explain, searchMode)
+	if err := outputTTYSearch(query, results, showMetadata, explain, searchMode); err != nil {
+		return err
+	}
+	if budget > 0 && len(results) > 0 {
+		fmt.Printf("Packed %d / %d estimated tokens\n", packedTokens, budget)
+	}
+	return nil
 }
 
 // mergeExpandedResults merges results from multiple expanded queries using RRF.
@@ -1200,6 +1260,45 @@ func mergeExpandedResults(resultSets [][]search.Result, limit int) []search.Resu
 		merged = merged[:limit]
 	}
 	return merged
+}
+
+func parseSearchScopeFlags(rawFlags []string) (search.ScopeFilters, error) {
+	var scopes search.ScopeFilters
+	for _, raw := range rawFlags {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			return scopes, fmt.Errorf("--scope cannot be empty")
+		}
+		parts := strings.SplitN(value, ":", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+			return scopes, fmt.Errorf("invalid --scope %q (expected dimension:value)", raw)
+		}
+
+		dimension := strings.ToLower(strings.TrimSpace(parts[0]))
+		target := strings.TrimSpace(parts[1])
+		switch dimension {
+		case "agent":
+			scopes.Agents = appendUniqueFold(scopes.Agents, target)
+		case "entity":
+			scopes.Entities = appendUniqueFold(scopes.Entities, target)
+		case "session":
+			scopes.Sessions = appendUniqueFold(scopes.Sessions, target)
+		case "project":
+			scopes.Projects = appendUniqueFold(scopes.Projects, target)
+		default:
+			return scopes, fmt.Errorf("invalid --scope dimension %q (valid: agent, entity, session, project)", parts[0])
+		}
+	}
+	return scopes, nil
+}
+
+func appendUniqueFold(values []string, candidate string) []string {
+	for _, value := range values {
+		if strings.EqualFold(value, candidate) {
+			return values
+		}
+	}
+	return append(values, candidate)
 }
 
 func parseSourceBoostArg(raw string) (search.SourceBoost, error) {
@@ -4736,6 +4835,7 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 				SourceQuote:  extractedFact.SourceQuote,
 				TemporalNorm: extractedFact.TemporalNorm,
 			}
+			store.ApplyMemoryScopeToFact(memory, fact)
 
 			factID, stored, err := ingest.StoreExtractedFact(ctx, s, fact)
 			if err != nil {
@@ -6084,7 +6184,7 @@ func runUpdate(args []string) error {
 		}
 
 		for _, extractedFact := range extractedFacts {
-			_, stored, err := ingest.StoreExtractedFact(ctx, s, &store.Fact{
+			fact := &store.Fact{
 				MemoryID:     memoryID,
 				Subject:      extractedFact.Subject,
 				Predicate:    extractedFact.Predicate,
@@ -6094,7 +6194,9 @@ func runUpdate(args []string) error {
 				DecayRate:    extractedFact.DecayRate,
 				SourceQuote:  extractedFact.SourceQuote,
 				TemporalNorm: extractedFact.TemporalNorm,
-			})
+			}
+			store.ApplyMemoryScopeToFact(memory, fact)
+			_, stored, err := ingest.StoreExtractedFact(ctx, s, fact)
 			if err != nil {
 				continue
 			}
@@ -8809,6 +8911,77 @@ func enrichSearchResultsWithFactIDs(ctx context.Context, s store.Store, results 
 	return enriched
 }
 
+func estimateSearchResultTokens(r search.Result) int {
+	text := strings.TrimSpace(r.Content)
+	if snippet := strings.TrimSpace(r.Snippet); snippet != "" && len(snippet) < len(text) {
+		text = snippet
+	}
+	if text == "" {
+		return 1
+	}
+	return (len(text) + 3) / 4
+}
+
+func clipSearchResultToBudget(r search.Result, budget int) search.Result {
+	if budget <= 0 {
+		return r
+	}
+	maxChars := budget * 4
+	if maxChars <= 0 {
+		maxChars = 1
+	}
+	r.Content = search.TruncateContent(r.Content, maxChars)
+	if r.Snippet != "" {
+		snippet := strings.ReplaceAll(strings.ReplaceAll(r.Snippet, "<b>", ""), "</b>", "")
+		r.Snippet = search.TruncateContent(snippet, maxChars)
+	}
+	r.TokenEstimate = budget
+	r.Truncated = true
+	return r
+}
+
+func packSearchResultsByBudget(results []search.Result, budget int, capLimit int) ([]search.Result, int) {
+	if budget <= 0 || len(results) == 0 {
+		return results, 0
+	}
+
+	packed := make([]search.Result, 0, len(results))
+	used := 0
+	for _, result := range results {
+		cost := result.TokenEstimate
+		if cost <= 0 {
+			cost = estimateSearchResultTokens(result)
+		}
+		result.TokenEstimate = cost
+
+		if cost <= (budget - used) {
+			packed = append(packed, result)
+			used += cost
+			continue
+		}
+
+		if len(packed) == 0 && budget >= 32 {
+			clipped := clipSearchResultToBudget(result, budget)
+			packed = append(packed, clipped)
+			used = clipped.TokenEstimate
+		}
+		break
+	}
+
+	if capLimit > 0 && len(packed) > capLimit {
+		packed = packed[:capLimit]
+		used = 0
+		for i := range packed {
+			if packed[i].TokenEstimate <= 0 {
+				packed[i].TokenEstimate = estimateSearchResultTokens(packed[i])
+			}
+			used += packed[i].TokenEstimate
+		}
+	}
+
+	return packed, used
+}
+
 func outputJSON(results []search.Result) error {
 	if results == nil {
 		results = []search.Result{}
@@ -8828,6 +9001,43 @@ func outputJSON(results []search.Result) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(results)
+}
+
+type budgetSearchJSON struct {
+	Query          string          `json:"query"`
+	Mode           string          `json:"mode"`
+	Budget         int             `json:"budget"`
+	PackedTokens   int             `json:"packed_tokens"`
+	CandidateCount int             `json:"candidate_count"`
+	ReturnedCount  int             `json:"returned_count"`
+	Results        []search.Result `json:"results"`
+}
+
+func outputBudgetJSON(query string, mode search.Mode, budget int, packedTokens int, candidateCount int, results []search.Result) error {
+	if results == nil {
+		results = []search.Result{}
+	}
+	for i := range results {
+		if results[i].TokenEstimate <= 0 {
+			results[i].TokenEstimate = estimateSearchResultTokens(results[i])
+		}
+		if results[i].Snippet != "" {
+			results[i].Snippet = strings.ReplaceAll(results[i].Snippet, "<b>", "")
+			results[i].Snippet = strings.ReplaceAll(results[i].Snippet, "</b>", "")
+		}
+	}
+	out := budgetSearchJSON{
+		Query:          query,
+		Mode:           string(mode),
+		Budget:         budget,
+		PackedTokens:   packedTokens,
+		CandidateCount: candidateCount,
+		ReturnedCount:  len(results),
+		Results:        results,
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
 }
 
 func outputFactSearchJSON(results []search.FactResult) error {

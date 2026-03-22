@@ -34,6 +34,52 @@ func unmarshalTemporalNorm(raw sql.NullString) *temporal.Norm {
 	return &out
 }
 
+func normalizeFactScopeForWrite(f *Fact) {
+	if f == nil {
+		return
+	}
+	f.AgentID = strings.TrimSpace(f.AgentID)
+	f.ObserverAgent = strings.TrimSpace(f.ObserverAgent)
+	f.ObservedEntity = strings.TrimSpace(f.ObservedEntity)
+	f.SessionID = strings.TrimSpace(f.SessionID)
+	f.ProjectID = strings.TrimSpace(f.ProjectID)
+
+	if f.ObserverAgent == "" {
+		f.ObserverAgent = f.AgentID
+	}
+	if f.AgentID == "" {
+		f.AgentID = f.ObserverAgent
+	}
+	if f.TokenEstimate <= 0 {
+		f.TokenEstimate = estimateFactTokenCount(f)
+	}
+}
+
+func effectiveFactObserver(f *Fact) string {
+	if f == nil {
+		return ""
+	}
+	if strings.TrimSpace(f.ObserverAgent) != "" {
+		return strings.TrimSpace(f.ObserverAgent)
+	}
+	return strings.TrimSpace(f.AgentID)
+}
+
+func estimateFactTokenCount(f *Fact) int {
+	if f == nil {
+		return 0
+	}
+	rendered := strings.TrimSpace(strings.Join([]string{
+		strings.TrimSpace(f.Subject),
+		strings.TrimSpace(f.Predicate),
+		strings.TrimSpace(f.Object),
+	}, " "))
+	if rendered == "" {
+		return 1
+	}
+	return (len(rendered) + 3) / 4
+}
+
 func normalizeFactStateForWrite(state string) (string, error) {
 	s := strings.ToLower(strings.TrimSpace(state))
 	if s == "" {
@@ -71,6 +117,7 @@ func (s *SQLiteStore) AddFact(ctx context.Context, f *Fact) (int64, error) {
 	if f.DecayRate == 0 {
 		f.DecayRate = 0.01
 	}
+	normalizeFactScopeForWrite(f)
 
 	state, err := normalizeFactStateForWrite(f.State)
 	if err != nil {
@@ -78,10 +125,10 @@ func (s *SQLiteStore) AddFact(ctx context.Context, f *Fact) (int64, error) {
 	}
 
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO facts (memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, temporal_norm, created_at, state, agent_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO facts (memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, temporal_norm, created_at, state, agent_id, observer_agent, observed_entity, session_id, project_id, token_estimate)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.MemoryID, f.Subject, f.Predicate, f.Object, f.FactType,
-		f.Confidence, f.DecayRate, now, f.SourceQuote, marshalTemporalNorm(f.TemporalNorm), now, state, f.AgentID,
+		f.Confidence, f.DecayRate, now, f.SourceQuote, marshalTemporalNorm(f.TemporalNorm), now, state, f.AgentID, f.ObserverAgent, f.ObservedEntity, f.SessionID, f.ProjectID, f.TokenEstimate,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting fact: %w", err)
@@ -96,6 +143,7 @@ func (s *SQLiteStore) AddFact(ctx context.Context, f *Fact) (int64, error) {
 	f.CreatedAt = now
 	f.LastReinforced = now
 	f.State = state
+	f.ObserverAgent = effectiveFactObserver(f)
 	return id, nil
 }
 
@@ -105,11 +153,11 @@ func (s *SQLiteStore) GetFact(ctx context.Context, id int64) (*Fact, error) {
 	var supersededBy sql.NullInt64
 	var temporalNorm sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, temporal_norm, created_at, state, superseded_by, agent_id
+		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, temporal_norm, created_at, state, superseded_by, agent_id, observer_agent, observed_entity, session_id, project_id, token_estimate
 		 FROM facts WHERE id = ?`, id,
 	).Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 		&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-		&f.SourceQuote, &temporalNorm, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID)
+		&f.SourceQuote, &temporalNorm, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID, &f.ObserverAgent, &f.ObservedEntity, &f.SessionID, &f.ProjectID, &f.TokenEstimate)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -122,6 +170,7 @@ func (s *SQLiteStore) GetFact(ctx context.Context, id int64) (*Fact, error) {
 		f.SupersededBy = &v
 	}
 	f.TemporalNorm = unmarshalTemporalNorm(temporalNorm)
+	f.ObserverAgent = effectiveFactObserver(f)
 	return f, nil
 }
 
@@ -137,7 +186,7 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 	}
 
 	query := `SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type, 
-			         f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.temporal_norm, f.created_at, f.state, f.superseded_by, f.agent_id
+			         f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.temporal_norm, f.created_at, f.state, f.superseded_by, f.agent_id, f.observer_agent, f.observed_entity, f.session_id, f.project_id, f.token_estimate
 		      FROM facts f`
 	args := []interface{}{}
 
@@ -192,7 +241,7 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 		var temporalNorm sql.NullString
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &temporalNorm, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
+			&f.SourceQuote, &temporalNorm, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID, &f.ObserverAgent, &f.ObservedEntity, &f.SessionID, &f.ProjectID, &f.TokenEstimate); err != nil {
 			return nil, fmt.Errorf("scanning fact row: %w", err)
 		}
 		if supersededBy.Valid {
@@ -200,6 +249,7 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 			f.SupersededBy = &v
 		}
 		f.TemporalNorm = unmarshalTemporalNorm(temporalNorm)
+		f.ObserverAgent = effectiveFactObserver(f)
 		facts = append(facts, f)
 	}
 	return facts, rows.Err()
@@ -222,7 +272,7 @@ func (s *SQLiteStore) ListFactsByMemoryIDs(ctx context.Context, memoryIDs []int6
 	}
 
 	query := fmt.Sprintf(`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type,
-		f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.temporal_norm, f.created_at, f.state, f.superseded_by, f.agent_id
+		f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.temporal_norm, f.created_at, f.state, f.superseded_by, f.agent_id, f.observer_agent, f.observed_entity, f.session_id, f.project_id, f.token_estimate
 		FROM facts f
 		WHERE f.memory_id IN (%s) AND f.superseded_by IS NULL`,
 		strings.Join(placeholders, ","))
@@ -247,7 +297,7 @@ func (s *SQLiteStore) ListFactsByMemoryIDs(ctx context.Context, memoryIDs []int6
 		var temporalNorm sql.NullString
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &temporalNorm, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
+			&f.SourceQuote, &temporalNorm, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID, &f.ObserverAgent, &f.ObservedEntity, &f.SessionID, &f.ProjectID, &f.TokenEstimate); err != nil {
 			return nil, fmt.Errorf("scanning fact row: %w", err)
 		}
 		if supersededBy.Valid {
@@ -255,6 +305,7 @@ func (s *SQLiteStore) ListFactsByMemoryIDs(ctx context.Context, memoryIDs []int6
 			f.SupersededBy = &v
 		}
 		f.TemporalNorm = unmarshalTemporalNorm(temporalNorm)
+		f.ObserverAgent = effectiveFactObserver(f)
 		facts = append(facts, f)
 	}
 	return facts, rows.Err()
@@ -424,7 +475,7 @@ func (s *SQLiteStore) getFactsByMemoryIDs(ctx context.Context, memoryIDs []int64
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, temporal_norm, created_at, state, superseded_by, agent_id
+		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, temporal_norm, created_at, state, superseded_by, agent_id, observer_agent, observed_entity, session_id, project_id, token_estimate
 		 FROM facts WHERE memory_id IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
@@ -445,7 +496,7 @@ func (s *SQLiteStore) getFactsByMemoryIDs(ctx context.Context, memoryIDs []int64
 		var temporalNorm sql.NullString
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &temporalNorm, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
+			&f.SourceQuote, &temporalNorm, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID, &f.ObserverAgent, &f.ObservedEntity, &f.SessionID, &f.ProjectID, &f.TokenEstimate); err != nil {
 			return nil, fmt.Errorf("scanning fact: %w", err)
 		}
 		if supersededBy.Valid {
@@ -453,6 +504,7 @@ func (s *SQLiteStore) getFactsByMemoryIDs(ctx context.Context, memoryIDs []int64
 			f.SupersededBy = &v
 		}
 		f.TemporalNorm = unmarshalTemporalNorm(temporalNorm)
+		f.ObserverAgent = effectiveFactObserver(f)
 		facts = append(facts, f)
 	}
 	return facts, rows.Err()
@@ -663,7 +715,7 @@ func (s *SQLiteStore) StaleFacts(ctx context.Context, maxConfidence float64, day
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type,
-		        f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.state, f.superseded_by, f.agent_id
+		        f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.state, f.superseded_by, f.agent_id, f.observer_agent, f.observed_entity, f.session_id, f.project_id, f.token_estimate
 		 FROM facts f
 		 WHERE f.confidence <= ?
 		   AND f.last_reinforced < ?
@@ -682,13 +734,14 @@ func (s *SQLiteStore) StaleFacts(ctx context.Context, maxConfidence float64, day
 		var supersededBy sql.NullInt64
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
+			&f.SourceQuote, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID, &f.ObserverAgent, &f.ObservedEntity, &f.SessionID, &f.ProjectID, &f.TokenEstimate); err != nil {
 			return nil, fmt.Errorf("scanning stale fact: %w", err)
 		}
 		if supersededBy.Valid {
 			v := supersededBy.Int64
 			f.SupersededBy = &v
 		}
+		f.ObserverAgent = effectiveFactObserver(f)
 		facts = append(facts, f)
 	}
 	return facts, rows.Err()

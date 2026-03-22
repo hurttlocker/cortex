@@ -335,6 +335,7 @@ func (se *SyncEngine) extractFacts(ctx context.Context, memoryIDs []int64, llmFl
 				SourceQuote:  ef.SourceQuote,
 				TemporalNorm: ef.TemporalNorm,
 			}
+			store.ApplyMemoryScopeToFact(mem, fact)
 			if !ingest.ShouldStoreExtractedFact(fact) {
 				continue
 			}

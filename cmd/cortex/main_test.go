@@ -19,6 +19,7 @@ import (
 	"github.com/hurttlocker/cortex/internal/connect"
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/observe"
+	"github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
@@ -557,6 +558,70 @@ func TestRunSearch_InvalidLimitRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--limit must be between 1 and 1000") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseSearchScopeFlags(t *testing.T) {
+	scopes, err := parseSearchScopeFlags([]string{
+		"agent:niot",
+		"entity:Q",
+		"session:tab-1",
+		"project:cortex",
+		"agent:niot",
+	})
+	if err != nil {
+		t.Fatalf("parseSearchScopeFlags: %v", err)
+	}
+	if len(scopes.Agents) != 1 || scopes.Agents[0] != "niot" {
+		t.Fatalf("agents = %#v, want [niot]", scopes.Agents)
+	}
+	if len(scopes.Entities) != 1 || scopes.Entities[0] != "Q" {
+		t.Fatalf("entities = %#v, want [Q]", scopes.Entities)
+	}
+	if len(scopes.Sessions) != 1 || scopes.Sessions[0] != "tab-1" {
+		t.Fatalf("sessions = %#v, want [tab-1]", scopes.Sessions)
+	}
+	if len(scopes.Projects) != 1 || scopes.Projects[0] != "cortex" {
+		t.Fatalf("projects = %#v, want [cortex]", scopes.Projects)
+	}
+}
+
+func TestPackSearchResultsByBudget(t *testing.T) {
+	results := []search.Result{
+		{Content: strings.Repeat("a", 80)},
+		{Content: strings.Repeat("b", 120)},
+		{Content: strings.Repeat("c", 200)},
+	}
+
+	packed, used := packSearchResultsByBudget(results, 55, 0)
+	if len(packed) != 2 {
+		t.Fatalf("expected 2 packed results, got %d", len(packed))
+	}
+	if used != 50 {
+		t.Fatalf("used = %d, want 50", used)
+	}
+	if packed[0].TokenEstimate != 20 || packed[1].TokenEstimate != 30 {
+		t.Fatalf("unexpected token estimates: %+v", packed)
+	}
+}
+
+func TestPackSearchResultsByBudget_ClipsOversizedFirstResult(t *testing.T) {
+	results := []search.Result{
+		{Content: strings.Repeat("x", 400)},
+	}
+
+	packed, used := packSearchResultsByBudget(results, 32, 0)
+	if len(packed) != 1 {
+		t.Fatalf("expected 1 packed result, got %d", len(packed))
+	}
+	if !packed[0].Truncated {
+		t.Fatal("expected oversized result to be truncated")
+	}
+	if used != 32 {
+		t.Fatalf("used = %d, want 32", used)
+	}
+	if packed[0].TokenEstimate != 32 {
+		t.Fatalf("token_estimate = %d, want 32", packed[0].TokenEstimate)
 	}
 }
 

@@ -99,6 +99,16 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating fact temporal_norm: %w", err)
 	}
 
+	// Schema evolution: scoped fact columns for observer/entity/session/project (Issue #252)
+	if err := s.migrateFactScopeColumns(); err != nil {
+		return fmt.Errorf("migrating fact scope columns: %w", err)
+	}
+
+	// Schema evolution: cached token estimates for budget-aware recall (Issue #252)
+	if err := s.migrateFactTokenEstimateColumn(); err != nil {
+		return fmt.Errorf("migrating fact token estimate column: %w", err)
+	}
+
 	// Schema evolution: fact accesses table (v1.0 — Issue #166)
 	if err := s.migrateFactAccessesTable(); err != nil {
 		return fmt.Errorf("migrating fact accesses table: %w", err)
@@ -187,7 +197,13 @@ func (s *SQLiteStore) runBootstrapDDL() error {
 			temporal_norm   TEXT,
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
 			state           TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','core','retired','superseded')),
-			superseded_by   INTEGER REFERENCES facts(id)
+			superseded_by   INTEGER REFERENCES facts(id),
+			agent_id        TEXT NOT NULL DEFAULT '',
+			observer_agent  TEXT NOT NULL DEFAULT '',
+			observed_entity TEXT NOT NULL DEFAULT '',
+			session_id      TEXT NOT NULL DEFAULT '',
+			project_id      TEXT NOT NULL DEFAULT '',
+			token_estimate  INTEGER NOT NULL DEFAULT 0
 		)`,
 
 		`CREATE INDEX IF NOT EXISTS idx_facts_memory_id ON facts(memory_id)`,
@@ -197,6 +213,14 @@ func (s *SQLiteStore) runBootstrapDDL() error {
 		// idx_facts_superseded_by is created by migrateFactSupersededColumn() for existing DBs,
 		// and here for new DBs only (column exists in CREATE TABLE above).
 		`CREATE INDEX IF NOT EXISTS idx_facts_state ON facts(state)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_agent_id ON facts(agent_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_observer_agent ON facts(observer_agent)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_observed_entity ON facts(observed_entity)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_session_id ON facts(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_project_id ON facts(project_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_token_estimate ON facts(token_estimate)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_scope_lookup ON facts(project_id, observer_agent, observed_entity, session_id, state, superseded_by)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_scope_subject_predicate ON facts(project_id, observer_agent, observed_entity, subject, predicate, state, superseded_by)`,
 
 		// Topic clusters
 		`CREATE TABLE IF NOT EXISTS clusters (
@@ -1048,6 +1072,146 @@ func (s *SQLiteStore) migrateFactTemporalNorm() error {
 			return nil
 		}
 		return fmt.Errorf("adding temporal_norm column: %w", err)
+	}
+	return nil
+}
+
+// migrateFactScopeColumns adds directional scope columns to facts for entity-scoped search.
+func (s *SQLiteStore) migrateFactScopeColumns() error {
+	type scopeColumn struct {
+		name string
+		stmt string
+	}
+
+	columns := []scopeColumn{
+		{name: "observer_agent", stmt: `ALTER TABLE facts ADD COLUMN observer_agent TEXT NOT NULL DEFAULT ''`},
+		{name: "observed_entity", stmt: `ALTER TABLE facts ADD COLUMN observed_entity TEXT NOT NULL DEFAULT ''`},
+		{name: "session_id", stmt: `ALTER TABLE facts ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`},
+		{name: "project_id", stmt: `ALTER TABLE facts ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`},
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning fact scope migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, col := range columns {
+		var count int
+		if err := tx.QueryRow(
+			"SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name=?",
+			col.name,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("checking for %s column: %w", col.name, err)
+		}
+		if count > 0 {
+			continue
+		}
+		if _, err := tx.Exec(col.stmt); err != nil {
+			if isDuplicateColumnError(err) {
+				continue
+			}
+			return fmt.Errorf("adding %s column: %w", col.name, err)
+		}
+	}
+
+	stmts := []string{
+		`UPDATE facts
+		   SET observer_agent = agent_id
+		 WHERE COALESCE(observer_agent, '') = ''
+		   AND COALESCE(agent_id, '') <> ''`,
+		`UPDATE facts
+		   SET project_id = COALESCE((
+		     SELECT m.project
+		       FROM memories m
+		      WHERE m.id = facts.memory_id
+		   ), '')
+		 WHERE COALESCE(project_id, '') = ''`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_observer_agent ON facts(observer_agent)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_observed_entity ON facts(observed_entity)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_session_id ON facts(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_project_id ON facts(project_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_scope_lookup ON facts(project_id, observer_agent, observed_entity, session_id, state, superseded_by)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_scope_subject_predicate ON facts(project_id, observer_agent, observed_entity, subject, predicate, state, superseded_by)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("executing fact scope migration %q: %w", truncate(stmt, 60), err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing fact scope migration: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateFactTokenEstimateColumn() error {
+	var count int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='token_estimate'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checking for token_estimate column: %w", err)
+	}
+	if count == 0 {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("beginning token_estimate migration: %w", err)
+		}
+		defer tx.Rollback()
+
+		stmts := []string{
+			`ALTER TABLE facts ADD COLUMN token_estimate INTEGER NOT NULL DEFAULT 0`,
+			`UPDATE facts
+			   SET token_estimate = MAX(
+			     1,
+			     CAST((
+			       LENGTH(
+			         TRIM(
+			           COALESCE(subject, '') || ' ' ||
+			           COALESCE(predicate, '') || ' ' ||
+			           COALESCE(object, '')
+			         )
+			       ) + 3
+			     ) / 4 AS INTEGER)
+			   )
+			 WHERE token_estimate = 0`,
+			`CREATE INDEX IF NOT EXISTS idx_facts_token_estimate ON facts(token_estimate)`,
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.Exec(stmt); err != nil {
+				if isDuplicateColumnError(err) {
+					continue
+				}
+				return fmt.Errorf("executing %q: %w", truncate(stmt, 60), err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing token_estimate migration: %w", err)
+		}
+		return nil
+	}
+
+	if _, err := s.db.Exec(`UPDATE facts
+	   SET token_estimate = MAX(
+	     1,
+	     CAST((
+	       LENGTH(
+	         TRIM(
+	           COALESCE(subject, '') || ' ' ||
+	           COALESCE(predicate, '') || ' ' ||
+	           COALESCE(object, '')
+	         )
+	       ) + 3
+	     ) / 4 AS INTEGER)
+	   )
+	 WHERE token_estimate = 0`); err != nil {
+		return fmt.Errorf("backfilling token_estimate values: %w", err)
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_facts_token_estimate ON facts(token_estimate)`); err != nil {
+		return fmt.Errorf("creating token_estimate index: %w", err)
 	}
 	return nil
 }
