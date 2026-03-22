@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/hurttlocker/cortex/internal/temporal"
 )
 
 // System prompt for LLM extraction (v1)
@@ -40,7 +42,16 @@ JSON SCHEMA:
       "object": "value/related entity",
       "type": "one of the valid fact types above",
       "confidence": 0.85,
-      "source_quote": "exact text from input this was extracted from"
+      "source_quote": "exact text from input this was extracted from",
+      "temporal_norm": {
+        "kind": "date|date_range|duration",
+        "literal": "exact temporal phrase",
+        "value": "YYYY-MM-DD if exact",
+        "start": "YYYY-MM-DD if range",
+        "end": "YYYY-MM-DD if range",
+        "precision": "day|week|month|year",
+        "resolution": "absolute|resolved_from_anchor|unresolved"
+      }
     }
   ]
 }
@@ -138,7 +149,12 @@ func NewLLMClient(config *LLMConfig) *LLMClient {
 }
 
 // Extract extracts facts from text using the configured LLM.
-func (c *LLMClient) Extract(ctx context.Context, text string) ([]ExtractedFact, error) {
+func (c *LLMClient) Extract(ctx context.Context, text string, metadata map[string]string) ([]ExtractedFact, error) {
+	anchor := strings.TrimSpace(metadata["timestamp_start"])
+	if anchor == "" {
+		anchor = temporal.TimestampStartFromSection(strings.TrimSpace(metadata["source_section"]))
+	}
+
 	// Build the chat messages
 	messages := []ChatMessage{
 		{
@@ -147,7 +163,7 @@ func (c *LLMClient) Extract(ctx context.Context, text string) ([]ExtractedFact, 
 		},
 		{
 			Role:    "user",
-			Content: fmt.Sprintf("Extract facts from this text:\n\n---\n%s\n---\n\nReturn JSON matching the schema.", text),
+			Content: fmt.Sprintf("Session anchor date: %s\n\nExtract facts from this text:\n\n---\n%s\n---\n\nFor temporal facts, preserve the literal phrase in object and fill temporal_norm using the session anchor date when possible. Return JSON matching the schema.", anchor, text),
 		},
 	}
 
@@ -166,6 +182,11 @@ func (c *LLMClient) Extract(ctx context.Context, text string) ([]ExtractedFact, 
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		facts, err := c.attemptExtraction(ctx, req)
 		if err == nil {
+			for i := range facts {
+				if strings.EqualFold(facts[i].FactType, "temporal") && facts[i].TemporalNorm == nil {
+					facts[i].TemporalNorm = temporal.NormalizeLiteral(facts[i].Object, anchor)
+				}
+			}
 			return facts, nil
 		}
 
@@ -246,7 +267,6 @@ func (c *LLMClient) attemptExtraction(ctx context.Context, req ChatRequest) ([]E
 		} else {
 			fact.DecayRate = DecayRates["kv"] // default
 		}
-
 		validFacts = append(validFacts, fact)
 	}
 

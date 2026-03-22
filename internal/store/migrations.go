@@ -94,6 +94,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating fact agent_id: %w", err)
 	}
 
+	// Schema evolution: temporal_norm on facts (temporal normalization)
+	if err := s.migrateFactTemporalNorm(); err != nil {
+		return fmt.Errorf("migrating fact temporal_norm: %w", err)
+	}
+
 	// Schema evolution: fact accesses table (v1.0 — Issue #166)
 	if err := s.migrateFactAccessesTable(); err != nil {
 		return fmt.Errorf("migrating fact accesses table: %w", err)
@@ -179,6 +184,7 @@ func (s *SQLiteStore) runBootstrapDDL() error {
 			decay_rate      REAL DEFAULT 0.01,
 			last_reinforced DATETIME DEFAULT CURRENT_TIMESTAMP,
 			source_quote    TEXT,
+			temporal_norm   TEXT,
 			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
 			state           TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','core','retired','superseded')),
 			superseded_by   INTEGER REFERENCES facts(id)
@@ -1021,6 +1027,27 @@ func (s *SQLiteStore) migrateFactAgentID() error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing agent_id migration: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateFactTemporalNorm() error {
+	var count int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='temporal_norm'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checking for temporal_norm column: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	if _, err := s.db.Exec(`ALTER TABLE facts ADD COLUMN temporal_norm TEXT NULL`); err != nil {
+		if isDuplicateColumnError(err) {
+			return nil
+		}
+		return fmt.Errorf("adding temporal_norm column: %w", err)
 	}
 	return nil
 }

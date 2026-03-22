@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hurttlocker/cortex/internal/temporal"
 	_ "modernc.org/sqlite"
 )
 
@@ -82,6 +83,7 @@ type Fact struct {
 	DecayRate      float64
 	LastReinforced time.Time
 	SourceQuote    string
+	TemporalNorm   *temporal.Norm
 	CreatedAt      time.Time
 	State          string // active|core|retired|superseded
 	SupersededBy   *int64 // Fact ID that superseded this fact (nil = active)

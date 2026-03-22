@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/llm"
+	"github.com/hurttlocker/cortex/internal/temporal"
 )
 
 const (
@@ -61,7 +62,16 @@ Return ONLY a JSON object matching this schema:
       "object": "value or related entity",
       "type": "one of the valid types",
       "confidence": 0.85,
-      "source_quote": "exact text from the chunk"
+      "source_quote": "exact text from the chunk",
+      "temporal_norm": {
+        "kind": "date|date_range|duration",
+        "literal": "exact temporal phrase",
+        "value": "YYYY-MM-DD if exact",
+        "start": "YYYY-MM-DD if range",
+        "end": "YYYY-MM-DD if range",
+        "precision": "day|week|month|year",
+        "resolution": "absolute|resolved_from_anchor|unresolved"
+      }
     }
   ],
   "reasoning": "brief explanation of what you found that rules missed"
@@ -82,19 +92,20 @@ type enrichResponse struct {
 }
 
 type enrichFact struct {
-	Subject     string          `json:"subject"`
-	Predicate   string          `json:"predicate"`
-	ObjectRaw   json.RawMessage `json:"object"`
-	Object      string          `json:"-"` // populated by coerceEnrichFacts
-	FactType    string          `json:"type"`
-	Confidence  float64         `json:"confidence"`
-	SourceQuote string          `json:"source_quote"`
+	Subject      string          `json:"subject"`
+	Predicate    string          `json:"predicate"`
+	ObjectRaw    json.RawMessage `json:"object"`
+	Object       string          `json:"-"` // populated by coerceEnrichFacts
+	FactType     string          `json:"type"`
+	Confidence   float64         `json:"confidence"`
+	SourceQuote  string          `json:"source_quote"`
+	TemporalNorm *temporal.Norm  `json:"temporal_norm,omitempty"`
 }
 
 // EnrichFacts uses an LLM to find facts that rule-based extraction missed.
 // It is additive-only: ruleFacts are never modified or removed.
 // On LLM error, returns nil (graceful fallback to rule-only).
-func EnrichFacts(ctx context.Context, provider llm.Provider, chunk string, ruleFacts []ExtractedFact) (*EnrichResult, error) {
+func EnrichFacts(ctx context.Context, provider llm.Provider, chunk string, ruleFacts []ExtractedFact, anchor string) (*EnrichResult, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("LLM provider is nil")
 	}
@@ -108,7 +119,7 @@ func EnrichFacts(ctx context.Context, provider llm.Provider, chunk string, ruleF
 	}
 
 	// Build the user prompt with existing facts context
-	prompt := buildEnrichPrompt(truncatedChunk, ruleFacts)
+	prompt := buildEnrichPrompt(truncatedChunk, ruleFacts, anchor)
 
 	// Call LLM with timeout
 	enrichCtx, cancel := context.WithTimeout(ctx, enrichTimeout)
@@ -140,6 +151,7 @@ func EnrichFacts(ctx context.Context, provider llm.Provider, chunk string, ruleF
 			Confidence:       f.Confidence,
 			SourceQuote:      f.SourceQuote,
 			ExtractionMethod: "llm-enrich",
+			TemporalNorm:     f.TemporalNorm,
 		}
 
 		// Validate
@@ -151,6 +163,9 @@ func EnrichFacts(ctx context.Context, provider llm.Provider, chunk string, ruleF
 		}
 		if ef.Confidence <= 0 || ef.Confidence > 1.0 {
 			ef.Confidence = 0.7 // reasonable default
+		}
+		if strings.EqualFold(ef.FactType, "temporal") && ef.TemporalNorm == nil {
+			ef.TemporalNorm = temporal.NormalizeLiteral(ef.Object, anchor)
 		}
 
 		// Assign decay rate
@@ -182,9 +197,12 @@ func EnrichFacts(ctx context.Context, provider llm.Provider, chunk string, ruleF
 }
 
 // buildEnrichPrompt constructs the user message with chunk + existing facts.
-func buildEnrichPrompt(chunk string, ruleFacts []ExtractedFact) string {
+func buildEnrichPrompt(chunk string, ruleFacts []ExtractedFact, anchor string) string {
 	var sb strings.Builder
 
+	sb.WriteString("SESSION ANCHOR DATE:\n")
+	sb.WriteString(anchor)
+	sb.WriteString("\n\n")
 	sb.WriteString("TEXT CHUNK:\n---\n")
 	sb.WriteString(chunk)
 	sb.WriteString("\n---\n\n")

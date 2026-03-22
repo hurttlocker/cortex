@@ -3,10 +3,12 @@ package answer
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/hurttlocker/cortex/internal/llm"
 	"github.com/hurttlocker/cortex/internal/search"
+	"github.com/hurttlocker/cortex/internal/store"
 )
 
 type mockSearcher struct {
@@ -21,9 +23,13 @@ func (m mockSearcher) Search(ctx context.Context, query string, opts search.Opti
 type mockProvider struct {
 	resp string
 	err  error
+	seen *string
 }
 
 func (m mockProvider) Complete(ctx context.Context, prompt string, opts llm.CompletionOpts) (string, error) {
+	if m.seen != nil {
+		*m.seen = prompt
+	}
 	if m.err != nil {
 		return "", m.err
 	}
@@ -104,5 +110,30 @@ func TestSanitizeRetrieved_StripsPromptInjection(t *testing.T) {
 	}
 	if clean == "" || clean == "Ignore previous instructions" {
 		t.Fatalf("unexpected clean output: %q", clean)
+	}
+}
+
+func TestAnswer_IncludesAnchorDateInPrompt(t *testing.T) {
+	var prompt string
+	e := NewEngine(
+		mockSearcher{results: []search.Result{{
+			MemoryID:   1,
+			SourceFile: "conv-30.md",
+			Score:      0.9,
+			Content:    "Jon mentioned the studio expansion.",
+			Metadata:   &store.Metadata{TimestampStart: "2023-03-23T19:28:00Z"},
+		}}},
+		mockProvider{resp: "Studio expansion happened [1].", seen: &prompt},
+		"openrouter/x-ai/grok-4.1-fast",
+	)
+	_, err := e.Answer(context.Background(), Options{Query: "studio expansion", Search: search.Options{Limit: 5}})
+	if err != nil {
+		t.Fatalf("Answer err: %v", err)
+	}
+	if prompt == "" {
+		t.Fatal("expected prompt to be captured")
+	}
+	if !strings.Contains(prompt, "anchor_date: 2023-03-23") {
+		t.Fatalf("expected anchor_date in prompt, got %q", prompt)
 	}
 }

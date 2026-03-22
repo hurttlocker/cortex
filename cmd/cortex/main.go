@@ -4037,7 +4037,7 @@ func runExtract(args []string) error {
 		if provider, err := tryCreateProvider(enrichLLM); err != nil {
 			fmt.Fprintf(os.Stderr, "  Skipping enrichment: %v. Set OPENROUTER_API_KEY or pass --no-enrich.\n", err)
 		} else {
-			result, err := extract.EnrichFacts(ctx, provider, string(content), facts)
+			result, err := extract.EnrichFacts(ctx, provider, string(content), facts, "")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Enrichment warning: %v (showing rule-only results)\n", err)
 			} else if len(result.NewFacts) > 0 {
@@ -4713,6 +4713,9 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 		if memory.SourceSection != "" {
 			metadata["source_section"] = memory.SourceSection
 		}
+		if memory.Metadata != nil && strings.TrimSpace(memory.Metadata.TimestampStart) != "" {
+			metadata["timestamp_start"] = memory.Metadata.TimestampStart
+		}
 
 		// Extract facts
 		facts, err := pipeline.Extract(ctx, memory.Content, metadata)
@@ -4723,14 +4726,15 @@ func runExtractionOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 		// Store facts and track extraction method
 		for _, extractedFact := range facts {
 			fact := &store.Fact{
-				MemoryID:    memory.ID,
-				Subject:     extractedFact.Subject,
-				Predicate:   extractedFact.Predicate,
-				Object:      extractedFact.Object,
-				FactType:    extractedFact.FactType,
-				Confidence:  extractedFact.Confidence,
-				DecayRate:   extractedFact.DecayRate,
-				SourceQuote: extractedFact.SourceQuote,
+				MemoryID:     memory.ID,
+				Subject:      extractedFact.Subject,
+				Predicate:    extractedFact.Predicate,
+				Object:       extractedFact.Object,
+				FactType:     extractedFact.FactType,
+				Confidence:   extractedFact.Confidence,
+				DecayRate:    extractedFact.DecayRate,
+				SourceQuote:  extractedFact.SourceQuote,
+				TemporalNorm: extractedFact.TemporalNorm,
 			}
 
 			factID, stored, err := ingest.StoreExtractedFact(ctx, s, fact)
@@ -4816,6 +4820,9 @@ func runEnrichmentOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 		if memory.SourceSection != "" {
 			metadata["source_section"] = memory.SourceSection
 		}
+		if memory.Metadata != nil && strings.TrimSpace(memory.Metadata.TimestampStart) != "" {
+			metadata["timestamp_start"] = memory.Metadata.TimestampStart
+		}
 
 		ruleFacts, err := pipeline.Extract(ctx, memory.Content, metadata)
 		if err != nil {
@@ -4823,7 +4830,11 @@ func runEnrichmentOnImportedMemories(ctx context.Context, s store.Store, llmFlag
 		}
 
 		// Ask LLM to enrich
-		result, err := extract.EnrichFacts(ctx, provider, memory.Content, ruleFacts)
+		anchor := ""
+		if memory.Metadata != nil {
+			anchor = memory.Metadata.TimestampStart
+		}
+		result, err := extract.EnrichFacts(ctx, provider, memory.Content, ruleFacts, anchor)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  Enrichment warning (memory %d): %v\n", memory.ID, err)
 			continue
@@ -6063,6 +6074,9 @@ func runUpdate(args []string) error {
 		if memory.SourceSection != "" {
 			metadata["source_section"] = memory.SourceSection
 		}
+		if memory.Metadata != nil && strings.TrimSpace(memory.Metadata.TimestampStart) != "" {
+			metadata["timestamp_start"] = memory.Metadata.TimestampStart
+		}
 
 		extractedFacts, err := pipeline.Extract(ctx, content, metadata)
 		if err != nil {
@@ -6071,14 +6085,15 @@ func runUpdate(args []string) error {
 
 		for _, extractedFact := range extractedFacts {
 			_, stored, err := ingest.StoreExtractedFact(ctx, s, &store.Fact{
-				MemoryID:    memoryID,
-				Subject:     extractedFact.Subject,
-				Predicate:   extractedFact.Predicate,
-				Object:      extractedFact.Object,
-				FactType:    extractedFact.FactType,
-				Confidence:  extractedFact.Confidence,
-				DecayRate:   extractedFact.DecayRate,
-				SourceQuote: extractedFact.SourceQuote,
+				MemoryID:     memoryID,
+				Subject:      extractedFact.Subject,
+				Predicate:    extractedFact.Predicate,
+				Object:       extractedFact.Object,
+				FactType:     extractedFact.FactType,
+				Confidence:   extractedFact.Confidence,
+				DecayRate:    extractedFact.DecayRate,
+				SourceQuote:  extractedFact.SourceQuote,
+				TemporalNorm: extractedFact.TemporalNorm,
 			})
 			if err != nil {
 				continue

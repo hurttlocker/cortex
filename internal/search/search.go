@@ -23,6 +23,7 @@ import (
 	"github.com/hurttlocker/cortex/internal/ann"
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/store"
+	"github.com/hurttlocker/cortex/internal/temporal"
 )
 
 // ConfidenceWeight controls how much effective confidence affects search ranking.
@@ -190,6 +191,7 @@ type Options struct {
 	IncludeSuperseded bool          // Include memories backed only by superseded facts
 	Explain           bool          // Attach explainability/provenance payloads to results
 	DisableDedupe     bool          // Keep overlapping same-source results instead of collapsing them
+	TemporalQuery     *temporal.Query
 }
 
 // Default minimum score thresholds by mode.
@@ -227,21 +229,23 @@ func effectiveMinScore(mode Mode, configured float64) float64 {
 
 // Result represents a single search result.
 type Result struct {
-	Content       string          `json:"content"`
-	SourceFile    string          `json:"source_file"`
-	SourceTier    string          `json:"source_tier,omitempty"`
-	SourceLine    int             `json:"source_line"`
-	SourceSection string          `json:"source_section,omitempty"`
-	Project       string          `json:"project,omitempty"`
-	MemoryClass   string          `json:"class,omitempty"`
-	Metadata      *store.Metadata `json:"metadata,omitempty"` // Structured metadata (Issue #30)
-	Score         float64         `json:"score"`
-	Snippet       string          `json:"snippet,omitempty"`
-	MatchType     string          `json:"match_type"` // "bm25", "semantic", "hybrid", "rrf"
-	MemoryID      int64           `json:"memory_id"`
-	FactIDs       []int64         `json:"fact_ids"`              // Facts linked to memory_id (for mutate-after-search workflows)
-	ImportedAt    time.Time       `json:"imported_at,omitempty"` // For metadata date filtering
-	Explain       *ExplainDetails `json:"explain,omitempty"`
+	Content        string          `json:"content"`
+	SourceFile     string          `json:"source_file"`
+	SourceTier     string          `json:"source_tier,omitempty"`
+	SourceLine     int             `json:"source_line"`
+	SourceSection  string          `json:"source_section,omitempty"`
+	Project        string          `json:"project,omitempty"`
+	MemoryClass    string          `json:"class,omitempty"`
+	Metadata       *store.Metadata `json:"metadata,omitempty"` // Structured metadata (Issue #30)
+	Score          float64         `json:"score"`
+	Snippet        string          `json:"snippet,omitempty"`
+	MatchType      string          `json:"match_type"` // "bm25", "semantic", "hybrid", "rrf"
+	MemoryID       int64           `json:"memory_id"`
+	FactIDs        []int64         `json:"fact_ids"`              // Facts linked to memory_id (for mutate-after-search workflows)
+	ImportedAt     time.Time       `json:"imported_at,omitempty"` // For metadata date filtering
+	TemporalAnchor string          `json:"temporal_anchor,omitempty"`
+	TemporalNorms  []temporal.Norm `json:"temporal_norms,omitempty"`
+	Explain        *ExplainDetails `json:"explain,omitempty"`
 }
 
 // FactResult is a direct fact-level search hit.
@@ -571,6 +575,7 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	results = applyMetadataBoosts(results, opts)
 	results = applyRecencyBoost(results, opts.Explain)
 	results = applySourceWeight(results, opts.SourceBoosts, opts.Explain)
+	results = e.applyTemporalBoost(ctx, retrievalQuery, results, opts)
 
 	if !opts.IncludeSuperseded {
 		results = e.filterSupersededMemories(ctx, results)
@@ -1810,6 +1815,92 @@ func applySourceWeight(results []Result, boosts []SourceBoost, explain bool) []R
 		return results[i].Score > results[j].Score
 	})
 
+	return results
+}
+
+func (e *Engine) applyTemporalBoost(ctx context.Context, query string, results []Result, opts Options) []Result {
+	if len(results) == 0 {
+		return results
+	}
+
+	tq := opts.TemporalQuery
+	if tq == nil {
+		tq = temporal.ParseQuery(query)
+	}
+	if tq == nil || !tq.TemporalIntent {
+		return attachTemporalContext(ctx, e.store, results)
+	}
+
+	results = attachTemporalContext(ctx, e.store, results)
+	for i := range results {
+		multiplier := 1.0
+		reasons := make([]string, 0, 2)
+		hasTemporalEvidence := len(results[i].TemporalNorms) > 0
+		hasAnchor := results[i].TemporalAnchor != ""
+
+		if hasTemporalEvidence {
+			multiplier *= 1.08
+			reasons = append(reasons, "temporal-evidence")
+		}
+		if hasAnchor {
+			multiplier *= 1.05
+			reasons = append(reasons, "anchor-date")
+		}
+		if tq.Resolved {
+			for _, norm := range results[i].TemporalNorms {
+				if temporal.MatchesQuery(tq, &norm) {
+					multiplier *= 1.20
+					reasons = append(reasons, "temporal-match")
+					break
+				}
+			}
+		}
+		if multiplier != 1.0 {
+			results[i].Score *= multiplier
+			if opts.Explain {
+				ensureExplain(&results[i])
+				if results[i].Explain.Why == "" {
+					results[i].Explain.Why = "temporal boost: " + strings.Join(reasons, ", ")
+				} else {
+					results[i].Explain.Why += "; temporal boost: " + strings.Join(reasons, ", ")
+				}
+			}
+		}
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
+	return results
+}
+
+func attachTemporalContext(ctx context.Context, st store.Store, results []Result) []Result {
+	if len(results) == 0 {
+		return results
+	}
+	memoryIDs := make([]int64, 0, len(results))
+	for _, r := range results {
+		if r.MemoryID > 0 {
+			memoryIDs = append(memoryIDs, r.MemoryID)
+		}
+	}
+	facts, err := st.ListFactsByMemoryIDs(ctx, memoryIDs, "temporal", 200)
+	if err != nil {
+		return results
+	}
+	byMemory := map[int64][]temporal.Norm{}
+	for _, f := range facts {
+		if f == nil || f.TemporalNorm == nil {
+			continue
+		}
+		if len(byMemory[f.MemoryID]) >= 3 {
+			continue
+		}
+		byMemory[f.MemoryID] = append(byMemory[f.MemoryID], *f.TemporalNorm)
+	}
+	for i := range results {
+		if results[i].Metadata != nil && len(results[i].Metadata.TimestampStart) >= 10 {
+			results[i].TemporalAnchor = results[i].Metadata.TimestampStart[:10]
+		}
+		results[i].TemporalNorms = byMemory[results[i].MemoryID]
+	}
 	return results
 }
 

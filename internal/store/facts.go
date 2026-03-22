@@ -3,11 +3,36 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
 	"time"
+
+	"github.com/hurttlocker/cortex/internal/temporal"
 )
+
+func marshalTemporalNorm(n *temporal.Norm) sql.NullString {
+	if n == nil {
+		return sql.NullString{}
+	}
+	b, err := json.Marshal(n)
+	if err != nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: string(b), Valid: true}
+}
+
+func unmarshalTemporalNorm(raw sql.NullString) *temporal.Norm {
+	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return nil
+	}
+	var out temporal.Norm
+	if err := json.Unmarshal([]byte(raw.String), &out); err != nil {
+		return nil
+	}
+	return &out
+}
 
 func normalizeFactStateForWrite(state string) (string, error) {
 	s := strings.ToLower(strings.TrimSpace(state))
@@ -53,10 +78,10 @@ func (s *SQLiteStore) AddFact(ctx context.Context, f *Fact) (int64, error) {
 	}
 
 	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO facts (memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at, state, agent_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO facts (memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, temporal_norm, created_at, state, agent_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		f.MemoryID, f.Subject, f.Predicate, f.Object, f.FactType,
-		f.Confidence, f.DecayRate, now, f.SourceQuote, now, state, f.AgentID,
+		f.Confidence, f.DecayRate, now, f.SourceQuote, marshalTemporalNorm(f.TemporalNorm), now, state, f.AgentID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting fact: %w", err)
@@ -78,12 +103,13 @@ func (s *SQLiteStore) AddFact(ctx context.Context, f *Fact) (int64, error) {
 func (s *SQLiteStore) GetFact(ctx context.Context, id int64) (*Fact, error) {
 	f := &Fact{}
 	var supersededBy sql.NullInt64
+	var temporalNorm sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at, state, superseded_by, agent_id
+		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, temporal_norm, created_at, state, superseded_by, agent_id
 		 FROM facts WHERE id = ?`, id,
 	).Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 		&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-		&f.SourceQuote, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID)
+		&f.SourceQuote, &temporalNorm, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -95,6 +121,7 @@ func (s *SQLiteStore) GetFact(ctx context.Context, id int64) (*Fact, error) {
 		v := supersededBy.Int64
 		f.SupersededBy = &v
 	}
+	f.TemporalNorm = unmarshalTemporalNorm(temporalNorm)
 	return f, nil
 }
 
@@ -110,7 +137,7 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 	}
 
 	query := `SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type, 
-			         f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.state, f.superseded_by, f.agent_id
+			         f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.temporal_norm, f.created_at, f.state, f.superseded_by, f.agent_id
 		      FROM facts f`
 	args := []interface{}{}
 
@@ -162,15 +189,17 @@ func (s *SQLiteStore) ListFacts(ctx context.Context, opts ListOpts) ([]*Fact, er
 	for rows.Next() {
 		f := &Fact{}
 		var supersededBy sql.NullInt64
+		var temporalNorm sql.NullString
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
+			&f.SourceQuote, &temporalNorm, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
 			return nil, fmt.Errorf("scanning fact row: %w", err)
 		}
 		if supersededBy.Valid {
 			v := supersededBy.Int64
 			f.SupersededBy = &v
 		}
+		f.TemporalNorm = unmarshalTemporalNorm(temporalNorm)
 		facts = append(facts, f)
 	}
 	return facts, rows.Err()
@@ -193,7 +222,7 @@ func (s *SQLiteStore) ListFactsByMemoryIDs(ctx context.Context, memoryIDs []int6
 	}
 
 	query := fmt.Sprintf(`SELECT f.id, f.memory_id, f.subject, f.predicate, f.object, f.fact_type,
-		f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.created_at, f.state, f.superseded_by, f.agent_id
+		f.confidence, f.decay_rate, f.last_reinforced, f.source_quote, f.temporal_norm, f.created_at, f.state, f.superseded_by, f.agent_id
 		FROM facts f
 		WHERE f.memory_id IN (%s) AND f.superseded_by IS NULL`,
 		strings.Join(placeholders, ","))
@@ -215,15 +244,17 @@ func (s *SQLiteStore) ListFactsByMemoryIDs(ctx context.Context, memoryIDs []int6
 	for rows.Next() {
 		f := &Fact{}
 		var supersededBy sql.NullInt64
+		var temporalNorm sql.NullString
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
+			&f.SourceQuote, &temporalNorm, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
 			return nil, fmt.Errorf("scanning fact row: %w", err)
 		}
 		if supersededBy.Valid {
 			v := supersededBy.Int64
 			f.SupersededBy = &v
 		}
+		f.TemporalNorm = unmarshalTemporalNorm(temporalNorm)
 		facts = append(facts, f)
 	}
 	return facts, rows.Err()
@@ -393,7 +424,7 @@ func (s *SQLiteStore) getFactsByMemoryIDs(ctx context.Context, memoryIDs []int64
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, created_at, state, superseded_by, agent_id
+		`SELECT id, memory_id, subject, predicate, object, fact_type, confidence, decay_rate, last_reinforced, source_quote, temporal_norm, created_at, state, superseded_by, agent_id
 		 FROM facts WHERE memory_id IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
@@ -411,15 +442,17 @@ func (s *SQLiteStore) getFactsByMemoryIDs(ctx context.Context, memoryIDs []int64
 	for rows.Next() {
 		f := &Fact{}
 		var supersededBy sql.NullInt64
+		var temporalNorm sql.NullString
 		if err := rows.Scan(&f.ID, &f.MemoryID, &f.Subject, &f.Predicate, &f.Object,
 			&f.FactType, &f.Confidence, &f.DecayRate, &f.LastReinforced,
-			&f.SourceQuote, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
+			&f.SourceQuote, &temporalNorm, &f.CreatedAt, &f.State, &supersededBy, &f.AgentID); err != nil {
 			return nil, fmt.Errorf("scanning fact: %w", err)
 		}
 		if supersededBy.Valid {
 			v := supersededBy.Int64
 			f.SupersededBy = &v
 		}
+		f.TemporalNorm = unmarshalTemporalNorm(temporalNorm)
 		facts = append(facts, f)
 	}
 	return facts, rows.Err()

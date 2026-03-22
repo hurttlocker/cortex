@@ -9,6 +9,7 @@ import (
 
 	cfgresolver "github.com/hurttlocker/cortex/internal/config"
 	"github.com/hurttlocker/cortex/internal/store"
+	"github.com/hurttlocker/cortex/internal/temporal"
 )
 
 var (
@@ -83,9 +84,6 @@ func ShouldStoreExtractedFact(fact *store.Fact) bool {
 		return false
 	}
 	if heartbeatFactSubjectRE.MatchString(subject) {
-		return false
-	}
-	if strings.EqualFold(strings.TrimSpace(fact.FactType), "temporal") && hasSpecificDatetime(object) {
 		return false
 	}
 	if isBareNumberObject(object) {
@@ -185,6 +183,7 @@ func StoreExtractedFact(ctx context.Context, s store.Store, fact *store.Fact) (f
 	if fact == nil {
 		return 0, false, fmt.Errorf("fact is nil")
 	}
+	populateTemporalNorm(ctx, s, fact)
 	if !ShouldStoreExtractedFact(fact) {
 		return 0, false, nil
 	}
@@ -230,4 +229,25 @@ func StoreExtractedFact(ctx context.Context, s store.Store, fact *store.Fact) (f
 	}
 
 	return factID, true, nil
+}
+
+func populateTemporalNorm(ctx context.Context, s store.Store, fact *store.Fact) {
+	if fact == nil || !strings.EqualFold(strings.TrimSpace(fact.FactType), "temporal") || fact.TemporalNorm != nil {
+		return
+	}
+	mem, err := s.GetMemory(ctx, fact.MemoryID)
+	if err != nil || mem == nil {
+		return
+	}
+	anchor := ""
+	if mem.Metadata != nil {
+		anchor = strings.TrimSpace(mem.Metadata.TimestampStart)
+	}
+	if anchor == "" {
+		anchor = temporal.TimestampStartFromSection(mem.SourceSection)
+	}
+	fact.TemporalNorm = temporal.NormalizeLiteral(fact.Object, anchor)
+	if fact.TemporalNorm == nil && fact.SourceQuote != "" {
+		fact.TemporalNorm = temporal.NormalizeLiteral(fact.SourceQuote, anchor)
+	}
 }
