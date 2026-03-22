@@ -1016,57 +1016,9 @@ func runSearch(args []string) error {
 	}
 	defer s.Close()
 
-	// Create search engine with optional embedder.
-	// For hybrid/rrf/semantic modes, auto-resolve embedder from config/env when
-	// --embed is not explicitly provided so the smartest mode works by default.
-	var engine *search.Engine
-	embedExplicit := embedFlag != ""
-	if !embedExplicit && (searchMode == search.ModeHybrid || searchMode == search.ModeRRF || searchMode == search.ModeSemantic) {
-		// Attempt auto-resolution from config/env; errors here are non-fatal.
-		if autoConfig, autoErr := embed.ResolveEmbedConfig(""); autoErr == nil && autoConfig != nil {
-			if autoConfig.Validate() == nil {
-				if embedder, clientErr := embed.NewClient(autoConfig); clientErr == nil {
-					engine = search.NewEngineWithEmbedder(s, embedder)
-					hnswPath := getHNSWPath()
-					if count, err := engine.LoadOrBuildHNSW(context.Background(), hnswPath, 3600); err == nil && count > 0 {
-						if globalVerbose {
-							fmt.Fprintf(os.Stderr, "  HNSW index: %d vectors loaded (auto-resolved from config)\n", count)
-						}
-					}
-				}
-			}
-		}
-	}
-	if engine == nil && embedExplicit {
-		// --embed was explicitly provided: use it and surface errors.
-		embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
-		if err != nil {
-			return fmt.Errorf("configuring embedder: %w", err)
-		}
-		if embedConfig == nil {
-			return fmt.Errorf("no embedding configuration found")
-		}
-		if err := embedConfig.Validate(); err != nil {
-			return fmt.Errorf("invalid embedding configuration: %w", err)
-		}
-
-		embedder, err := embed.NewClient(embedConfig)
-		if err != nil {
-			return fmt.Errorf("creating embedder: %w", err)
-		}
-
-		engine = search.NewEngineWithEmbedder(s, embedder)
-
-		// Load or build HNSW index for fast semantic search
-		hnswPath := getHNSWPath()
-		if count, err := engine.LoadOrBuildHNSW(context.Background(), hnswPath, 3600); err == nil && count > 0 {
-			if globalVerbose {
-				fmt.Fprintf(os.Stderr, "  HNSW index: %d vectors loaded\n", count)
-			}
-		}
-	}
-	if engine == nil {
-		engine = search.NewEngine(s)
+	engine, err := newSearchEngineForMode(s, searchMode, embedFlag)
+	if err != nil {
+		return err
 	}
 
 	ctx := context.Background()
@@ -1298,6 +1250,7 @@ func runAnswer(args []string) error {
 	mode := "hybrid"
 	limit := 5
 	modelFlag := ""
+	embedFlag := ""
 	projectFlag := ""
 	agentFlag := ""
 	sourceFlag := ""
@@ -1333,6 +1286,11 @@ func runAnswer(args []string) error {
 			modelFlag = args[i]
 		case strings.HasPrefix(args[i], "--model="):
 			modelFlag = strings.TrimPrefix(args[i], "--model=")
+		case args[i] == "--embed" && i+1 < len(args):
+			i++
+			embedFlag = args[i]
+		case strings.HasPrefix(args[i], "--embed="):
+			embedFlag = strings.TrimPrefix(args[i], "--embed=")
 		case args[i] == "--project" && i+1 < len(args):
 			i++
 			projectFlag = args[i]
@@ -1397,7 +1355,7 @@ func runAnswer(args []string) error {
 		case args[i] == "--verbose" || args[i] == "-v":
 			verbose = true
 		case strings.HasPrefix(args[i], "-"):
-			return fmt.Errorf("unknown flag: %s\nusage: cortex answer <query> [--mode hybrid] [--limit 5] [--model provider/model] [--max-sentences 6] [--json]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: cortex answer <query> [--mode hybrid] [--limit 5] [--model provider/model] [--embed <provider/model>] [--max-sentences 6] [--json]", args[i])
 		default:
 			queryParts = append(queryParts, args[i])
 		}
@@ -1405,7 +1363,7 @@ func runAnswer(args []string) error {
 
 	query := strings.TrimSpace(strings.Join(queryParts, " "))
 	if query == "" {
-		return fmt.Errorf("usage: cortex answer <query> [--mode hybrid] [--limit 5] [--model provider/model] [--max-sentences 6] [--json]")
+		return fmt.Errorf("usage: cortex answer <query> [--mode hybrid] [--limit 5] [--model provider/model] [--embed <provider/model>] [--max-sentences 6] [--json]")
 	}
 
 	modeParsed, err := search.ParseMode(mode)
@@ -1428,7 +1386,10 @@ func runAnswer(args []string) error {
 	}
 	defer s.Close()
 
-	searchEngine := search.NewEngine(s)
+	searchEngine, err := newSearchEngineForMode(s, modeParsed, embedFlag)
+	if err != nil {
+		return err
+	}
 	provider, resolvedModel, degradeReason, err := answer.ResolveProvider(modelFlag)
 	if err != nil {
 		return err
@@ -1473,6 +1434,62 @@ func runAnswer(args []string) error {
 		fmt.Printf("\n(degraded: %s)\n", res.Reason)
 	}
 	return nil
+}
+
+func newSearchEngineForMode(s store.Store, mode search.Mode, embedFlag string) (*search.Engine, error) {
+	needsEmbedder := mode == search.ModeHybrid || mode == search.ModeRRF || mode == search.ModeSemantic
+	embedExplicit := strings.TrimSpace(embedFlag) != ""
+
+	if !needsEmbedder {
+		return search.NewEngine(s), nil
+	}
+
+	if !embedExplicit {
+		if autoConfig, autoErr := embed.ResolveEmbedConfig(""); autoErr == nil && autoConfig != nil {
+			if autoConfig.Validate() == nil {
+				if embedder, clientErr := newEmbedClient(autoConfig); clientErr == nil {
+					engine := search.NewEngineWithEmbedder(s, embedder)
+					loadSearchHNSW(engine, "auto-resolved from config")
+					return engine, nil
+				}
+			}
+		}
+		return search.NewEngine(s), nil
+	}
+
+	embedConfig, err := embed.ResolveEmbedConfig(embedFlag)
+	if err != nil {
+		return nil, fmt.Errorf("configuring embedder: %w", err)
+	}
+	if embedConfig == nil {
+		return nil, fmt.Errorf("no embedding configuration found")
+	}
+	if err := embedConfig.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid embedding configuration: %w", err)
+	}
+
+	embedder, err := newEmbedClient(embedConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating embedder: %w", err)
+	}
+
+	engine := search.NewEngineWithEmbedder(s, embedder)
+	loadSearchHNSW(engine, "")
+	return engine, nil
+}
+
+func loadSearchHNSW(engine *search.Engine, detail string) {
+	if engine == nil {
+		return
+	}
+	hnswPath := getHNSWPath()
+	if count, err := engine.LoadOrBuildHNSW(context.Background(), hnswPath, 3600); err == nil && count > 0 && globalVerbose {
+		if detail != "" {
+			fmt.Fprintf(os.Stderr, "  HNSW index: %d vectors loaded (%s)\n", count, detail)
+		} else {
+			fmt.Fprintf(os.Stderr, "  HNSW index: %d vectors loaded\n", count)
+		}
+	}
 }
 
 func runLifecycle(args []string) error {

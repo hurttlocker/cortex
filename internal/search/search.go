@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/hurttlocker/cortex/internal/ann"
 	"github.com/hurttlocker/cortex/internal/embed"
@@ -2288,7 +2289,117 @@ func normalizeBM25Score(rank float64) float64 {
 // sanitizeFTSQuery performs basic sanitization of an FTS5 query.
 // It trims whitespace and returns empty string for empty/whitespace-only queries.
 func sanitizeFTSQuery(query string) string {
-	return strings.TrimSpace(query)
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return ""
+	}
+
+	normalized := normalizeFTSFreeText(query)
+	if normalized == "" {
+		return ""
+	}
+
+	type ftsToken struct {
+		text   string
+		quoted bool
+	}
+
+	var (
+		tokens  []ftsToken
+		buf     strings.Builder
+		inQuote bool
+	)
+
+	flushPlain := func() {
+		for _, field := range strings.Fields(buf.String()) {
+			tokens = append(tokens, ftsToken{text: field})
+		}
+		buf.Reset()
+	}
+
+	flushQuoted := func() {
+		text := strings.Join(strings.Fields(buf.String()), " ")
+		if text != "" {
+			tokens = append(tokens, ftsToken{text: text, quoted: true})
+		}
+		buf.Reset()
+	}
+
+	for _, r := range normalized {
+		switch r {
+		case '"':
+			if inQuote {
+				flushQuoted()
+				inQuote = false
+				continue
+			}
+			flushPlain()
+			inQuote = true
+		default:
+			buf.WriteRune(r)
+		}
+	}
+
+	if inQuote {
+		flushPlain()
+	} else {
+		flushPlain()
+	}
+
+	sanitized := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		if tok.quoted {
+			if tok.text != "" {
+				sanitized = append(sanitized, `"`+tok.text+`"`)
+			}
+			continue
+		}
+		term := sanitizeFTSTerm(tok.text)
+		if term != "" {
+			sanitized = append(sanitized, term)
+		}
+	}
+
+	return strings.Join(sanitized, " ")
+}
+
+func normalizeFTSFreeText(query string) string {
+	var b strings.Builder
+	for _, r := range query {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r), unicode.IsSpace(r), r == '"', r == '*':
+			b.WriteRune(r)
+		default:
+			b.WriteRune(' ')
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+func sanitizeFTSTerm(term string) string {
+	term = strings.TrimSpace(term)
+	if term == "" {
+		return ""
+	}
+	upper := strings.ToUpper(term)
+	if upper == "AND" || upper == "OR" || upper == "NOT" {
+		return upper
+	}
+
+	hasPrefixWildcard := strings.HasSuffix(term, "*")
+	if hasPrefixWildcard {
+		term = strings.TrimSuffix(term, "*")
+	}
+	term = strings.TrimSpace(term)
+	term = strings.Trim(term, `"'`)
+	term = strings.Join(strings.Fields(term), " ")
+	if term == "" {
+		return ""
+	}
+	if hasPrefixWildcard {
+		return term + "*"
+	}
+	return term
 }
 
 // hasMultipleSearchTerms checks if a query has more than one searchable word.
@@ -2318,9 +2429,8 @@ func buildORQuery(query string) string {
 
 	terms := make([]string, 0, len(words))
 	for _, w := range words {
-		w = strings.Trim(w, `"`)
-		w = strings.TrimSpace(w)
-		if w == "" || strings.EqualFold(w, "AND") || strings.EqualFold(w, "OR") || strings.EqualFold(w, "NOT") {
+		w = sanitizeFTSTerm(w)
+		if w == "" || w == "AND" || w == "OR" || w == "NOT" {
 			continue
 		}
 		terms = append(terms, `"`+w+`"`)
@@ -2341,10 +2451,8 @@ func escapeFTSQuery(query string) string {
 
 	escaped := make([]string, 0, len(words))
 	for _, w := range words {
-		// Strip any existing quotes and FTS5 operators
-		w = strings.Trim(w, `"`)
-		w = strings.TrimSpace(w)
-		if w == "" || strings.EqualFold(w, "AND") || strings.EqualFold(w, "OR") || strings.EqualFold(w, "NOT") {
+		w = sanitizeFTSTerm(w)
+		if w == "" || w == "AND" || w == "OR" || w == "NOT" {
 			continue
 		}
 		escaped = append(escaped, `"`+w+`"`)
