@@ -77,6 +77,7 @@ const (
 type Fact struct {
 	ID             int64
 	MemoryID       int64
+	EntityID       int64
 	Subject        string
 	Predicate      string
 	Object         string
@@ -95,6 +96,57 @@ type Fact struct {
 	SessionID      string
 	ProjectID      string
 	TokenEstimate  int
+}
+
+type Entity struct {
+	ID            int64
+	CanonicalName string
+	Type          string
+	Profile       string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type EntityAlias struct {
+	ID        int64
+	EntityID  int64
+	Alias     string
+	Source    string
+	CreatedAt time.Time
+}
+
+type EntitySummary struct {
+	Entity
+	AliasCount int
+	FactCount  int
+}
+
+type UnresolvedEntity struct {
+	ID               int64
+	FactID           int64
+	MemoryID         int64
+	RawName          string
+	NormalizedName   string
+	Reason           string
+	SourceQuote      string
+	ResolvedEntityID int64
+	CreatedAt        time.Time
+	ResolvedAt       *time.Time
+}
+
+type EntityResolveResult struct {
+	Entity     *Entity
+	RawName    string
+	AliasMatch bool
+	Reason     string
+}
+
+type EntityResolveOptions struct {
+	MemoryID        int64
+	SourceQuote     string
+	ObservedEntity  string
+	AllowCreate     bool
+	AllowPronounCtx bool
 }
 
 // MemoryEvent represents an entry in the append-only event log.
@@ -239,8 +291,20 @@ type Store interface {
 	ReinforceFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) (int, error)
 	GetFactsByMemoryIDs(ctx context.Context, memoryIDs []int64) ([]*Fact, error)
 	GetFactsByMemoryIDsIncludingSuperseded(ctx context.Context, memoryIDs []int64) ([]*Fact, error)
+	GetFactsByEntityIDs(ctx context.Context, entityIDs []int64, includeSuperseded bool, limit int) ([]*Fact, error)
 	DeleteFactsByMemoryID(ctx context.Context, memoryID int64) (int64, error)
 	GetConfidenceDistribution(ctx context.Context) (*ConfidenceDistribution, error)
+
+	// Entities
+	ListEntities(ctx context.Context, limit int, offset int) ([]EntitySummary, error)
+	GetEntity(ctx context.Context, id int64) (*Entity, error)
+	GetEntityByName(ctx context.Context, name string) (*Entity, error)
+	ListEntityAliases(ctx context.Context, entityID int64) ([]EntityAlias, error)
+	ResolveEntity(ctx context.Context, rawName string, opts EntityResolveOptions) (*EntityResolveResult, error)
+	MergeEntities(ctx context.Context, keepEntityID, mergeEntityID int64) error
+	RebuildEntityProfile(ctx context.Context, entityID int64) (string, error)
+	RecordUnresolvedEntity(ctx context.Context, unresolved *UnresolvedEntity) (int64, error)
+	BackfillFactEntities(ctx context.Context, limit int) (int, int, error)
 
 	// Search
 	SearchFTS(ctx context.Context, query string, limit int) ([]*SearchResult, error)

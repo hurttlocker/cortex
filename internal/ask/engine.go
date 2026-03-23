@@ -6,12 +6,15 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/hurttlocker/cortex/internal/llm"
 	"github.com/hurttlocker/cortex/internal/search"
 )
 
 var citationRefRE = regexp.MustCompile(`\[(\d+)\]`)
+var citationGroupRE = regexp.MustCompile(`\[(\d+(?:\s*[,;]\s*\d+)*)\]`)
+var danglingCitationGroupRE = regexp.MustCompile(`\[(\d+(?:\s*[,;]\s*\d+)*)\s*$`)
 
 type Citation struct {
 	Index         int     `json:"index"`
@@ -139,12 +142,16 @@ Rules:
 - If the evidence is insufficient, answer exactly: not enough evidence.
 - If the evidence conflicts, state the conflict explicitly and cite both sides.
 - Prefer active, unsuperseded, higher-confidence evidence.
+- Answer in the shortest form possible.
+- For dates and times, give the exact date or narrowest exact timeframe stated in the evidence.
+- For names, titles, places, and numbers, give the exact value from the evidence.
 - Keep the answer concise and under the requested sentence limit.
+- Put citations immediately after each sentence or clause. Do not wait until the end of the answer to cite.
 - Every factual claim must cite one or more source indices like [1] or [2][4].
 - Do not cite indices that were not supplied.`)
 
 	userPrompt := fmt.Sprintf(
-		"Question:\n%s\n\nAvailable evidence:\n%s\n\nWrite a direct answer with citations. If the evidence is insufficient, reply exactly: not enough evidence.",
+		"Question:\n%s\n\nAvailable evidence:\n%s\n\nWrite the shortest direct answer possible with inline citations after each sentence or clause. If the evidence is insufficient, reply exactly: not enough evidence.",
 		question,
 		strings.Join(ctxLines, "\n\n"),
 	)
@@ -179,6 +186,18 @@ Rules:
 
 	cites, ok := extractCitations(answerText, results)
 	if !ok || len(cites) == 0 {
+		if repairedAnswer, repairedCites, repaired := repairCitations(answerText, results); repaired {
+			return &Result{
+				Question:     question,
+				Answer:       clampSentences(repairedAnswer, opts.MaxSentences),
+				Citations:    repairedCites,
+				Degraded:     false,
+				Model:        e.model,
+				Provider:     providerOfModel(e.model),
+				Budget:       opts.Budget,
+				PackedTokens: opts.PackedTokens,
+			}, nil
+		}
 		res := fallbackResult(question, results, opts, "citation_integrity_failed", "")
 		res.RawAnswer = answerText
 		return res, nil
@@ -222,21 +241,9 @@ func fallbackResult(question string, results []search.Result, opts Options, reas
 }
 
 func extractCitations(answer string, results []search.Result) ([]Citation, bool) {
-	matches := citationRefRE.FindAllStringSubmatch(answer, -1)
-	if len(matches) == 0 {
+	ordered, ok := extractCitationIndexes(answer, len(results))
+	if !ok || len(ordered) == 0 {
 		return nil, false
-	}
-	seen := map[int]struct{}{}
-	ordered := []int{}
-	for _, m := range matches {
-		idx := atoiSafe(m[1])
-		if idx <= 0 || idx > len(results) {
-			return nil, false
-		}
-		if _, ok := seen[idx]; !ok {
-			seen[idx] = struct{}{}
-			ordered = append(ordered, idx)
-		}
 	}
 	sort.Ints(ordered)
 	out := make([]Citation, 0, len(ordered))
@@ -252,6 +259,169 @@ func extractCitations(answer string, results []search.Result) ([]Citation, bool)
 		})
 	}
 	return out, true
+}
+
+func extractCitationIndexes(answer string, resultCount int) ([]int, bool) {
+	seen := map[int]struct{}{}
+	ordered := []int{}
+	addGroup := func(group string) bool {
+		for _, part := range strings.FieldsFunc(group, func(r rune) bool {
+			return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+		}) {
+			if part == "" {
+				continue
+			}
+			idx := atoiSafe(part)
+			if idx <= 0 || idx > resultCount {
+				return false
+			}
+			if _, ok := seen[idx]; ok {
+				continue
+			}
+			seen[idx] = struct{}{}
+			ordered = append(ordered, idx)
+		}
+		return true
+	}
+
+	matches := citationGroupRE.FindAllStringSubmatch(answer, -1)
+	for _, m := range matches {
+		if len(m) < 2 || !addGroup(m[1]) {
+			return nil, false
+		}
+	}
+
+	if m := danglingCitationGroupRE.FindStringSubmatch(answer); len(m) >= 2 {
+		if !addGroup(m[1]) {
+			return nil, false
+		}
+	}
+
+	if len(ordered) == 0 {
+		return nil, false
+	}
+	return ordered, true
+}
+
+func repairCitations(answer string, results []search.Result) (string, []Citation, bool) {
+	cleaned := strings.TrimSpace(danglingCitationGroupRE.ReplaceAllString(answer, ""))
+	if cleaned == "" {
+		return "", nil, false
+	}
+
+	answerTokens := contentTokens(cleaned)
+	if len(answerTokens) == 0 {
+		return "", nil, false
+	}
+
+	type candidate struct {
+		index   int
+		overlap int
+		score   float64
+	}
+	candidates := make([]candidate, 0, len(results))
+	for i, r := range results {
+		overlap := tokenOverlap(answerTokens, contentTokens(r.Content+"\n"+r.SourceSection))
+		if overlap == 0 {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			index:   i + 1,
+			overlap: overlap,
+			score:   r.Score,
+		})
+	}
+	if len(candidates) == 0 {
+		return "", nil, false
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].overlap != candidates[j].overlap {
+			return candidates[i].overlap > candidates[j].overlap
+		}
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
+		}
+		return candidates[i].index < candidates[j].index
+	})
+
+	minOverlap := 2
+	if len(answerTokens) <= 4 {
+		minOverlap = 1
+	}
+	best := candidates[0].overlap
+	if best < minOverlap {
+		return "", nil, false
+	}
+
+	indexes := make([]int, 0, 2)
+	for _, c := range candidates {
+		if c.overlap < best-1 {
+			break
+		}
+		indexes = append(indexes, c.index)
+		if len(indexes) == 2 {
+			break
+		}
+	}
+	if len(indexes) == 0 {
+		return "", nil, false
+	}
+
+	var b strings.Builder
+	b.WriteString(cleaned)
+	if !strings.HasSuffix(cleaned, ".") && !strings.HasSuffix(cleaned, "!") && !strings.HasSuffix(cleaned, "?") {
+		b.WriteString(".")
+	}
+	for _, idx := range indexes {
+		fmt.Fprintf(&b, " [%d]", idx)
+	}
+	repaired := strings.TrimSpace(b.String())
+	cites, ok := extractCitations(repaired, results)
+	if !ok || len(cites) == 0 {
+		return "", nil, false
+	}
+	return repaired, cites, true
+}
+
+func contentTokens(s string) []string {
+	fields := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if len(field) <= 1 {
+			continue
+		}
+		switch field {
+		case "the", "and", "for", "with", "that", "this", "from", "into", "your", "their", "have", "has", "had", "are", "was", "were", "his", "her", "she", "him", "they", "them", "what", "when", "where", "which", "then", "than", "just", "very", "much", "more", "about":
+			continue
+		}
+		out = append(out, field)
+	}
+	return out
+}
+
+func tokenOverlap(a, b []string) int {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	set := make(map[string]struct{}, len(b))
+	for _, token := range b {
+		set[token] = struct{}{}
+	}
+	seen := map[string]struct{}{}
+	overlap := 0
+	for _, token := range a {
+		if _, dup := seen[token]; dup {
+			continue
+		}
+		seen[token] = struct{}{}
+		if _, ok := set[token]; ok {
+			overlap++
+		}
+	}
+	return overlap
 }
 
 func sanitizeRetrieved(content string) (clean string, stripped string) {

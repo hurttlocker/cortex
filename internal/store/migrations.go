@@ -104,6 +104,14 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating fact scope columns: %w", err)
 	}
 
+	// Schema evolution: canonical entity store + fact linkage (Issue #354)
+	if err := s.migrateEntityTables(); err != nil {
+		return fmt.Errorf("migrating entity tables: %w", err)
+	}
+	if err := s.migrateFactEntityIDColumn(); err != nil {
+		return fmt.Errorf("migrating fact entity_id: %w", err)
+	}
+
 	// Schema evolution: cached token estimates for budget-aware recall (Issue #252)
 	if err := s.migrateFactTokenEstimateColumn(); err != nil {
 		return fmt.Errorf("migrating fact token estimate column: %w", err)
@@ -182,10 +190,32 @@ func (s *SQLiteStore) runBootstrapDDL() error {
 				WHERE new.deleted_at IS NULL;
 		END`,
 
+		// Canonical entities
+		`CREATE TABLE IF NOT EXISTS entities (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			canonical_name TEXT NOT NULL,
+			type           TEXT NOT NULL DEFAULT 'concept' CHECK(type IN ('person','place','org','concept')),
+			profile        TEXT NOT NULL DEFAULT '',
+			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_canonical_name_nocase ON entities(canonical_name COLLATE NOCASE)`,
+
+		`CREATE TABLE IF NOT EXISTS entity_aliases (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_id  INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+			alias      TEXT NOT NULL,
+			source     TEXT NOT NULL DEFAULT 'extracted' CHECK(source IN ('extracted','manual','inferred')),
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_aliases_alias_nocase ON entity_aliases(alias COLLATE NOCASE)`,
+		`CREATE INDEX IF NOT EXISTS idx_entity_aliases_entity_id ON entity_aliases(entity_id)`,
+
 		// Extracted facts
 		`CREATE TABLE IF NOT EXISTS facts (
 			id              INTEGER PRIMARY KEY AUTOINCREMENT,
 			memory_id       INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+			entity_id       INTEGER REFERENCES entities(id),
 			subject         TEXT,
 			predicate       TEXT,
 			object          TEXT,
@@ -207,6 +237,7 @@ func (s *SQLiteStore) runBootstrapDDL() error {
 		)`,
 
 		`CREATE INDEX IF NOT EXISTS idx_facts_memory_id ON facts(memory_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_entity_id ON facts(entity_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_type ON facts(fact_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate ON facts(subject, predicate)`,
@@ -221,6 +252,22 @@ func (s *SQLiteStore) runBootstrapDDL() error {
 		`CREATE INDEX IF NOT EXISTS idx_facts_token_estimate ON facts(token_estimate)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_scope_lookup ON facts(project_id, observer_agent, observed_entity, session_id, state, superseded_by)`,
 		`CREATE INDEX IF NOT EXISTS idx_facts_scope_subject_predicate ON facts(project_id, observer_agent, observed_entity, subject, predicate, state, superseded_by)`,
+
+		`CREATE TABLE IF NOT EXISTS unresolved_entities (
+			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+			fact_id            INTEGER REFERENCES facts(id) ON DELETE CASCADE,
+			memory_id          INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+			raw_name           TEXT NOT NULL,
+			normalized_name    TEXT NOT NULL DEFAULT '',
+			reason             TEXT NOT NULL DEFAULT '',
+			source_quote       TEXT NOT NULL DEFAULT '',
+			resolved_entity_id INTEGER REFERENCES entities(id),
+			created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+			resolved_at        DATETIME
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_unresolved_entities_memory_id ON unresolved_entities(memory_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_unresolved_entities_fact_id ON unresolved_entities(fact_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_unresolved_entities_normalized_name ON unresolved_entities(normalized_name)`,
 
 		// Topic clusters
 		`CREATE TABLE IF NOT EXISTS clusters (
@@ -1143,6 +1190,71 @@ func (s *SQLiteStore) migrateFactScopeColumns() error {
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing fact scope migration: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateEntityTables() error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS entities (
+			id             INTEGER PRIMARY KEY AUTOINCREMENT,
+			canonical_name TEXT NOT NULL,
+			type           TEXT NOT NULL DEFAULT 'concept' CHECK(type IN ('person','place','org','concept')),
+			profile        TEXT NOT NULL DEFAULT '',
+			created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_canonical_name_nocase ON entities(canonical_name COLLATE NOCASE)`,
+		`CREATE TABLE IF NOT EXISTS entity_aliases (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			entity_id  INTEGER NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+			alias      TEXT NOT NULL,
+			source     TEXT NOT NULL DEFAULT 'extracted' CHECK(source IN ('extracted','manual','inferred')),
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_aliases_alias_nocase ON entity_aliases(alias COLLATE NOCASE)`,
+		`CREATE INDEX IF NOT EXISTS idx_entity_aliases_entity_id ON entity_aliases(entity_id)`,
+		`CREATE TABLE IF NOT EXISTS unresolved_entities (
+			id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+			fact_id            INTEGER REFERENCES facts(id) ON DELETE CASCADE,
+			memory_id          INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+			raw_name           TEXT NOT NULL,
+			normalized_name    TEXT NOT NULL DEFAULT '',
+			reason             TEXT NOT NULL DEFAULT '',
+			source_quote       TEXT NOT NULL DEFAULT '',
+			resolved_entity_id INTEGER REFERENCES entities(id),
+			created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+			resolved_at        DATETIME
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_unresolved_entities_memory_id ON unresolved_entities(memory_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_unresolved_entities_fact_id ON unresolved_entities(fact_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_unresolved_entities_normalized_name ON unresolved_entities(normalized_name)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("executing entity migration %q: %w", truncate(stmt, 60), err)
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateFactEntityIDColumn() error {
+	var count int
+	err := s.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='entity_id'",
+	).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("checking for entity_id column: %w", err)
+	}
+	if count == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE facts ADD COLUMN entity_id INTEGER REFERENCES entities(id)`); err != nil {
+			if !isDuplicateColumnError(err) {
+				return fmt.Errorf("adding entity_id column: %w", err)
+			}
+		}
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_facts_entity_id ON facts(entity_id)`); err != nil {
+		return fmt.Errorf("creating entity_id index: %w", err)
 	}
 	return nil
 }

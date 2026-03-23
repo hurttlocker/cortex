@@ -138,5 +138,16 @@ func (g *googleProvider) Complete(ctx context.Context, prompt string, opts Compl
 		return "", fmt.Errorf("empty response from google API")
 	}
 
-	return strings.TrimSpace(gResp.Candidates[0].Content.Parts[0].Text), nil
+	var b strings.Builder
+	for _, part := range gResp.Candidates[0].Content.Parts {
+		if part.Text == "" {
+			continue
+		}
+		b.WriteString(part.Text)
+	}
+	text := strings.TrimSpace(b.String())
+	if text == "" {
+		return "", fmt.Errorf("empty response from google API")
+	}
+	return text, nil
 }

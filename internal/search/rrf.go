@@ -13,6 +13,7 @@ type RRFConfig struct {
 	K              int
 	BM25Weight     float64
 	SemanticWeight float64
+	EntityWeight   float64
 }
 
 // DefaultRRFConfig returns the default RRF configuration.
@@ -21,63 +22,93 @@ func DefaultRRFConfig() RRFConfig {
 		K:              defaultRRFK,
 		BM25Weight:     1.0,
 		SemanticWeight: 1.0,
+		EntityWeight:   1.0,
 	}
 }
 
 // FuseRRF merges BM25 and semantic ranked result lists using Reciprocal Rank Fusion.
 func FuseRRF(bm25Results, semanticResults []Result, cfg RRFConfig) []Result {
-	return fuseRRFWithOptions(bm25Results, semanticResults, 0, false, cfg)
+	return fuseRRFChannelsWithOptions([]rrfChannel{
+		{name: "bm25", results: bm25Results, weight: cfg.BM25Weight},
+		{name: "semantic", results: semanticResults, weight: cfg.SemanticWeight},
+	}, 0, false, cfg)
 }
 
 func fuseRRFWithOptions(bm25Results, semanticResults []Result, limit int, explain bool, cfg RRFConfig) []Result {
+	return fuseRRFChannelsWithOptions([]rrfChannel{
+		{name: "bm25", results: bm25Results, weight: cfg.BM25Weight},
+		{name: "semantic", results: semanticResults, weight: cfg.SemanticWeight},
+	}, limit, explain, cfg)
+}
+
+type rrfChannel struct {
+	name    string
+	results []Result
+	weight  float64
+}
+
+func fuseRRFChannelsWithOptions(channels []rrfChannel, limit int, explain bool, cfg RRFConfig) []Result {
 	cfg = normalizeRRFConfig(cfg)
 
-	bm25PenaltyRank := len(bm25Results) + 1
-	semanticPenaltyRank := len(semanticResults) + 1
-
 	type fusedEntry struct {
-		result       Result
-		bm25Rank     int
-		semanticRank int
+		result Result
+		ranks  map[string]int
 	}
 
 	fusedMap := make(map[int64]*fusedEntry)
+	penaltyRanks := make(map[string]int, len(channels))
 
-	for i, r := range bm25Results {
-		fusedMap[r.MemoryID] = &fusedEntry{
-			result:       r,
-			bm25Rank:     i + 1,
-			semanticRank: semanticPenaltyRank,
-		}
+	for _, channel := range channels {
+		penaltyRanks[channel.name] = len(channel.results) + 1
 	}
 
-	for i, r := range semanticResults {
-		if entry, exists := fusedMap[r.MemoryID]; exists {
-			entry.semanticRank = i + 1
+	for _, channel := range channels {
+		for i, r := range channel.results {
+			entry, exists := fusedMap[r.MemoryID]
+			if !exists {
+				entry = &fusedEntry{
+					result: r,
+					ranks:  make(map[string]int, len(channels)),
+				}
+				for _, other := range channels {
+					entry.ranks[other.name] = penaltyRanks[other.name]
+				}
+				fusedMap[r.MemoryID] = entry
+			}
+			entry.ranks[channel.name] = i + 1
 			if len(strings.TrimSpace(r.Content)) > len(strings.TrimSpace(entry.result.Content)) {
 				entry.result.Content = r.Content
 			}
 			if entry.result.Snippet == "" {
 				entry.result.Snippet = r.Snippet
 			}
-		} else {
-			fusedMap[r.MemoryID] = &fusedEntry{
-				result:       r,
-				bm25Rank:     bm25PenaltyRank,
-				semanticRank: i + 1,
-			}
+			entry.result.FactIDs = appendUniqueInt64(entry.result.FactIDs, r.FactIDs...)
 		}
 	}
 
 	merged := make([]Result, 0, len(fusedMap))
 	for _, entry := range fusedMap {
-		bm25Reciprocal := 1.0 / float64(cfg.K+entry.bm25Rank)
-		semanticReciprocal := 1.0 / float64(cfg.K+entry.semanticRank)
-
-		bm25Contribution := cfg.BM25Weight * bm25Reciprocal
-		semanticContribution := cfg.SemanticWeight * semanticReciprocal
-
-		rrfScore := bm25Contribution + semanticContribution
+		rrfScore := 0.0
+		bm25Reciprocal := 0.0
+		semanticReciprocal := 0.0
+		bm25Contribution := 0.0
+		semanticContribution := 0.0
+		entityContribution := 0.0
+		for _, channel := range channels {
+			reciprocal := 1.0 / float64(cfg.K+entry.ranks[channel.name])
+			contribution := channel.weight * reciprocal
+			rrfScore += contribution
+			switch channel.name {
+			case "bm25":
+				bm25Reciprocal = reciprocal
+				bm25Contribution = contribution
+			case "semantic":
+				semanticReciprocal = reciprocal
+				semanticContribution = contribution
+			case "entity":
+				entityContribution = contribution
+			}
+		}
 		prior, priorReason := hybridMetadataPrior(entry.result)
 		finalScore := rrfScore * prior
 
@@ -91,10 +122,17 @@ func fuseRRFWithOptions(bm25Results, semanticResults []Result, limit int, explai
 			entry.result.Explain.RankComponents.FinalScore = finalScore
 			entry.result.Explain.RankComponents.ClassBoostMultiplier = 1.0
 			entry.result.Explain.RankComponents.ConfidenceWeight = ConfidenceWeight
-			entry.result.Explain.RankComponents.HybridBM25Normalized = floatPtr(bm25Reciprocal)
-			entry.result.Explain.RankComponents.HybridSemanticNormalized = floatPtr(semanticReciprocal)
-			entry.result.Explain.RankComponents.HybridBM25Contribution = floatPtr(bm25Contribution)
-			entry.result.Explain.RankComponents.HybridSemanticContribution = floatPtr(semanticContribution)
+			if bm25Reciprocal > 0 {
+				entry.result.Explain.RankComponents.HybridBM25Normalized = floatPtr(bm25Reciprocal)
+				entry.result.Explain.RankComponents.HybridBM25Contribution = floatPtr(bm25Contribution)
+			}
+			if semanticReciprocal > 0 {
+				entry.result.Explain.RankComponents.HybridSemanticNormalized = floatPtr(semanticReciprocal)
+				entry.result.Explain.RankComponents.HybridSemanticContribution = floatPtr(semanticContribution)
+			}
+			if entityContribution > 0 {
+				entry.result.Explain.RankComponents.EntityChannelScore = floatPtr(entityContribution)
+			}
 			if priorReason != "" {
 				if entry.result.Explain.Why == "" {
 					entry.result.Explain.Why = priorReason
@@ -131,6 +169,9 @@ func normalizeRRFConfig(cfg RRFConfig) RRFConfig {
 	}
 	if cfg.SemanticWeight == 0 {
 		cfg.SemanticWeight = 1.0
+	}
+	if cfg.EntityWeight == 0 {
+		cfg.EntityWeight = 1.0
 	}
 	return cfg
 }
