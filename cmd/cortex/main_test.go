@@ -247,6 +247,21 @@ func captureStdout(fn func()) string {
 	return buf.String()
 }
 
+func captureStderr(fn func()) string {
+	old := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	fn()
+
+	w.Close()
+	os.Stderr = old
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	return buf.String()
+}
+
 func TestOutputStaleTTY_NoFacts(t *testing.T) {
 	opts := observe.StaleOpts{MaxConfidence: 0.5, MaxDays: 30, Limit: 50}
 	out := captureStdout(func() {
@@ -2804,6 +2819,125 @@ func TestRunSearch_FactsJSON(t *testing.T) {
 	}
 	if !strings.Contains(out, "\"predicate\": \"prefers\"") {
 		t.Fatalf("expected fact payload in JSON output, got %q", out)
+	}
+}
+
+func TestRunAnswer_AutoResolvesEmbedderForHybrid(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	oldReadOnly := globalReadOnly
+	oldFactory := newEmbedClient
+	globalDBPath = dbPath
+	globalReadOnly = false
+	t.Cleanup(func() {
+		globalDBPath = oldDBPath
+		globalReadOnly = oldReadOnly
+		newEmbedClient = oldFactory
+	})
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CORTEX_EMBED", "ollama/nomic-embed-text")
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("GOOGLE_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+	newEmbedClient = func(cfg *embed.EmbedConfig) (embed.Embedder, error) {
+		return &mockCommandEmbedder{dims: 8}, nil
+	}
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := s.AddMemory(ctx, &store.Memory{
+		Content:    "Caroline went to the support group on 7 May 2023.",
+		SourceFile: "locomo.md",
+	}); err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+
+	var (
+		runErr error
+		stdout string
+		stderr string
+	)
+	stderr = captureStderr(func() {
+		stdout = captureStdout(func() {
+			runErr = runAnswer([]string{"support group", "--mode", "hybrid", "--json"})
+		})
+	})
+	if runErr != nil {
+		t.Fatalf("runAnswer: %v\nstdout=%s\nstderr=%s", runErr, stdout, stderr)
+	}
+	if strings.Contains(stderr, "hybrid mode requires an embedder") {
+		t.Fatalf("expected auto-resolved embedder, got fallback stderr: %q", stderr)
+	}
+	if !strings.Contains(stdout, "\"answer\"") {
+		t.Fatalf("expected JSON answer payload, got %q", stdout)
+	}
+}
+
+func TestRunAnswer_EmbedFlagAccepted(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+
+	oldDBPath := globalDBPath
+	oldReadOnly := globalReadOnly
+	oldFactory := newEmbedClient
+	globalDBPath = dbPath
+	globalReadOnly = false
+	t.Cleanup(func() {
+		globalDBPath = oldDBPath
+		globalReadOnly = oldReadOnly
+		newEmbedClient = oldFactory
+	})
+
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("OPENROUTER_API_KEY", "")
+	t.Setenv("GOOGLE_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+	newEmbedClient = func(cfg *embed.EmbedConfig) (embed.Embedder, error) {
+		return &mockCommandEmbedder{dims: 8}, nil
+	}
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := s.AddMemory(ctx, &store.Memory{
+		Content:    "Validator yield data is in this note.",
+		SourceFile: "staking.md",
+	}); err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+
+	var (
+		runErr error
+		stdout string
+		stderr string
+	)
+	stderr = captureStderr(func() {
+		stdout = captureStdout(func() {
+			runErr = runAnswer([]string{"validator yield", "--mode", "hybrid", "--embed", "ollama/nomic-embed-text", "--json"})
+		})
+	})
+	if runErr != nil {
+		t.Fatalf("runAnswer with --embed: %v\nstdout=%s\nstderr=%s", runErr, stdout, stderr)
+	}
+	if strings.Contains(stderr, "hybrid mode requires an embedder") {
+		t.Fatalf("expected explicit embedder, got fallback stderr: %q", stderr)
+	}
+	if !strings.Contains(stdout, "\"answer\"") {
+		t.Fatalf("expected JSON answer payload, got %q", stdout)
 	}
 }
 

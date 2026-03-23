@@ -495,6 +495,30 @@ func TestSearchBM25_InvalidSyntaxFallback(t *testing.T) {
 	}
 }
 
+func TestSanitizeFTSQuery_StripsNaturalLanguagePunctuation(t *testing.T) {
+	got := sanitizeFTSQuery(`When did Melanie read the book "nothing is impossible"?`)
+	want := `When did Melanie read the book "nothing is impossible"`
+	if got != want {
+		t.Fatalf("sanitizeFTSQuery() = %q, want %q", got, want)
+	}
+}
+
+func TestSanitizeFTSQuery_UnbalancedQuoteBecomesPlainTerms(t *testing.T) {
+	got := sanitizeFTSQuery(`"unclosed quote?`)
+	want := `unclosed quote`
+	if got != want {
+		t.Fatalf("sanitizeFTSQuery() = %q, want %q", got, want)
+	}
+}
+
+func TestSanitizeFTSQuery_PreservesOperatorsAndPrefix(t *testing.T) {
+	got := sanitizeFTSQuery(`deployment NOT Docker deploy*`)
+	want := `deployment NOT Docker deploy*`
+	if got != want {
+		t.Fatalf("sanitizeFTSQuery() = %q, want %q", got, want)
+	}
+}
+
 // --- Semantic Search (Stub) ---
 
 func TestSearchSemantic_FallbackToBM25(t *testing.T) {
