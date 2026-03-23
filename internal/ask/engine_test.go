@@ -53,6 +53,9 @@ func TestAsk_DegradesWithoutLLM(t *testing.T) {
 	if !res.Degraded || res.Reason != "no_llm_configured" {
 		t.Fatalf("expected no_llm_configured degrade, got degraded=%v reason=%q", res.Degraded, res.Reason)
 	}
+	if res.Error != "" {
+		t.Fatalf("expected empty error for no_llm_configured, got %q", res.Error)
+	}
 	if len(res.Citations) != 1 || len(res.Citations[0].Facts) != 2 {
 		t.Fatalf("expected structured fallback citations, got %+v", res.Citations)
 	}
@@ -97,6 +100,9 @@ func TestAsk_CitationIntegrityFailure(t *testing.T) {
 	if !res.Degraded || res.Reason != "citation_integrity_failed" {
 		t.Fatalf("expected citation_integrity_failed degrade, got degraded=%v reason=%q", res.Degraded, res.Reason)
 	}
+	if res.RawAnswer == "" {
+		t.Fatal("expected raw answer to be preserved on citation failure")
+	}
 }
 
 func TestAsk_HandlesProviderError(t *testing.T) {
@@ -110,5 +116,21 @@ func TestAsk_HandlesProviderError(t *testing.T) {
 	}
 	if !res.Degraded || res.Reason != "llm_error" {
 		t.Fatalf("expected llm_error degrade, got degraded=%v reason=%q", res.Degraded, res.Reason)
+	}
+	if res.Error == "" {
+		t.Fatal("expected underlying error detail to be populated")
+	}
+}
+
+func TestIsNotEnoughEvidence(t *testing.T) {
+	cases := []string{
+		"not enough evidence",
+		"not enough evidence.",
+		" Not enough evidence! ",
+	}
+	for _, c := range cases {
+		if !isNotEnoughEvidence(c) {
+			t.Fatalf("expected %q to normalize as not enough evidence", c)
+		}
 	}
 }

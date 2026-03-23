@@ -25,9 +25,11 @@ type Citation struct {
 type Result struct {
 	Question     string          `json:"question"`
 	Answer       string          `json:"answer"`
+	RawAnswer    string          `json:"raw_answer,omitempty"`
 	Citations    []Citation      `json:"citations"`
 	Degraded     bool            `json:"degraded"`
 	Reason       string          `json:"reason,omitempty"`
+	Error        string          `json:"error,omitempty"`
 	Results      []search.Result `json:"results,omitempty"`
 	Model        string          `json:"model,omitempty"`
 	Provider     string          `json:"provider,omitempty"`
@@ -88,7 +90,7 @@ func (e *Engine) Ask(ctx context.Context, opts Options) (*Result, error) {
 	}
 
 	if e.llm == nil {
-		return fallbackResult(question, results, opts, "no_llm_configured"), nil
+		return fallbackResult(question, results, opts, "no_llm_configured", ""), nil
 	}
 
 	ctxLines := make([]string, 0, len(results)*4)
@@ -154,14 +156,14 @@ Rules:
 		Model:       e.model,
 	})
 	if err != nil {
-		return fallbackResult(question, results, opts, "llm_error"), nil
+		return fallbackResult(question, results, opts, "llm_error", err.Error()), nil
 	}
 
 	answerText := strings.TrimSpace(resp)
 	if answerText == "" {
-		return fallbackResult(question, results, opts, "empty_llm_response"), nil
+		return fallbackResult(question, results, opts, "empty_llm_response", ""), nil
 	}
-	if strings.EqualFold(answerText, "not enough evidence") {
+	if isNotEnoughEvidence(answerText) {
 		return &Result{
 			Question:     question,
 			Answer:       "not enough evidence",
@@ -177,7 +179,9 @@ Rules:
 
 	cites, ok := extractCitations(answerText, results)
 	if !ok || len(cites) == 0 {
-		return fallbackResult(question, results, opts, "citation_integrity_failed"), nil
+		res := fallbackResult(question, results, opts, "citation_integrity_failed", "")
+		res.RawAnswer = answerText
+		return res, nil
 	}
 
 	return &Result{
@@ -192,7 +196,7 @@ Rules:
 	}, nil
 }
 
-func fallbackResult(question string, results []search.Result, opts Options, reason string) *Result {
+func fallbackResult(question string, results []search.Result, opts Options, reason, errorDetail string) *Result {
 	cites := make([]Citation, 0, len(results))
 	for i, r := range results {
 		cites = append(cites, Citation{
@@ -210,6 +214,7 @@ func fallbackResult(question string, results []search.Result, opts Options, reas
 		Citations:    cites,
 		Degraded:     true,
 		Reason:       reason,
+		Error:        errorDetail,
 		Results:      results,
 		Budget:       opts.Budget,
 		PackedTokens: opts.PackedTokens,
@@ -325,6 +330,12 @@ func clampSentences(s string, maxSentences int) string {
 		return strings.TrimSpace(s)
 	}
 	return strings.TrimSpace(strings.Join(parts[:maxSentences], " "))
+}
+
+func isNotEnoughEvidence(s string) bool {
+	s = strings.TrimSpace(strings.ToLower(s))
+	s = strings.Trim(s, " .!?:;\"'")
+	return s == "not enough evidence"
 }
 
 func splitSentences(s string) []string {

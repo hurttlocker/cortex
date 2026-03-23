@@ -67,7 +67,7 @@ func (o *openrouterProvider) Name() string {
 func (o *openrouterProvider) Complete(ctx context.Context, prompt string, opts CompletionOpts) (string, error) {
 	model := o.model
 	if opts.Model != "" {
-		model = opts.Model
+		model = normalizeModelForProvider("openrouter", opts.Model)
 	}
 
 	messages := make([]orMessage, 0, 2)

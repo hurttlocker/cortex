@@ -69,7 +69,7 @@ func (g *googleProvider) Name() string {
 func (g *googleProvider) Complete(ctx context.Context, prompt string, opts CompletionOpts) (string, error) {
 	model := g.model
 	if opts.Model != "" {
-		model = opts.Model
+		model = normalizeModelForProvider("google", opts.Model)
 	}
 
 	req := googleRequest{

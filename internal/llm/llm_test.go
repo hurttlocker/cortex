@@ -47,6 +47,24 @@ func TestParseLLMFlag(t *testing.T) {
 	}
 }
 
+func TestNormalizeModelForProvider(t *testing.T) {
+	tests := []struct {
+		provider string
+		model    string
+		want     string
+	}{
+		{provider: "google", model: "google/gemini-2.5-flash-lite", want: "gemini-2.5-flash-lite"},
+		{provider: "google", model: "gemini-2.5-flash", want: "gemini-2.5-flash"},
+		{provider: "openrouter", model: "openrouter/openai/gpt-4o-mini", want: "openai/gpt-4o-mini"},
+		{provider: "openrouter", model: "openai/gpt-4o-mini", want: "openai/gpt-4o-mini"},
+	}
+	for _, tt := range tests {
+		if got := normalizeModelForProvider(tt.provider, tt.model); got != tt.want {
+			t.Fatalf("normalizeModelForProvider(%q, %q) = %q, want %q", tt.provider, tt.model, got, tt.want)
+		}
+	}
+}
+
 func TestNewProviderErrors(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	// Unknown provider
@@ -126,6 +144,46 @@ func TestGoogleProviderComplete(t *testing.T) {
 	}
 	if result != `["expanded query 1", "expanded query 2"]` {
 		t.Errorf("unexpected result: %q", result)
+	}
+}
+
+func TestGoogleProviderComplete_NormalizesPrefixedModelOverride(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		resp := googleResponse{
+			Candidates: []struct {
+				Content struct {
+					Parts []googlePart `json:"parts"`
+				} `json:"content"`
+			}{
+				{
+					Content: struct {
+						Parts []googlePart `json:"parts"`
+					}{
+						Parts: []googlePart{{Text: "ok"}},
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := &googleProvider{
+		apiKey:  "test-key",
+		model:   "gemini-2.5-flash",
+		baseURL: server.URL,
+	}
+
+	if _, err := p.Complete(context.Background(), "test prompt", CompletionOpts{
+		Model: "google/gemini-2.5-flash-lite",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotPath != "/models/gemini-2.5-flash-lite:generateContent" {
+		t.Fatalf("got request path %q", gotPath)
 	}
 }
 
@@ -229,6 +287,47 @@ func TestOpenRouterProviderComplete(t *testing.T) {
 	}
 	if result != `["result 1", "result 2"]` {
 		t.Errorf("unexpected result: %q", result)
+	}
+}
+
+func TestOpenRouterProviderComplete_NormalizesPrefixedModelOverride(t *testing.T) {
+	var gotModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req orRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		gotModel = req.Model
+		resp := orResponse{
+			Choices: []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+				FinishReason string `json:"finish_reason"`
+			}{
+				{
+					Message: struct {
+						Content string `json:"content"`
+					}{Content: "ok"},
+					FinishReason: "stop",
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := &openrouterProvider{
+		apiKey:  "test-key",
+		model:   "openai/gpt-5.1-codex-mini",
+		baseURL: server.URL,
+	}
+
+	if _, err := p.Complete(context.Background(), "test", CompletionOpts{
+		Model: "openrouter/openai/gpt-4o-mini",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotModel != "openai/gpt-4o-mini" {
+		t.Fatalf("got model %q", gotModel)
 	}
 }
 
