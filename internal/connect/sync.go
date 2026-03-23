@@ -312,6 +312,9 @@ func (se *SyncEngine) extractFacts(ctx context.Context, memoryIDs []int64, llmFl
 		if mem.SourceSection != "" {
 			metadata["source_section"] = mem.SourceSection
 		}
+		if mem.Metadata != nil && strings.TrimSpace(mem.Metadata.TimestampStart) != "" {
+			metadata["timestamp_start"] = mem.Metadata.TimestampStart
+		}
 
 		// Extract facts
 		facts, err := pipeline.Extract(ctx, mem.Content, metadata)
@@ -322,14 +325,15 @@ func (se *SyncEngine) extractFacts(ctx context.Context, memoryIDs []int64, llmFl
 		// Store each extracted fact
 		for _, ef := range facts {
 			fact := &store.Fact{
-				MemoryID:    mem.ID,
-				Subject:     ef.Subject,
-				Predicate:   ef.Predicate,
-				Object:      ef.Object,
-				FactType:    ef.FactType,
-				Confidence:  ef.Confidence,
-				DecayRate:   ef.DecayRate,
-				SourceQuote: ef.SourceQuote,
+				MemoryID:     mem.ID,
+				Subject:      ef.Subject,
+				Predicate:    ef.Predicate,
+				Object:       ef.Object,
+				FactType:     ef.FactType,
+				Confidence:   ef.Confidence,
+				DecayRate:    ef.DecayRate,
+				SourceQuote:  ef.SourceQuote,
+				TemporalNorm: ef.TemporalNorm,
 			}
 			if !ingest.ShouldStoreExtractedFact(fact) {
 				continue

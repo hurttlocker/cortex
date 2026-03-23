@@ -11,6 +11,7 @@ import (
 	cfgresolver "github.com/hurttlocker/cortex/internal/config"
 	"github.com/hurttlocker/cortex/internal/llm"
 	"github.com/hurttlocker/cortex/internal/search"
+	"github.com/hurttlocker/cortex/internal/temporal"
 )
 
 var citationRefRE = regexp.MustCompile(`\[(\d+)\]`)
@@ -133,6 +134,12 @@ func (e *Engine) Answer(ctx context.Context, opts Options) (*Result, error) {
 		}
 		clean = truncate(clean, opts.PerResultChars)
 		block := fmt.Sprintf("[%d] source:%s score:%.2f\n%s", i+1, sourceLabel(r), r.Score, clean)
+		if anchorDate := resultAnchorDate(r); anchorDate != "" {
+			block += fmt.Sprintf("\nanchor_date: %s", anchorDate)
+		}
+		if temporalInfo := resultTemporalInfo(r); temporalInfo != "" {
+			block += "\n" + temporalInfo
+		}
 		if len(block)+1 > remaining {
 			break
 		}
@@ -287,6 +294,29 @@ func sourceLabel(r search.Result) string {
 		return fmt.Sprintf("%s:%d", r.SourceFile, r.SourceLine)
 	}
 	return r.SourceFile
+}
+
+func resultAnchorDate(r search.Result) string {
+	if r.Metadata == nil || len(r.Metadata.TimestampStart) < 10 {
+		return ""
+	}
+	return r.Metadata.TimestampStart[:10]
+}
+
+func resultTemporalInfo(r search.Result) string {
+	if len(r.TemporalNorms) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(r.TemporalNorms))
+	for i, norm := range r.TemporalNorms {
+		if i >= 2 {
+			break
+		}
+		if summary := temporal.Summary(&norm); summary != "" {
+			lines = append(lines, fmt.Sprintf("temporal_norm: %s", summary))
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func providerOfModel(model string) string {

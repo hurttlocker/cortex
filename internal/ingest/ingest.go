@@ -411,6 +411,14 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 			mem.Metadata = meta
 		}
 	}
+	if ts := timestampStartFromSourceSection(raw.SourceSection); ts != "" {
+		if mem.Metadata == nil {
+			mem.Metadata = &store.Metadata{}
+		}
+		if strings.TrimSpace(mem.Metadata.TimestampStart) == "" {
+			mem.Metadata.TimestampStart = ts
+		}
+	}
 
 	newID, err := e.store.AddMemory(ctx, mem)
 	if err != nil {

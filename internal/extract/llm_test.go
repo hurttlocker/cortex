@@ -341,7 +341,7 @@ func TestLLMClient_ValidResponse(t *testing.T) {
 	client := NewLLMClient(config)
 	ctx := context.Background()
 
-	facts, err := client.Extract(ctx, "Alice (alice@company.com) is the project manager")
+	facts, err := client.Extract(ctx, "Alice (alice@company.com) is the project manager", nil)
 	if err != nil {
 		t.Fatalf("Extract failed: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestLLMClient_InvalidJSON(t *testing.T) {
 	client := NewLLMClient(config)
 	ctx := context.Background()
 
-	_, err := client.Extract(ctx, "test text")
+	_, err := client.Extract(ctx, "test text", nil)
 	if err == nil {
 		t.Error("Expected error for invalid JSON")
 	}
@@ -429,7 +429,7 @@ func TestLLMClient_RetrySuccess(t *testing.T) {
 	client := NewLLMClient(config)
 	ctx := context.Background()
 
-	facts, err := client.Extract(ctx, "test text")
+	facts, err := client.Extract(ctx, "test text", nil)
 	if err != nil {
 		t.Fatalf("Expected retry to succeed, got error: %v", err)
 	}
@@ -457,7 +457,7 @@ func TestLLMClient_AllRetriesFail(t *testing.T) {
 	client := NewLLMClient(config)
 	ctx := context.Background()
 
-	_, err := client.Extract(ctx, "test text")
+	_, err := client.Extract(ctx, "test text", nil)
 	if err == nil {
 		t.Error("Expected error after all retries exhausted")
 	}
@@ -479,7 +479,7 @@ func TestLLMClient_NetworkError(t *testing.T) {
 	client := NewLLMClient(config)
 	ctx := context.Background()
 
-	_, err := client.Extract(ctx, "test text")
+	_, err := client.Extract(ctx, "test text", nil)
 	if err == nil {
 		t.Error("Expected network error")
 	}
@@ -502,7 +502,7 @@ func TestLLMClient_RateLimit(t *testing.T) {
 	ctx := context.Background()
 
 	start := time.Now()
-	facts, err := client.Extract(ctx, "test text")
+	facts, err := client.Extract(ctx, "test text", nil)
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -542,7 +542,7 @@ func TestLLMClient_EmptyResponse(t *testing.T) {
 	client := NewLLMClient(config)
 	ctx := context.Background()
 
-	_, err := client.Extract(ctx, "test text")
+	_, err := client.Extract(ctx, "test text", nil)
 	if err == nil {
 		t.Error("Expected error for empty response")
 	}
@@ -575,7 +575,7 @@ func TestLLMClient_NoChoices(t *testing.T) {
 	client := NewLLMClient(config)
 	ctx := context.Background()
 
-	_, err := client.Extract(ctx, "test text")
+	_, err := client.Extract(ctx, "test text", nil)
 	if err == nil {
 		t.Error("Expected error for no choices")
 	}
@@ -613,7 +613,7 @@ func TestLLMClient_OpenRouterHeaders(t *testing.T) {
 	client := NewLLMClient(config)
 	ctx := context.Background()
 
-	_, err := client.Extract(ctx, "test text")
+	_, err := client.Extract(ctx, "test text", nil)
 	if err != nil {
 		t.Fatalf("Extract failed: %v", err)
 	}

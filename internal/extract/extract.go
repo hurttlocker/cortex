@@ -18,18 +18,21 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/hurttlocker/cortex/internal/temporal"
 )
 
 // ExtractedFact represents a single structured fact extracted from text.
 type ExtractedFact struct {
-	Subject          string  `json:"subject"`           // Who/what this is about
-	Predicate        string  `json:"predicate"`         // The relationship or attribute
-	Object           string  `json:"object"`            // The value or related entity
-	FactType         string  `json:"type"`              // kv, relationship, preference, temporal, identity, location, decision, state
-	Confidence       float64 `json:"confidence"`        // 0.0–1.0
-	SourceQuote      string  `json:"source_quote"`      // Exact text this was extracted from
-	ExtractionMethod string  `json:"extraction_method"` // always "rules" for Tier 1
-	DecayRate        float64 `json:"decay_rate"`        // Assigned based on fact type
+	Subject          string         `json:"subject"`           // Who/what this is about
+	Predicate        string         `json:"predicate"`         // The relationship or attribute
+	Object           string         `json:"object"`            // The value or related entity
+	FactType         string         `json:"type"`              // kv, relationship, preference, temporal, identity, location, decision, state
+	Confidence       float64        `json:"confidence"`        // 0.0–1.0
+	SourceQuote      string         `json:"source_quote"`      // Exact text this was extracted from
+	ExtractionMethod string         `json:"extraction_method"` // always "rules" for Tier 1
+	DecayRate        float64        `json:"decay_rate"`        // Assigned based on fact type
+	TemporalNorm     *temporal.Norm `json:"temporal_norm,omitempty"`
 }
 
 // BaseDecayRates holds the built-in default decay rates by fact type.
@@ -360,13 +363,14 @@ func (p *Pipeline) Extract(ctx context.Context, text string, metadata map[string
 		} else {
 			facts[i].DecayRate = DecayRates["kv"] // default
 		}
+		normalizeTemporalFact(&facts[i], metadata)
 	}
 
 	// Tier 2: LLM-assisted extraction (optional)
 	var llmFacts []ExtractedFact
 	if p.llmClient != nil {
 		var err error
-		llmFacts, err = p.extractWithLLM(ctx, text)
+		llmFacts, err = p.extractWithLLM(ctx, text, metadata)
 		if err != nil {
 			// Log warning but don't fail - fall back to Tier 1 only
 			fmt.Fprintf(os.Stderr, "Warning: LLM extraction failed, using rule-based extraction only: %v\n", err)
@@ -920,7 +924,7 @@ func parseInteger(s string) (int, bool) {
 }
 
 // extractWithLLM runs LLM-assisted extraction on the input text.
-func (p *Pipeline) extractWithLLM(ctx context.Context, text string) ([]ExtractedFact, error) {
+func (p *Pipeline) extractWithLLM(ctx context.Context, text string, metadata map[string]string) ([]ExtractedFact, error) {
 	if p.llmClient == nil || p.llmConfig == nil {
 		return nil, fmt.Errorf("LLM client not configured")
 	}
@@ -936,7 +940,7 @@ func (p *Pipeline) extractWithLLM(ctx context.Context, text string) ([]Extracted
 			continue
 		}
 
-		facts, err := p.llmClient.Extract(ctx, chunk)
+		facts, err := p.llmClient.Extract(ctx, chunk, metadata)
 		if err != nil {
 			return nil, fmt.Errorf("extracting from chunk: %w", err)
 		}
@@ -948,4 +952,18 @@ func (p *Pipeline) extractWithLLM(ctx context.Context, text string) ([]Extracted
 	allFacts = deduplicateFacts(allFacts)
 
 	return allFacts, nil
+}
+
+func normalizeTemporalFact(fact *ExtractedFact, metadata map[string]string) {
+	if fact == nil || !strings.EqualFold(strings.TrimSpace(fact.FactType), "temporal") || fact.TemporalNorm != nil {
+		return
+	}
+	anchor := strings.TrimSpace(metadata["timestamp_start"])
+	if anchor == "" {
+		anchor = temporal.TimestampStartFromSection(strings.TrimSpace(metadata["source_section"]))
+	}
+	fact.TemporalNorm = temporal.NormalizeLiteral(fact.Object, anchor)
+	if fact.TemporalNorm == nil && fact.SourceQuote != "" {
+		fact.TemporalNorm = temporal.NormalizeLiteral(fact.SourceQuote, anchor)
+	}
 }

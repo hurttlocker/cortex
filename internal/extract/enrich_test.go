@@ -55,7 +55,7 @@ func TestEnrichFacts_BasicEnrichment(t *testing.T) {
 		{Subject: "Q", Predicate: "locked", Object: "ORB config", FactType: "decision", Confidence: 0.8},
 	}
 
-	result, err := EnrichFacts(context.Background(), provider, chunk, ruleFacts)
+	result, err := EnrichFacts(context.Background(), provider, chunk, ruleFacts, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestEnrichFacts_DeduplicatesAgainstRules(t *testing.T) {
 		{Subject: "Q", Predicate: "locked", Object: "ORB config", FactType: "decision", Confidence: 0.8},
 	}
 
-	result, err := EnrichFacts(context.Background(), provider, chunk, ruleFacts)
+	result, err := EnrichFacts(context.Background(), provider, chunk, ruleFacts, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestEnrichFacts_EmptyResponse(t *testing.T) {
 		{Subject: "", Predicate: "meeting time", Object: "3pm", FactType: "temporal", Confidence: 0.9},
 	}
 
-	result, err := EnrichFacts(context.Background(), provider, chunk, ruleFacts)
+	result, err := EnrichFacts(context.Background(), provider, chunk, ruleFacts, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestEnrichFacts_LLMError_GracefulFallback(t *testing.T) {
 	provider := &mockEnrichProvider{err: fmt.Errorf("API rate limit exceeded")}
 
 	chunk := "some text"
-	result, err := EnrichFacts(context.Background(), provider, chunk, nil)
+	result, err := EnrichFacts(context.Background(), provider, chunk, nil, "")
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -175,7 +175,7 @@ func TestEnrichFacts_LLMError_GracefulFallback(t *testing.T) {
 }
 
 func TestEnrichFacts_NilProvider(t *testing.T) {
-	_, err := EnrichFacts(context.Background(), nil, "text", nil)
+	_, err := EnrichFacts(context.Background(), nil, "text", nil, "")
 	if err == nil {
 		t.Fatal("expected error for nil provider")
 	}
@@ -199,7 +199,7 @@ func TestEnrichFacts_InvalidFactType_Fallback(t *testing.T) {
 
 	provider := &mockEnrichProvider{response: response}
 
-	result, err := EnrichFacts(context.Background(), provider, "The system uses SQLite for storage.", nil)
+	result, err := EnrichFacts(context.Background(), provider, "The system uses SQLite for storage.", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestEnrichFacts_InvalidConfidence_Defaults(t *testing.T) {
 
 	provider := &mockEnrichProvider{response: response}
 
-	result, err := EnrichFacts(context.Background(), provider, "test has value. test2 has value2.", nil)
+	result, err := EnrichFacts(context.Background(), provider, "test has value. test2 has value2.", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestEnrichFacts_SkipsEmptyPredicateOrObject(t *testing.T) {
 
 	provider := &mockEnrichProvider{response: response}
 
-	result, err := EnrichFacts(context.Background(), provider, "good has value", nil)
+	result, err := EnrichFacts(context.Background(), provider, "good has value", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestEnrichFacts_MarkdownFencedResponse(t *testing.T) {
 
 	provider := &mockEnrichProvider{response: response}
 
-	result, err := EnrichFacts(context.Background(), provider, "Cortex is written in Go", nil)
+	result, err := EnrichFacts(context.Background(), provider, "Cortex is written in Go", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestEnrichFacts_LongSubjectTruncated(t *testing.T) {
 
 	provider := &mockEnrichProvider{response: response}
 
-	result, err := EnrichFacts(context.Background(), provider, "long subject has property", nil)
+	result, err := EnrichFacts(context.Background(), provider, "long subject has property", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestEnrichFacts_TracksLatency(t *testing.T) {
 	response := `{"facts": [], "reasoning": "nothing"}`
 	provider := &mockEnrichProvider{response: response}
 
-	result, err := EnrichFacts(context.Background(), provider, "text", nil)
+	result, err := EnrichFacts(context.Background(), provider, "text", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -375,7 +375,7 @@ func TestEnrichFacts_SetsSystemPrompt(t *testing.T) {
 	response := `{"facts": [], "reasoning": "n/a"}`
 	provider := &mockEnrichProvider{response: response}
 
-	_, err := EnrichFacts(context.Background(), provider, "text", nil)
+	_, err := EnrichFacts(context.Background(), provider, "text", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestEnrichFacts_NoRuleFacts(t *testing.T) {
 
 	provider := &mockEnrichProvider{response: response}
 
-	result, err := EnrichFacts(context.Background(), provider, "Alice (alice@test.com) is here.", nil)
+	result, err := EnrichFacts(context.Background(), provider, "Alice (alice@test.com) is here.", nil, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestBuildEnrichPrompt_WithFacts(t *testing.T) {
 		{Subject: "SB", Predicate: "role", Object: "co-founder", FactType: "relationship"},
 	}
 
-	prompt := buildEnrichPrompt("Q and SB founded Spear in Philadelphia.", facts)
+	prompt := buildEnrichPrompt("Q and SB founded Spear in Philadelphia.", facts, "")
 
 	if !strings.Contains(prompt, "TEXT CHUNK:") {
 		t.Error("prompt should contain TEXT CHUNK header")
@@ -438,7 +438,7 @@ func TestBuildEnrichPrompt_WithFacts(t *testing.T) {
 }
 
 func TestBuildEnrichPrompt_NoFacts(t *testing.T) {
-	prompt := buildEnrichPrompt("Some text.", nil)
+	prompt := buildEnrichPrompt("Some text.", nil, "")
 
 	if !strings.Contains(prompt, "none") {
 		t.Error("prompt should indicate no existing facts")
@@ -453,7 +453,7 @@ func TestBuildEnrichPrompt_ManyFacts_Truncates(t *testing.T) {
 		}
 	}
 
-	prompt := buildEnrichPrompt("text", facts)
+	prompt := buildEnrichPrompt("text", facts, "")
 
 	if !strings.Contains(prompt, "and 20 more facts") {
 		t.Error("prompt should indicate truncated facts")
@@ -598,7 +598,7 @@ func TestEnrichFacts_MultipleRelationships(t *testing.T) {
 		{Subject: "Eyes Web", Predicate: "is", Object: "health companion", FactType: "kv"},
 	}
 
-	result, err := EnrichFacts(context.Background(), provider, chunk, ruleFacts)
+	result, err := EnrichFacts(context.Background(), provider, chunk, ruleFacts, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/hurttlocker/cortex/internal/ann"
 	"github.com/hurttlocker/cortex/internal/store"
+	"github.com/hurttlocker/cortex/internal/temporal"
 )
 
 // newTestStore creates an in-memory store for testing.
@@ -492,6 +493,58 @@ func TestSearchBM25_InvalidSyntaxFallback(t *testing.T) {
 		t.Logf("Got error (acceptable): %v", err)
 	} else {
 		t.Logf("Got %d results with fallback", len(results))
+	}
+}
+
+func TestSearch_AttachesTemporalContext(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	memID, err := s.AddMemory(ctx, &store.Memory{
+		Content:       "Jon went to the fair to get more exposure for his dance studio.",
+		SourceFile:    "locomo.md",
+		SourceSection: "Session 7 - 7:28 pm on 23 March, 2023",
+		Metadata:      &store.Metadata{TimestampStart: "2023-03-23T19:28:00Z"},
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "Jon",
+		Predicate:  "date",
+		Object:     "last week",
+		FactType:   "temporal",
+		Confidence: 0.9,
+		TemporalNorm: &temporal.Norm{
+			Kind:       "date_range",
+			Literal:    "last week",
+			Start:      "2023-03-16",
+			End:        "2023-03-22",
+			Anchor:     "2023-03-23",
+			Precision:  "day",
+			Resolution: "resolved_from_anchor",
+		},
+	}); err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+
+	engine := NewEngine(s)
+	results, err := engine.Search(ctx, "When did Jon go to the fair", Options{Mode: ModeKeyword, Limit: 5})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results")
+	}
+	if results[0].TemporalAnchor != "2023-03-23" {
+		t.Fatalf("TemporalAnchor = %q, want 2023-03-23", results[0].TemporalAnchor)
+	}
+	if len(results[0].TemporalNorms) == 0 {
+		t.Fatal("expected temporal norms on result")
+	}
+	if results[0].TemporalNorms[0].Start != "2023-03-16" {
+		t.Fatalf("unexpected temporal norm %+v", results[0].TemporalNorms[0])
 	}
 }
 

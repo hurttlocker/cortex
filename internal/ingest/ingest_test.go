@@ -114,6 +114,38 @@ func TestMarkdownImport_WithoutHeaders(t *testing.T) {
 	}
 }
 
+func TestImportFile_PopulatesTimestampStartFromSourceSection(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	engine := NewEngine(s)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "locomo.md")
+	content := "# Conv 30\n\n## Session 7 - 7:28 pm on 23 March, 2023\nJon said the studio expansion is finally moving forward and the new floor plan looks solid.\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write markdown: %v", err)
+	}
+
+	result, err := engine.ImportFile(ctx, path, ImportOptions{})
+	if err != nil {
+		t.Fatalf("ImportFile: %v", err)
+	}
+	if result.MemoriesNew == 0 || len(result.NewMemoryIDs) == 0 {
+		t.Fatalf("expected imported memories, got %+v", result)
+	}
+
+	mem, err := s.GetMemory(ctx, result.NewMemoryIDs[0])
+	if err != nil {
+		t.Fatalf("GetMemory: %v", err)
+	}
+	if mem == nil || mem.Metadata == nil {
+		t.Fatalf("expected metadata on imported memory, got %+v", mem)
+	}
+	if got := mem.Metadata.TimestampStart; got != "2023-03-23T19:28:00Z" {
+		t.Fatalf("TimestampStart = %q, want %q", got, "2023-03-23T19:28:00Z")
+	}
+}
+
 func TestMarkdownImport_FrontMatter(t *testing.T) {
 	ctx := context.Background()
 	imp := &MarkdownImporter{}
