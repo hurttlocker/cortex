@@ -2,54 +2,56 @@
 
 ## Scope
 
-This note records the first end-to-end benchmark of the local cross-encoder reranker from issue `#353`.
+This note records the full reranker buildout for issue `#353`:
 
-The implemented pipeline is:
+1. local ONNX reranker infrastructure
+2. evidence-window rerank input
+3. warm reranker daemon with `m3`
 
-1. hybrid search
-2. weighted fusion
-3. cross-encoder rerank over the top candidate set
-4. `cortex ask` synthesis
+The benchmark target was the public LoCoMo `conv-30` slice through the real `cortex ask` product path.
 
-The benchmark goal was to measure the real product-path delta on the public LoCoMo `conv-30` slice.
+## Pipeline Evolution
 
-## Model Choice
+Phase 1:
 
-The shipped default model is:
+- hybrid search
+- weighted fusion
+- rerank over full memory blobs
+- `cortex ask` synthesis
 
-- `onnx-community/bge-reranker-base-ONNX:int8`
+Phase 2:
 
-Why this default:
+- same pipeline
+- reranker input changed from full memory blobs to extracted evidence windows
 
-- it is ONNX-native, so no conversion step is required
-- it is much smaller than the `m3` ONNX mirror
-- it is usable with the current process-per-query CLI benchmark shape
+Phase 3:
 
-I also spot-checked the intended stronger target model:
-
-- `onnx-community/bge-reranker-v2-m3-ONNX:int8`
-
-That model produced a better answer on the first benchmark question, but it took about `55s` for a single `ask` invocation on this machine, which makes full `conv-30` evaluation impractical with the current CLI architecture.
+- `cortex rerank-serve --port 9720 --model m3`
+- daemon loads `onnx-community/bge-reranker-v2-m3-ONNX:int8` once
+- `cortex ask/search --rerank on` checks the local daemon first
+- daemon-backed rerank uses the top `4` fused candidates to keep warm-query latency bounded
+- if the daemon is unavailable, Cortex falls back to in-process ONNX reranking or skips reranking gracefully
 
 ## Method
 
-- binary: `/tmp/cortex-rerank`
+- binary under test: `/tmp/cortex-rerank-daemon`
 - dataset: public LoCoMo `conv-30`
 - questions scored: `81`
-- categories included: `1`, `2`, and `4`
+- categories included: `1`, `2`, `4`
 - ask model: `google/gemini-2.5-flash`
 - hybrid embedder: `openrouter/text-embedding-3-small`
 - ask budget: `1200`
-
-Benchmark substrate used for the final numbers:
-
-- existing populated DB: `/tmp/cortex-locomo-combined-2026-03-22/cortex.db`
+- DB under test: `/tmp/cortex-locomo-combined-2026-03-22/cortex.db`
 
 Important caveat:
 
-- I attempted a fresh re-import first, but the current live `main` import path produced an empty DB in this environment despite reporting imported rows. Because the user explicitly allowed using the existing benchmark DB, I used the known-good populated DB for the final reranker measurement.
+- I attempted fresh re-imports earlier in this lane, but the live import path in this environment sometimes produced empty DBs despite reporting imported rows. Because the issue explicitly allowed using the existing benchmark DB, the final numbers here use the known-good populated DB above.
 
-Commands under test:
+Phase 3 commands under test:
+
+```bash
+cortex rerank-serve --port 9720 --model m3
+```
 
 ```bash
 cortex ask "<question>" \
@@ -71,175 +73,255 @@ cortex ask "<question>" \
   --json
 ```
 
+The full phase 3 result artifact is:
+
+- `/tmp/cortex-reranker-daemon-results-2026-03-23.json`
+
 ## Results
 
-### Phase 1: Full-Memory Rerank Input
+### Phase 1: Full-Memory Input, In-Process `base`
 
-Initial shipped input format:
+| Mode | Questions | F1 | Exact match | Avg latency | Median latency | Degraded |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `ask --rerank off` | 81 | `10.53%` | `0.00%` | `5452.20 ms` | `5520.53 ms` | `12` |
+| `ask --rerank on` | 81 | `1.14%` | `0.00%` | `10650.59 ms` | `9798.32 ms` | `1` |
 
-- query + section/date metadata + full memory content
+This was a hard regression. The reranker was seeing the wrong input unit.
 
-Measured result:
+### Phase 2: Evidence Windows, In-Process `base`
 
-| Mode | Questions | F1 | Exact match | Avg latency | Median latency | Degraded | Avg packed tokens |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `ask --rerank off` | 81 | `10.53%` | `0.00%` | `5452.20 ms` | `5520.53 ms` | `12` | `450.22` |
-| `ask --rerank on` | 81 | `1.14%` | `0.00%` | `10650.59 ms` | `9798.32 ms` | `1` | `434.74` |
+| Mode | Questions | F1 | Exact match | Avg latency | Median latency | Degraded |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `ask --rerank off` | 81 | `12.48%` | `0.00%` | `5202.57 ms` | `5257.60 ms` | `9` |
+| `ask --rerank on` | 81 | `11.93%` | `0.00%` | `11751.15 ms` | `11180.24 ms` | `6` |
 
-This was a hard regression.
+Phase 2 fixed the catastrophic inversion, but it still was not a win.
 
-### Phase 2: Evidence-Window Rerank Input
-
-Revised input format:
-
-- query + section/date metadata + extracted evidence window
-- evidence window selection:
-  - deterministic 1-3 block span
-  - simple lexical/entity/temporal scoring
-  - max `128` tokens
-
-Measured result:
+### Phase 3: Evidence Windows, Warm Daemon-Backed `m3`
 
 | Mode | Questions | F1 | Exact match | Avg latency | Median latency | Degraded | Avg packed tokens |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `ask --rerank off` | 81 | `12.48%` | `0.00%` | `5202.57 ms` | `5257.60 ms` | `9` | `450.22` |
-| `ask --rerank on` | 81 | `11.93%` | `0.00%` | `11751.15 ms` | `11180.24 ms` | `6` | `441.74` |
+| `ask --rerank off` | 81 | `9.05%` | `0.00%` | `6699.07 ms` | `6877.85 ms` | `13` | `440.58` |
+| `ask --rerank on` | 81 | `11.12%` | `0.00%` | `10152.53 ms` | `10266.98 ms` | `7` | `447.14` |
 
-Phase 2 delta:
+Phase 3 delta:
 
-- F1: `-0.55`
-- average latency: `+6548.58 ms`
-- degraded count: `-3`
+- F1: `+2.07`
+- average latency: `+3453.46 ms`
+- degraded count: `-6`
 
-### Category Breakdown
+This is the first reranker configuration in this lane that produced a same-run product-path F1 win.
 
-Phase 2 `ask --rerank off`
+## Phase 3 Category Breakdown
 
-- category `1`: `19.22%` F1
-- category `2`: `15.83%` F1
-- category `4`: `8.82%` F1
+`ask --rerank off`
 
-Phase 2 `ask --rerank on`
+- category `1`: `6.08%` F1
+- category `2`: `12.87%` F1
+- category `4`: `7.54%` F1
 
-- category `1`: `13.20%` F1
-- category `2`: `10.63%` F1
-- category `4`: `12.37%` F1
+`ask --rerank on`
 
-### Historical Comparison
+- category `1`: `7.58%` F1
+- category `2`: `8.71%` F1
+- category `4`: `13.43%` F1
 
-Previously recorded `cortex ask` baseline on March 22, 2026:
+What moved:
 
-- `15.77%` F1
+- category `4` improved materially
+- category `1` improved modestly
+- category `2` regressed
 
-This rerun without reranking measured `10.53%` in Phase 1 and `12.48%` in Phase 2, so the historical `15.77%` number and this branch-local rerun should not be compared directly as if they were a controlled A/B. The trustworthy comparison for this work is the same-run delta within each phase.
+So the warm `m3` daemon is helping composition/comparison questions much more than temporal ones.
 
-- Phase 1:
-  - `10.53%` without rerank
-  - `1.14%` with rerank
-- Phase 2:
-  - `12.48%` without rerank
-  - `11.93%` with rerank
+## Diagnostic Questions
+
+These were the three targeted diagnostics used to verify that the daemon path was doing real reranking instead of silently falling back.
+
+### `conv-30:27` `Did Jon and Gina both participate in dance competitions?`
+
+Gold answer:
+
+- `Yes`
+
+Gold evidence:
+
+- `D1:14`
+- `D14:14`
+- `D1:16`
+- `D1:17`
+- `D9:10`
+
+Search `off`
+
+| Rank | Memory | Score | Gold evidence hit | Section |
+| --- | ---: | ---: | --- | --- |
+| 1 | `83` | `1.0186` | yes | `Session 9 - 10:33 am on 9 April, 2023` |
+| 2 | `90` | `0.9907` | no | `Session 13 - 8:29 pm on 13 June, 2023` |
+| 3 | `69` | `0.9355` | no | `Session 4 - 10:43 am on 4 February, 2023` |
+| 4 | `72` | `0.9084` | no | `Session 5 - 9:32 am on 8 February, 2023` |
+
+Search `on`
+
+| Rank | Memory | Score | Gold evidence hit | Section |
+| --- | ---: | ---: | --- | --- |
+| 1 | `83` | `2.5271` | yes | `Session 9 - 10:33 am on 9 April, 2023` |
+| 2 | `79` | `1.6516` | no | `Session 8 - 1:26 pm on 3 April, 2023` |
+| 3 | `69` | `1.2414` | no | `Session 4 - 10:43 am on 4 February, 2023` |
+| 4 | `90` | `0.9907` | no | `Session 13 - 8:29 pm on 13 June, 2023` |
+
+Product path:
+
+- `ask --rerank off`: correct
+- `ask --rerank on`: correct
+
+Result:
+
+- the dual-entity evidence memory stays rank `1`
+- the daemon path no longer lets single-entity competition chatter outrank the answer-bearing memory
+
+### `conv-30:62` `How does Gina stay confident in her business?`
+
+Gold answer:
+
+- `By reminding herself of her successes and progress, having a support system, and focusing on why she started`
+
+Gold evidence:
+
+- `D10:8`
+
+Search `off`
+
+| Rank | Memory | Score | Gold evidence hit | Section |
+| --- | ---: | ---: | --- | --- |
+| 1 | `85` | `0.9575` | yes | `Session 10 - 11:24 am on 25 April, 2023` |
+| 2 | `76` | `0.9287` | no | `Session 7 - 7:28 pm on 23 March, 2023` |
+| 3 | `101` | `0.9276` | no | `Session 18 - 5:44 pm on 21 July, 2023` |
+| 4 | `71` | `0.8746` | no | `Session 5 - 9:32 am on 8 February, 2023` |
+
+Search `on`
+
+| Rank | Memory | Score | Gold evidence hit | Section |
+| --- | ---: | ---: | --- | --- |
+| 1 | `85` | `3.0113` | yes | `Session 10 - 11:24 am on 25 April, 2023` |
+| 2 | `71` | `0.8491` | no | `Session 5 - 9:32 am on 8 February, 2023` |
+| 3 | `68` | `0.8313` | no | `Session 4 - 10:43 am on 4 February, 2023` |
+| 4 | `78` | `0.7733` | no | `Session 8 - 1:26 pm on 3 April, 2023` |
+
+Product path:
+
+- `ask --rerank off`: correct
+- `ask --rerank on`: correct
+
+Result:
+
+- the answer-bearing memory remains rank `1`
+- the daemon path sharply separates the correct evidence from the rest of the pack
+
+### `conv-30:11` `When did Gina get her tattoo?`
+
+Gold answer:
+
+- `A few years ago`
+
+Gold evidence:
+
+- `D5:15`
+
+Search `off`
+
+| Rank | Memory | Score | Gold evidence hit | Section |
+| --- | ---: | ---: | --- | --- |
+| 1 | `71` | `1.0815` | no | `Session 5 - 9:32 am on 8 February, 2023` |
+| 2 | `72` | `0.6236` | yes | `Session 5 - 9:32 am on 8 February, 2023` |
+| 3 | `100` | `0.4876` | no | `Session 17 - 1:25 pm on 9 July, 2023` |
+| 4 | `87` | `0.4842` | no | `Session 11 - 3:14 pm on 11 May, 2023` |
+
+Search `on`
+
+| Rank | Memory | Score | Gold evidence hit | Section |
+| --- | ---: | ---: | --- | --- |
+| 1 | `72` | `1.5553` | yes | `Session 5 - 9:32 am on 8 February, 2023` |
+| 2 | `71` | `1.0815` | no | `Session 5 - 9:32 am on 8 February, 2023` |
+| 3 | `100` | `0.4876` | no | `Session 17 - 1:25 pm on 9 July, 2023` |
+| 4 | `90` | `0.4795` | no | `Session 13 - 8:29 pm on 13 June, 2023` |
+
+Product path:
+
+- `ask --rerank off`: correct
+- `ask --rerank on`: correct
+
+Result:
+
+- the answer-bearing memory now outranks the lexical trap memory
+- this is the cleanest example that the warm `m3` path is performing real useful reranking
 
 ## Interpretation
 
-The first shipped reranker input was wrong for Cortex’s retrieval unit.
+The biggest problem is now solved:
 
-What changed after diagnosis:
+- `m3` is usable through Cortex because the daemon amortizes the one-time model load
+- the search/ask path does detect and use the daemon
+- the reranker is now a same-run F1 win instead of a regression
 
-- switched from full memory blobs to extracted evidence windows before cross-encoder scoring
-- preserved full memory content in the returned results and only changed reranker input text
+What improved:
 
-What that fixed:
+- overall F1: `9.05%` -> `11.12%`
+- degraded responses: `13` -> `7`
+- category `4` improved substantially
+- the three targeted diagnostic questions all stayed correct through the real `ask` path
 
-- the reranker stopped catastrophically inverting the product path
-- diagnostic questions recovered:
-  - `conv-30:62` stayed correct
-  - `conv-30:11` kept the answer-bearing memory in the reranked set and `ask` answered correctly
-  - `conv-30:27` improved enough for `ask` to answer correctly, though the ideal dual-entity memory still was not rank 1
+What is still not where it needs to be:
 
-What remains true:
+- average latency increased by `3453.46 ms`
+- that misses the explicit `<2s` added-latency target for merge
+- category `2` temporal questions regressed, which suggests the reranker is helping multi-fact/compositional evidence more than date anchoring
 
-- the default `base` int8 reranker is still slightly worse than no reranker on the full 81-question slice
-- latency is still materially higher
-- `m3` looks directionally better on a spot check, but it is too slow for the current per-query CLI process model
+So this is no longer a parked “the model is broken” branch. It is now a real quality/latency tradeoff:
 
-## Conclusion
+- quality: clearly better
+- latency: still above the merge bar
 
-The infrastructure is working and the input fix materially improved it:
+## Current Status
 
-- optional local model setup
-- graceful `auto|on|off` flagging
-- rerank insertion in the hybrid/RRF hot path
-- real ONNX inference in Go
+The daemon architecture worked.
 
-But the current default model/configuration is still not merge-ready as a retrieval improvement. After the evidence-window fix it is close to neutral, not positive:
+The branch is not parked for the original reason anymore. The old blocker was that `m3` cold start made full evaluation impractical. That is now solved by `rerank-serve`.
 
-- `12.48%` F1 without rerank
-- `11.93%` F1 with rerank
+But it is still not ready to merge under the stated acceptance bar because the measured warm-query latency tax is too high:
 
-The likely next step is not another small tuning pass on `bge-reranker-base:int8`. The better path is:
+- target: `<2s` added latency
+- measured: `+3453.46 ms`
 
-1. move reranking into a long-lived process or daemon so `m3` is feasible
-2. benchmark `m3` or another stronger reranker on the same 81-question slice
-3. only merge once the reranked path is at least neutral against the same-run no-rerank baseline
+## Next Steps
 
-## Parking Note
+The most direct follow-ups are:
 
-This branch is parked.
+1. Cut daemon transport and warm inference overhead further.
+   Candidate paths:
+   - Unix domain socket instead of localhost HTTP on macOS/Linux
+   - tighter batch sizing / thread tuning in the daemon
+   - smaller packed candidate prefix for queries where the fused top result is already dominant
 
-What is working:
+2. Add a selective rerank gate.
+   Rerank only when the fused top-N looks ambiguous instead of paying the daemon tax on every ask query.
 
-- the pipeline itself is correct
-- ONNX output interpretation is correct
-- evidence windowing fixed the catastrophic scoring failure from Phase 1
-- the 3-question diagnostic is clean enough to trust the architecture:
-  - `conv-30:62` stayed correct
-  - `conv-30:11` kept the answer-bearing memory in the reranked set and `ask` answered correctly
-  - `conv-30:27` remained answerable after reranking, even though the ideal dual-entity memory was not rank 1
+3. Protect temporal questions.
+   Category `2` regressed, so temporal-anchor-aware rerank gating or temporal-feature injection should be tested before merge.
 
-Why it is parked:
+## Bottom Line
 
-- the shipped `base` int8 model is near-neutral on F1 and still slightly worse than no reranker
-- it adds about `6.5s` average latency on the measured `ask` path
-- that is not worth shipping as a regression
+The reranker work is finally on the right side of the quality curve:
 
-Two paths to revisit:
+- phase 1: broken
+- phase 2: nearly neutral
+- phase 3: positive
 
-### A. Better Model via Reranker Daemon
+Measured best result in this lane:
 
-`m3` looked better on the spot check, but the current CLI process model pays model/session startup per query. The right architecture here is a long-lived reranker daemon:
+- `ask --rerank off`: `9.05%` F1
+- `ask --rerank on` with warm daemon-backed `m3`: `11.12%` F1
 
-1. start a local daemon process that loads the ONNX model and tokenizer once
-2. expose a tiny local transport, either:
-   - Unix domain socket on macOS/Linux
-   - localhost HTTP on a fixed loopback port
-3. request shape:
-   - `POST /rerank`
-   - body: `{query, candidates:[{id,text}], top_k}`
-4. response shape:
-   - `{results:[{id, score}]}`
-5. CLI flow:
-   - `cortex` checks daemon availability first
-   - if available, send rerank requests to the daemon
-   - if unavailable, fall back to in-process reranking or skip gracefully
-6. operational behavior:
-   - idle timeout or explicit `cortex rerank-daemon stop`
-   - versioned model cache under `~/.cortex/models/rerank/`
-   - single shared ONNX session per loaded model
+That is the first trustworthy end-to-end win for this reranker branch.
 
-That would amortize `m3` cold start across all queries and make the real latency question about warm inference, not startup.
-
-### B. Quantized M3
-
-The second path is a faster `m3` variant:
-
-- another ONNX `m3` quantization
-- smaller-weight or graph-optimized export
-- potentially a variant tuned for CPU latency instead of raw parity
-
-The target is to keep the better ranking behavior from `m3` while cutting cold start enough that the current CLI path is still usable, or at least making the daemon path lighter.
-
-What is needed to unpark:
-
-- either a model that beats the no-rerank baseline on F1 with less than `2s` added latency
-- or a daemon architecture that amortizes `m3` cold start enough to make warm-query latency acceptable
+It still misses the latency bar, so this should be treated as “working and promising” rather than “ready to merge unchanged.”

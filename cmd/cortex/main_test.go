@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/hurttlocker/cortex/internal/connect"
 	"github.com/hurttlocker/cortex/internal/embed"
 	"github.com/hurttlocker/cortex/internal/observe"
+	"github.com/hurttlocker/cortex/internal/rerank"
 	"github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
 )
@@ -121,6 +123,48 @@ func TestGetDBPath_Default(t *testing.T) {
 
 	if got := getDBPath(); got != "" {
 		t.Errorf("getDBPath() = %q, want empty string (use store default)", got)
+	}
+}
+
+type testDaemonScorer struct {
+	scores []float64
+}
+
+func (t testDaemonScorer) Name() string    { return "daemon-test" }
+func (t testDaemonScorer) Available() bool { return true }
+func (t testDaemonScorer) Close() error    { return nil }
+func (t testDaemonScorer) Score(ctx context.Context, query string, docs []string) ([]float64, error) {
+	return append([]float64(nil), t.scores[:len(docs)]...), nil
+}
+
+func TestLoadDaemonReranker_UsesHealthyDaemon(t *testing.T) {
+	server := httptest.NewServer(rerank.NewDaemonHandler(testDaemonScorer{scores: []float64{0.1, 0.9}}))
+	defer server.Close()
+
+	t.Setenv("CORTEX_RERANK_DAEMON_URL", server.URL)
+	service, err := loadDaemonReranker(rerank.ModeOn)
+	if err != nil {
+		t.Fatalf("loadDaemonReranker: %v", err)
+	}
+	if service == nil {
+		t.Fatal("expected daemon-backed reranker service")
+	}
+	if service.Name() != "daemon-test" {
+		t.Fatalf("service.Name() = %q, want daemon-test", service.Name())
+	}
+
+	got, err := service.Rerank(context.Background(), "query", []rerank.Candidate{
+		{Index: 0, BaseScore: 0.8, Text: "alpha"},
+		{Index: 1, BaseScore: 0.7, Text: "beta"},
+	}, 0)
+	if err != nil {
+		t.Fatalf("service.Rerank: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].Index != 1 {
+		t.Fatalf("expected daemon reranker to promote index 1, got %d", got[0].Index)
 	}
 }
 

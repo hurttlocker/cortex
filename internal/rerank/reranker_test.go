@@ -2,7 +2,10 @@ package rerank
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -139,5 +142,59 @@ func TestONNXScorer_RealModelIfAvailable(t *testing.T) {
 	}
 	if scores[0] <= scores[1] {
 		t.Fatalf("expected relevant document to outrank irrelevant document, got %v", scores)
+	}
+}
+
+func TestDaemonHandler_ReranksCandidatesByID(t *testing.T) {
+	handler := NewDaemonHandler(mockScorer{scores: []float64{0.4, 1.2}})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	client := NewDaemonScorer(DaemonClientConfig{
+		BaseURL: server.URL,
+		Timeout: 2 * time.Second,
+	})
+	pinger, ok := client.(interface{ Ping(context.Context) error })
+	if !ok {
+		t.Fatal("expected daemon scorer to implement Ping")
+	}
+	if err := pinger.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+
+	scores, err := client.Score(context.Background(), "query", []string{"alpha", "beta"})
+	if err != nil {
+		t.Fatalf("Score: %v", err)
+	}
+	if len(scores) != 2 {
+		t.Fatalf("len(scores) = %d, want 2", len(scores))
+	}
+	if scores[0] != 0.4 || scores[1] != 1.2 {
+		t.Fatalf("unexpected daemon scores: %v", scores)
+	}
+}
+
+func TestDaemonHandler_HealthIncludesModel(t *testing.T) {
+	server := httptest.NewServer(NewDaemonHandler(mockScorer{scores: []float64{0.1}}))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var payload DaemonHealth
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	if !payload.Available {
+		t.Fatal("expected health endpoint to report available")
+	}
+	if payload.Model != "mock" {
+		t.Fatalf("model = %q, want mock", payload.Model)
 	}
 }
