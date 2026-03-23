@@ -101,11 +101,21 @@ type activeFactMatch struct {
 	Confidence float64
 }
 
-func findActiveFactMatchesBySubjectPredicate(ctx context.Context, s store.Store, subject, predicate, agentID string) ([]activeFactMatch, error) {
+func findActiveFactMatchesBySubjectPredicate(ctx context.Context, s store.Store, fact *store.Fact) ([]activeFactMatch, error) {
 	sqlStore, ok := s.(*store.SQLiteStore)
 	if !ok {
 		return nil, nil
 	}
+	if fact == nil {
+		return nil, nil
+	}
+	observerAgent := strings.TrimSpace(fact.ObserverAgent)
+	if observerAgent == "" {
+		observerAgent = strings.TrimSpace(fact.AgentID)
+	}
+	observedEntity := strings.TrimSpace(fact.ObservedEntity)
+	sessionID := strings.TrimSpace(fact.SessionID)
+	projectID := strings.TrimSpace(fact.ProjectID)
 
 	rows, err := sqlStore.GetDB().QueryContext(ctx,
 		`SELECT id, object, confidence
@@ -113,10 +123,13 @@ func findActiveFactMatchesBySubjectPredicate(ctx context.Context, s store.Store,
 		  WHERE superseded_by IS NULL
 		    AND LOWER(TRIM(subject)) = LOWER(TRIM(?))
 		    AND LOWER(TRIM(predicate)) = LOWER(TRIM(?))
-		    AND COALESCE(agent_id, '') = ?
+		    AND COALESCE(NULLIF(observer_agent, ''), agent_id, '') = ?
+		    AND COALESCE(observed_entity, '') = ?
+		    AND COALESCE(session_id, '') = ?
+		    AND COALESCE(project_id, '') = ?
 		    AND COALESCE(LOWER(state), 'active') IN ('active', 'core')
 		  ORDER BY created_at DESC, id DESC`,
-		subject, predicate, agentID,
+		fact.Subject, fact.Predicate, observerAgent, observedEntity, sessionID, projectID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying active fact matches: %w", err)
@@ -195,7 +208,7 @@ func StoreExtractedFact(ctx context.Context, s store.Store, fact *store.Fact) (f
 		return factID, err == nil, err
 	}
 
-	matches, err := findActiveFactMatchesBySubjectPredicate(ctx, s, subject, predicate, fact.AgentID)
+	matches, err := findActiveFactMatchesBySubjectPredicate(ctx, s, fact)
 	if err != nil {
 		return 0, false, err
 	}

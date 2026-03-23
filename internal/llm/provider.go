@@ -37,6 +37,19 @@ type Config struct {
 	BaseURL  string // Optional URL override
 }
 
+func normalizeModelForProvider(provider, model string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	model = strings.TrimSpace(model)
+	if model == "" || provider == "" {
+		return model
+	}
+	prefix := provider + "/"
+	if strings.HasPrefix(strings.ToLower(model), prefix) {
+		return strings.TrimSpace(model[len(prefix):])
+	}
+	return model
+}
+
 // NewProvider creates an LLM provider from the given config.
 func NewProvider(cfg Config) (Provider, error) {
 	resolved, _ := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{})
@@ -56,7 +69,7 @@ func NewProvider(cfg Config) (Provider, error) {
 		if key == "" {
 			return nil, fmt.Errorf("google provider requires GEMINI_API_KEY or GOOGLE_API_KEY env var")
 		}
-		model := cfg.Model
+		model := normalizeModelForProvider("google", cfg.Model)
 		if model == "" {
 			model = "gemini-2.5-flash"
 		}
@@ -81,7 +94,7 @@ func NewProvider(cfg Config) (Provider, error) {
 		if key == "" {
 			return nil, fmt.Errorf("openrouter provider requires OPENROUTER_API_KEY env var")
 		}
-		model := cfg.Model
+		model := normalizeModelForProvider("openrouter", cfg.Model)
 		if model == "" {
 			model = "openai/gpt-4o-mini"
 		}

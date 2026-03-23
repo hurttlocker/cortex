@@ -166,6 +166,20 @@ type SourceBoost struct {
 	Weight float64 `json:"weight"`
 }
 
+type ScopeFilters struct {
+	Agents   []string
+	Entities []string
+	Sessions []string
+	Projects []string
+}
+
+func (s ScopeFilters) Empty() bool {
+	return len(s.Agents) == 0 &&
+		len(s.Entities) == 0 &&
+		len(s.Sessions) == 0 &&
+		len(s.Projects) == 0
+}
+
 // Options configures a search query.
 type Options struct {
 	Mode              Mode     // Search mode (default: keyword)
@@ -187,6 +201,7 @@ type Options struct {
 	Before            string        // Filter memories imported before date YYYY-MM-DD (Issue #30)
 	Source            string        // Filter by source prefix (e.g., "github", "gmail") (Issue #199)
 	Intent            string        // Convenience source bucket: memory|import|connector|all
+	Scope             ScopeFilters  // Directional fact scope filters (Issue #252)
 	SourceBoosts      []SourceBoost // Optional score boosts by source prefix
 	IncludeSuperseded bool          // Include memories backed only by superseded facts
 	Explain           bool          // Attach explainability/provenance payloads to results
@@ -245,6 +260,8 @@ type Result struct {
 	ImportedAt     time.Time       `json:"imported_at,omitempty"` // For metadata date filtering
 	TemporalAnchor string          `json:"temporal_anchor,omitempty"`
 	TemporalNorms  []temporal.Norm `json:"temporal_norms,omitempty"`
+	TokenEstimate  int             `json:"token_estimate,omitempty"`
+	Truncated      bool            `json:"truncated,omitempty"`
 	Explain        *ExplainDetails `json:"explain,omitempty"`
 }
 
@@ -555,6 +572,9 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	if opts.Agent != "" || opts.Channel != "" || opts.SessionKey != "" || opts.After != "" || opts.Before != "" {
 		results = filterByMetadata(results, opts)
 	}
+	if !opts.Scope.Empty() {
+		results = e.filterByFactScope(ctx, results, opts.Scope, opts.IncludeSuperseded)
+	}
 
 	// Apply class filters / weighting (Issue #34)
 	if len(opts.Classes) > 0 {
@@ -655,6 +675,9 @@ func (e *Engine) SearchFacts(ctx context.Context, query string, opts Options) ([
 			continue
 		}
 		if opts.Project != "" && !strings.EqualFold(memory.Project, opts.Project) {
+			continue
+		}
+		if !matchesFactScope(memory, fact, opts.Scope) {
 			continue
 		}
 		if opts.Source != "" && !matchesSourcePrefix(strings.ToLower(strings.TrimSpace(memory.SourceFile)), strings.ToLower(strings.TrimSpace(opts.Source))) {
@@ -2055,6 +2078,143 @@ func matchSessionKey(r Result, sessionKey string) bool {
 		return false
 	}
 	return strings.EqualFold(r.Metadata.SessionKey, sessionKey)
+}
+
+func (e *Engine) filterByFactScope(ctx context.Context, results []Result, scope ScopeFilters, includeSuperseded bool) []Result {
+	if len(results) == 0 || scope.Empty() {
+		return results
+	}
+
+	memoryIDs := make([]int64, 0, len(results))
+	seenMemory := make(map[int64]struct{}, len(results))
+	for _, r := range results {
+		if r.MemoryID <= 0 {
+			continue
+		}
+		if _, ok := seenMemory[r.MemoryID]; ok {
+			continue
+		}
+		seenMemory[r.MemoryID] = struct{}{}
+		memoryIDs = append(memoryIDs, r.MemoryID)
+	}
+	if len(memoryIDs) == 0 {
+		return nil
+	}
+
+	var (
+		facts []*store.Fact
+		err   error
+	)
+	if includeSuperseded {
+		facts, err = e.store.GetFactsByMemoryIDsIncludingSuperseded(ctx, memoryIDs)
+	} else {
+		facts, err = e.store.GetFactsByMemoryIDs(ctx, memoryIDs)
+	}
+	if err != nil {
+		return results
+	}
+
+	factsByMemory := make(map[int64][]*store.Fact, len(memoryIDs))
+	for _, f := range facts {
+		factsByMemory[f.MemoryID] = append(factsByMemory[f.MemoryID], f)
+	}
+
+	filtered := make([]Result, 0, len(results))
+	for _, r := range results {
+		factsForMemory := factsByMemory[r.MemoryID]
+		if len(factsForMemory) == 0 {
+			if matchesFactScope(&store.Memory{
+				ID:       r.MemoryID,
+				Project:  r.Project,
+				Metadata: r.Metadata,
+			}, nil, scope) {
+				filtered = append(filtered, r)
+			}
+			continue
+		}
+
+		memory := &store.Memory{
+			ID:       r.MemoryID,
+			Project:  r.Project,
+			Metadata: r.Metadata,
+		}
+		for _, fact := range factsForMemory {
+			if matchesFactScope(memory, fact, scope) {
+				filtered = append(filtered, r)
+				break
+			}
+		}
+	}
+
+	return filtered
+}
+
+func matchesFactScope(memory *store.Memory, fact *store.Fact, scope ScopeFilters) bool {
+	if scope.Empty() {
+		return true
+	}
+
+	var (
+		observer string
+		entity   string
+		session  string
+		project  string
+	)
+
+	if fact != nil {
+		observer = strings.TrimSpace(fact.ObserverAgent)
+		if observer == "" {
+			observer = strings.TrimSpace(fact.AgentID)
+		}
+		entity = strings.TrimSpace(fact.ObservedEntity)
+		session = strings.TrimSpace(fact.SessionID)
+		project = strings.TrimSpace(fact.ProjectID)
+	}
+
+	if memory != nil {
+		if observer == "" && memory.Metadata != nil {
+			observer = strings.TrimSpace(memory.Metadata.AgentID)
+		}
+		if entity == "" && memory.Metadata != nil {
+			entity = strings.TrimSpace(memory.Metadata.ObservedEntity)
+		}
+		if session == "" && memory.Metadata != nil {
+			session = strings.TrimSpace(memory.Metadata.SessionID)
+			if session == "" {
+				session = strings.TrimSpace(memory.Metadata.SessionKey)
+			}
+		}
+		if project == "" {
+			project = strings.TrimSpace(memory.Project)
+		}
+	}
+
+	if len(scope.Agents) > 0 && !containsFold(scope.Agents, observer) {
+		return false
+	}
+	if len(scope.Entities) > 0 && !containsFold(scope.Entities, entity) {
+		return false
+	}
+	if len(scope.Sessions) > 0 && !containsFold(scope.Sessions, session) {
+		return false
+	}
+	if len(scope.Projects) > 0 && !containsFold(scope.Projects, project) {
+		return false
+	}
+	return true
+}
+
+func containsFold(values []string, candidate string) bool {
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" {
+		return false
+	}
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 // applyConfidenceDecay adjusts search result scores based on the effective confidence

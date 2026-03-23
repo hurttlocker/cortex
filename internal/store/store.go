@@ -49,11 +49,13 @@ type Memory struct {
 // Stored as JSON in the metadata column. All fields are optional.
 type Metadata struct {
 	SessionKey     string `json:"session_key,omitempty"`  // e.g., "agent:main:main"
+	SessionID      string `json:"session_id,omitempty"`   // Optional stable session identifier for scoped facts
 	Channel        string `json:"channel,omitempty"`      // e.g., "discord", "telegram"
 	ChannelID      string `json:"channel_id,omitempty"`   // e.g., "1473406695219658964"
 	ChannelName    string `json:"channel_name,omitempty"` // e.g., "#x"
 	AgentID        string `json:"agent_id,omitempty"`     // e.g., "main", "sage", "hawk"
 	AgentName      string `json:"agent_name,omitempty"`   // e.g., "mister", "sage"
+	ObservedEntity string `json:"observed_entity,omitempty"`
 	Model          string `json:"model,omitempty"`        // e.g., "anthropic/claude-opus-4-6"
 	InputTokens    int    `json:"input_tokens,omitempty"` // Token usage
 	OutputTokens   int    `json:"output_tokens,omitempty"`
@@ -88,6 +90,11 @@ type Fact struct {
 	State          string // active|core|retired|superseded
 	SupersededBy   *int64 // Fact ID that superseded this fact (nil = active)
 	AgentID        string // Which agent created this fact (empty = global, visible to all)
+	ObserverAgent  string
+	ObservedEntity string
+	SessionID      string
+	ProjectID      string
+	TokenEstimate  int
 }
 
 // MemoryEvent represents an entry in the append-only event log.

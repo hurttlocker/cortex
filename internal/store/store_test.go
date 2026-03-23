@@ -1651,3 +1651,70 @@ func TestAgentIsolation_FactsFilterByAgent(t *testing.T) {
 		t.Errorf("expected at least 2 total facts, got %d", len(allFacts))
 	}
 }
+
+func TestBackfillFactScope_DryRunAndApply(t *testing.T) {
+	s := newTestStore(t).(*SQLiteStore)
+	ctx := context.Background()
+
+	memID, err := s.AddMemory(ctx, &Memory{
+		Content:    "Q prefers green for additions",
+		SourceFile: "q.md",
+		Project:    "cortex",
+		Metadata: &Metadata{
+			AgentID:        "niot",
+			ObservedEntity: "Q",
+			SessionID:      "tab-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	factID, err := s.AddFact(ctx, &Fact{
+		MemoryID:   memID,
+		Subject:    "Q",
+		Predicate:  "prefers",
+		Object:     "green",
+		FactType:   "preference",
+		Confidence: 0.9,
+		AgentID:    "niot",
+	})
+	if err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+
+	if _, err := s.db.Exec(`UPDATE facts SET observer_agent = '', observed_entity = '', session_id = '', project_id = '' WHERE id = ?`, factID); err != nil {
+		t.Fatalf("clear scope columns: %v", err)
+	}
+
+	report, err := s.BackfillFactScope(ctx, false)
+	if err != nil {
+		t.Fatalf("BackfillFactScope dry-run: %v", err)
+	}
+	if !report.DryRun || report.Inferred != 1 || report.Applied != 0 {
+		t.Fatalf("unexpected dry-run report: %+v", report)
+	}
+
+	var observer, observed, sessionID, projectID string
+	if err := s.db.QueryRow(`SELECT observer_agent, observed_entity, session_id, project_id FROM facts WHERE id = ?`, factID).Scan(&observer, &observed, &sessionID, &projectID); err != nil {
+		t.Fatalf("read raw scope columns after dry-run: %v", err)
+	}
+	if observer != "" || observed != "" || sessionID != "" || projectID != "" {
+		t.Fatalf("expected raw scope columns to remain empty after dry-run, got observer=%q observed=%q session=%q project=%q", observer, observed, sessionID, projectID)
+	}
+
+	report, err = s.BackfillFactScope(ctx, true)
+	if err != nil {
+		t.Fatalf("BackfillFactScope apply: %v", err)
+	}
+	if report.Applied != 1 {
+		t.Fatalf("expected 1 applied update, got %+v", report)
+	}
+
+	if err := s.db.QueryRow(`SELECT observer_agent, observed_entity, session_id, project_id FROM facts WHERE id = ?`, factID).Scan(&observer, &observed, &sessionID, &projectID); err != nil {
+		t.Fatalf("read applied scope columns: %v", err)
+	}
+	if observer != "niot" || observed != "Q" || sessionID != "tab-1" || projectID != "cortex" {
+		t.Fatalf("unexpected applied scope values: observer=%q observed=%q session=%q project=%q", observer, observed, sessionID, projectID)
+	}
+}
