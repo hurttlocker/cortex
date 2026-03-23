@@ -9867,6 +9867,16 @@ func outputTTYSearch(query string, results []search.Result, showMetadata bool, e
 		if explain && r.Explain != nil {
 			e := r.Explain
 			fmt.Printf("     🔎 source=%s\n", e.Provenance.Source)
+			if e.QueryStrategy != nil {
+				fmt.Printf("     🧭 strategy=%s", e.QueryStrategy.Primary)
+				if len(e.QueryStrategy.Entities) > 0 {
+					fmt.Printf(" entities=%s", strings.Join(e.QueryStrategy.Entities, ","))
+				}
+				if e.QueryStrategy.TemporalIntent {
+					fmt.Print(" temporal=true")
+				}
+				fmt.Println()
+			}
 			if !e.Provenance.Timestamp.IsZero() {
 				fmt.Printf("     ⏱ imported=%s  age=%.1f days\n", e.Provenance.Timestamp.Format(time.RFC3339), e.Provenance.AgeDays)
 			}
@@ -9889,6 +9899,17 @@ func outputTTYSearch(query string, results []search.Result, showMetadata bool, e
 			}
 			if e.RankComponents.HybridBM25Contribution != nil && e.RankComponents.HybridSemanticContribution != nil {
 				fmt.Printf("     • hybrid: bm25=%.3f semantic=%.3f\n", *e.RankComponents.HybridBM25Contribution, *e.RankComponents.HybridSemanticContribution)
+			}
+			if e.RankComponents.EntityChannelScore != nil || e.RankComponents.TemporalChannelScore != nil {
+				entityScore := 0.0
+				temporalScore := 0.0
+				if e.RankComponents.EntityChannelScore != nil {
+					entityScore = *e.RankComponents.EntityChannelScore
+				}
+				if e.RankComponents.TemporalChannelScore != nil {
+					temporalScore = *e.RankComponents.TemporalChannelScore
+				}
+				fmt.Printf("     • rrf extras: entity=%.3f temporal=%.3f\n", entityScore, temporalScore)
 			}
 			if e.RankComponents.SourceWeight != 0 {
 				fmt.Printf("     • source_weight=%.3f\n", e.RankComponents.SourceWeight)

@@ -14,6 +14,7 @@ type RRFConfig struct {
 	BM25Weight     float64
 	SemanticWeight float64
 	EntityWeight   float64
+	TemporalWeight float64
 }
 
 // DefaultRRFConfig returns the default RRF configuration.
@@ -23,6 +24,7 @@ func DefaultRRFConfig() RRFConfig {
 		BM25Weight:     1.0,
 		SemanticWeight: 1.0,
 		EntityWeight:   1.0,
+		TemporalWeight: 1.0,
 	}
 }
 
@@ -94,6 +96,7 @@ func fuseRRFChannelsWithOptions(channels []rrfChannel, limit int, explain bool, 
 		bm25Contribution := 0.0
 		semanticContribution := 0.0
 		entityContribution := 0.0
+		temporalContribution := 0.0
 		for _, channel := range channels {
 			reciprocal := 1.0 / float64(cfg.K+entry.ranks[channel.name])
 			contribution := channel.weight * reciprocal
@@ -107,6 +110,8 @@ func fuseRRFChannelsWithOptions(channels []rrfChannel, limit int, explain bool, 
 				semanticContribution = contribution
 			case "entity":
 				entityContribution = contribution
+			case "temporal":
+				temporalContribution = contribution
 			}
 		}
 		prior, priorReason := hybridMetadataPrior(entry.result)
@@ -132,6 +137,9 @@ func fuseRRFChannelsWithOptions(channels []rrfChannel, limit int, explain bool, 
 			}
 			if entityContribution > 0 {
 				entry.result.Explain.RankComponents.EntityChannelScore = floatPtr(entityContribution)
+			}
+			if temporalContribution > 0 {
+				entry.result.Explain.RankComponents.TemporalChannelScore = floatPtr(temporalContribution)
 			}
 			if priorReason != "" {
 				if entry.result.Explain.Why == "" {
@@ -172,6 +180,9 @@ func normalizeRRFConfig(cfg RRFConfig) RRFConfig {
 	}
 	if cfg.EntityWeight == 0 {
 		cfg.EntityWeight = 1.0
+	}
+	if cfg.TemporalWeight == 0 {
+		cfg.TemporalWeight = 1.0
 	}
 	return cfg
 }

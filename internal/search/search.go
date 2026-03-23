@@ -329,11 +329,12 @@ type FactResult struct {
 
 // ExplainDetails surfaces provenance and ranking factors for operator trust/debugging.
 type ExplainDetails struct {
-	Provenance     ExplainProvenance  `json:"provenance"`
-	Confidence     ExplainConfidence  `json:"confidence"`
-	RankComponents RankComponents     `json:"rank_components"`
-	QueryShape     *ExplainQueryShape `json:"query_shape,omitempty"`
-	Why            string             `json:"why,omitempty"`
+	Provenance     ExplainProvenance     `json:"provenance"`
+	Confidence     ExplainConfidence     `json:"confidence"`
+	RankComponents RankComponents        `json:"rank_components"`
+	QueryShape     *ExplainQueryShape    `json:"query_shape,omitempty"`
+	QueryStrategy  *ExplainQueryStrategy `json:"query_strategy,omitempty"`
+	Why            string                `json:"why,omitempty"`
 }
 
 // ExplainQueryShape captures raw-vs-shaped retrieval query context when query shaping is applied.
@@ -343,6 +344,17 @@ type ExplainQueryShape struct {
 	Applied       bool   `json:"applied"`
 	RemovedTokens int    `json:"removed_tokens,omitempty"`
 	Reason        string `json:"reason,omitempty"`
+}
+
+// ExplainQueryStrategy captures the retrieval routing decision for the query.
+type ExplainQueryStrategy struct {
+	Primary        QueryStrategy `json:"primary"`
+	Entities       []string      `json:"entities,omitempty"`
+	TemporalIntent bool          `json:"temporal_intent,omitempty"`
+	TemporalKind   string        `json:"temporal_kind,omitempty"`
+	SceneExpand    bool          `json:"scene_expand,omitempty"`
+	BridgeDiscover bool          `json:"bridge_discover,omitempty"`
+	Reason         string        `json:"reason,omitempty"`
 }
 
 type ExplainProvenance struct {
@@ -370,6 +382,7 @@ type RankComponents struct {
 	HybridBM25Contribution     *float64 `json:"hybrid_bm25_contribution,omitempty"`
 	HybridSemanticContribution *float64 `json:"hybrid_semantic_contribution,omitempty"`
 	EntityChannelScore         *float64 `json:"entity_channel_score,omitempty"`
+	TemporalChannelScore       *float64 `json:"temporal_channel_score,omitempty"`
 	RerankBaseScore            *float64 `json:"rerank_base_score,omitempty"`
 	RerankScore                *float64 `json:"rerank_score,omitempty"`
 
@@ -547,6 +560,7 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	if queryShape.Applied {
 		retrievalQuery = queryShape.Shaped
 	}
+	strategy := e.classifyQueryStrategy(ctx, retrievalQuery)
 
 	requestedLimit := opts.Limit
 	if requestedLimit <= 0 {
@@ -590,7 +604,10 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	if intentErr != nil {
 		return nil, intentErr
 	}
-	opts.EntityGraph = e.shouldUseEntityGraph(ctx, opts)
+	if opts.TemporalQuery == nil {
+		opts.TemporalQuery = strategy.TemporalQuery
+	}
+	opts.EntityGraph = e.shouldUseEntityGraph(ctx, retrievalQuery, opts, strategy)
 
 	var results []Result
 	var err error
@@ -603,7 +620,7 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	case ModeHybrid:
 		results, err = e.searchHybrid(ctx, retrievalQuery, opts)
 	case ModeRRF:
-		results, err = e.searchRRF(ctx, retrievalQuery, opts)
+		results, err = e.searchRRF(ctx, retrievalQuery, opts, strategy)
 	default:
 		return nil, fmt.Errorf("unknown search mode: %q", opts.Mode)
 	}
@@ -679,6 +696,7 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 
 	if opts.Explain {
 		attachQueryShapeExplain(results, queryShape)
+		attachQueryStrategyExplain(results, strategy)
 	}
 
 	if !opts.DisableDedupe {
@@ -1286,6 +1304,33 @@ func attachQueryShapeExplain(results []Result, shape queryShapeDecision) {
 			results[i].Explain.Why = "query shaping applied before retrieval"
 		} else {
 			results[i].Explain.Why += "; query shaping applied before retrieval"
+		}
+	}
+}
+
+func attachQueryStrategyExplain(results []Result, strategy queryStrategyDecision) {
+	for i := range results {
+		ensureExplain(&results[i])
+		explain := &ExplainQueryStrategy{
+			Primary:        strategy.Primary,
+			Entities:       append([]string(nil), strategy.Entities...),
+			SceneExpand:    strategy.EnableSceneExpand,
+			BridgeDiscover: strategy.EnableBridgeDiscover,
+			Reason:         strategy.Reason,
+		}
+		if strategy.TemporalQuery != nil {
+			explain.TemporalIntent = strategy.TemporalQuery.TemporalIntent
+			explain.TemporalKind = strategy.TemporalQuery.Kind
+		}
+		results[i].Explain.QueryStrategy = explain
+		if strategy.Primary == StrategyDefault {
+			continue
+		}
+		msg := fmt.Sprintf("query strategy: %s", strategy.Primary)
+		if results[i].Explain.Why == "" {
+			results[i].Explain.Why = msg
+		} else {
+			results[i].Explain.Why += "; " + msg
 		}
 	}
 }
@@ -3016,8 +3061,8 @@ func (e *Engine) searchHybrid(ctx context.Context, query string, opts Options) (
 
 // searchRRF performs both BM25 and semantic search, merging results with
 // Reciprocal Rank Fusion (RRF).
-func (e *Engine) searchRRF(ctx context.Context, query string, opts Options) ([]Result, error) {
-	if e.embedder == nil && !opts.EntityGraph {
+func (e *Engine) searchRRF(ctx context.Context, query string, opts Options, strategy queryStrategyDecision) ([]Result, error) {
+	if e.embedder == nil && !opts.EntityGraph && (strategy.TemporalQuery == nil || !strategy.TemporalQuery.TemporalIntent) {
 		// Graceful degradation: preserve legacy BM25 fallback when the entity channel is off.
 		fmt.Fprintf(os.Stderr, "Note: RRF mode requires an embedder; falling back to BM25 keyword search.\n")
 		fmt.Fprintf(os.Stderr, "  Use --embed <provider/model> for RRF results.\n")
@@ -3038,6 +3083,7 @@ func (e *Engine) searchRRF(ctx context.Context, query string, opts Options) ([]R
 	bm25Chan := make(chan searchResult, 1)
 	semanticChan := make(chan searchResult, 1)
 	entityChan := make(chan searchResult, 1)
+	temporalChan := make(chan searchResult, 1)
 
 	go func() {
 		results, err := e.searchBM25(ctx, query, candidateOpts)
@@ -3064,23 +3110,37 @@ func (e *Engine) searchRRF(ctx context.Context, query string, opts Options) ([]R
 		entityChan <- searchResult{}
 	}
 
+	if strategy.TemporalQuery != nil && strategy.TemporalQuery.TemporalIntent {
+		go func() {
+			results, err := e.searchTemporalChannel(ctx, query, candidateOpts, strategy)
+			temporalChan <- searchResult{results, err}
+		}()
+	} else {
+		temporalChan <- searchResult{}
+	}
+
 	bm25Result := <-bm25Chan
 	semanticResult := <-semanticChan
 	entityResult := <-entityChan
+	temporalResult := <-temporalChan
 
-	if bm25Result.err != nil && semanticResult.err != nil && entityResult.err != nil {
-		return nil, fmt.Errorf("all RRF channels failed: BM25: %w, Semantic: %v, Entity: %v", bm25Result.err, semanticResult.err, entityResult.err)
+	if bm25Result.err != nil && semanticResult.err != nil && entityResult.err != nil && temporalResult.err != nil {
+		return nil, fmt.Errorf("all RRF channels failed: BM25: %w, Semantic: %v, Entity: %v, Temporal: %v", bm25Result.err, semanticResult.err, entityResult.err, temporalResult.err)
 	}
 
-	channels := make([]rrfChannel, 0, 3)
+	cfg := rrfConfigForStrategy(strategy)
+	channels := make([]rrfChannel, 0, 4)
 	if bm25Result.err == nil && len(bm25Result.results) > 0 {
-		channels = append(channels, rrfChannel{name: "bm25", results: bm25Result.results, weight: DefaultRRFConfig().BM25Weight})
+		channels = append(channels, rrfChannel{name: "bm25", results: bm25Result.results, weight: cfg.BM25Weight})
 	}
 	if semanticResult.err == nil && len(semanticResult.results) > 0 {
-		channels = append(channels, rrfChannel{name: "semantic", results: semanticResult.results, weight: DefaultRRFConfig().SemanticWeight})
+		channels = append(channels, rrfChannel{name: "semantic", results: semanticResult.results, weight: cfg.SemanticWeight})
 	}
 	if entityResult.err == nil && len(entityResult.results) > 0 {
-		channels = append(channels, rrfChannel{name: "entity", results: entityResult.results, weight: DefaultRRFConfig().EntityWeight})
+		channels = append(channels, rrfChannel{name: "entity", results: entityResult.results, weight: cfg.EntityWeight})
+	}
+	if temporalResult.err == nil && len(temporalResult.results) > 0 {
+		channels = append(channels, rrfChannel{name: "temporal", results: temporalResult.results, weight: cfg.TemporalWeight})
 	}
 	if len(channels) == 0 {
 		if bm25Result.err != nil {
@@ -3093,7 +3153,7 @@ func (e *Engine) searchRRF(ctx context.Context, query string, opts Options) ([]R
 		channels,
 		rerankFusionLimit(opts.Limit, e.shouldApplyRerank(opts.RerankMode)),
 		opts.Explain,
-		DefaultRRFConfig(),
+		cfg,
 	)
 	if opts.EntityGraph {
 		bridgeResults, err := e.discoverBridgeResults(ctx, query, fused, candidateOpts)
