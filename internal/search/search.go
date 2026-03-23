@@ -93,6 +93,45 @@ var operatorCueTokens = map[string]struct{}{
 
 var searchDedupeTokenSplitRE = regexp.MustCompile(`[^a-z0-9]+`)
 var rerankHTMLTagRE = regexp.MustCompile(`<[^>]+>`)
+var rerankImageShareRE = regexp.MustCompile(`\[[^\]]*shares image:[^\]]*\]`)
+var rerankTemporalCueRE = regexp.MustCompile(`(?i)\b(?:\d{4}|\d{1,2}:\d{2}|yesterday|today|tomorrow|last|next|ago|week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)\b`)
+
+var rerankStopwords = map[string]struct{}{
+	"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "at": {}, "by": {}, "did": {}, "do": {}, "does": {}, "for": {},
+	"from": {}, "had": {}, "has": {}, "have": {}, "how": {}, "in": {}, "is": {}, "it": {}, "its": {}, "of": {}, "on": {},
+	"or": {}, "the": {}, "their": {}, "to": {}, "was": {}, "were": {}, "what": {}, "when": {}, "where": {}, "who": {},
+	"why": {}, "with": {},
+}
+
+var rerankQuestionWords = map[string]struct{}{
+	"did": {}, "does": {}, "do": {}, "how": {}, "what": {}, "when": {}, "where": {}, "who": {}, "why": {},
+}
+
+var rerankCompetitionCueTokens = map[string]struct{}{
+	"competition": {}, "contest": {}, "compete": {}, "trophy": {}, "performance": {},
+}
+
+type rerankQueryProfile struct {
+	Raw              string
+	Lower            string
+	Tokens           []string
+	TokenSet         map[string]struct{}
+	Entities         []string
+	WantsBoth        bool
+	WantsTemporal    bool
+	WantsWhy         bool
+	WantsHow         bool
+	WantsCompetition bool
+}
+
+type rerankWindowCandidate struct {
+	Text            string
+	Score           float64
+	EntityHits      int
+	HasTemporalCue  bool
+	CompetitionCues int
+	Valid           bool
+}
 
 var (
 	tradingIntentTokens = map[string]struct{}{
@@ -3289,16 +3328,34 @@ func (e *Engine) applyRerank(ctx context.Context, query string, results []Result
 		return results
 	}
 
+	profile := buildRerankQueryProfile(query)
 	candidates := make([]rerank.Candidate, 0, len(results))
+	invalidIndexes := make([]int, 0, len(results))
 	for i, result := range results {
+		window := buildRerankWindowCandidate(profile, result)
+		if strings.TrimSpace(window.Text) == "" {
+			invalidIndexes = append(invalidIndexes, i)
+			continue
+		}
+		if !window.Valid {
+			invalidIndexes = append(invalidIndexes, i)
+			continue
+		}
 		candidates = append(candidates, rerank.Candidate{
 			Index:     i,
 			BaseScore: result.Score,
-			Text:      rerankText(result),
+			Text:      composeRerankText(result, window.Text),
 		})
 	}
 
-	scored, err := e.reranker.Rerank(ctx, query, candidates, limit)
+	if len(candidates) == 0 {
+		if len(results) > limit {
+			return results[:limit]
+		}
+		return results
+	}
+
+	scored, err := e.reranker.Rerank(ctx, query, candidates, len(candidates))
 	if err != nil {
 		if len(results) > limit {
 			return results[:limit]
@@ -3327,10 +3384,17 @@ func (e *Engine) applyRerank(ctx context.Context, query string, results []Result
 		}
 		reranked = append(reranked, result)
 	}
+	for _, idx := range invalidIndexes {
+		reranked = append(reranked, results[idx])
+	}
+	if len(reranked) > limit {
+		reranked = reranked[:limit]
+	}
 	return reranked
 }
 
-func rerankText(result Result) string {
+func composeRerankText(result Result, window string) string {
+	snippet := cleanRerankText(result.Snippet)
 	parts := make([]string, 0, 4)
 	if section := strings.TrimSpace(result.SourceSection); section != "" {
 		parts = append(parts, "section: "+section)
@@ -3339,14 +3403,13 @@ func rerankText(result Result) string {
 		parts = append(parts, "anchor_date: "+anchor)
 	}
 
-	content := cleanRerankText(result.Content)
-	snippet := cleanRerankText(result.Snippet)
-
 	switch {
-	case content != "":
-		parts = append(parts, content)
+	case window != "":
+		parts = append(parts, window)
 	case snippet != "":
-		parts = append(parts, snippet)
+		parts = append(parts, truncateWords(snippet, 128))
+	default:
+		parts = append(parts, truncateWords(cleanRerankText(result.Content), 128))
 	}
 
 	return strings.TrimSpace(strings.Join(parts, "\n"))
@@ -3354,9 +3417,309 @@ func rerankText(result Result) string {
 
 func cleanRerankText(input string) string {
 	input = rerankHTMLTagRE.ReplaceAllString(input, " ")
+	input = rerankImageShareRE.ReplaceAllString(input, " ")
 	input = strings.ReplaceAll(input, "\u003cb\u003e", " ")
 	input = strings.ReplaceAll(input, "\u003c/b\u003e", " ")
 	input = strings.ReplaceAll(input, "...", " ")
 	input = strings.Join(strings.Fields(input), " ")
 	return strings.TrimSpace(input)
+}
+
+func extractRerankEvidenceWindow(query string, result Result) string {
+	return buildRerankWindowCandidate(buildRerankQueryProfile(query), result).Text
+}
+
+func buildRerankWindowCandidate(profile rerankQueryProfile, result Result) rerankWindowCandidate {
+	sentences := splitRerankSentences(result.Content)
+	if len(sentences) == 0 {
+		text := truncateWords(cleanRerankText(result.Content), 128)
+		candidate := evaluateRerankWindow(profile, text)
+		candidate.Text = text
+		candidate.Valid = rerankWindowIsValid(profile, candidate)
+		return candidate
+	}
+
+	bestAny := rerankWindowCandidate{Score: math.Inf(-1)}
+	bestValid := rerankWindowCandidate{Score: math.Inf(-1)}
+
+	for start := 0; start < len(sentences); start++ {
+		for span := 1; span <= 3 && start+span <= len(sentences); span++ {
+			window := strings.Join(sentences[start:start+span], " ")
+			window = truncateWords(window, 128)
+			candidate := evaluateRerankWindow(profile, window)
+			candidate.Text = window
+			candidate.Valid = rerankWindowIsValid(profile, candidate)
+			if candidate.Score > bestAny.Score || (candidate.Score == bestAny.Score && len(candidate.Text) < len(bestAny.Text)) {
+				bestAny = candidate
+			}
+			if candidate.Valid && (candidate.Score > bestValid.Score || (candidate.Score == bestValid.Score && len(candidate.Text) < len(bestValid.Text))) {
+				bestValid = candidate
+			}
+		}
+	}
+
+	if bestValid.Score > math.Inf(-1) {
+		return bestValid
+	}
+	if bestAny.Score <= 0 {
+		if snippet := strings.TrimSpace(cleanRerankText(result.Snippet)); snippet != "" {
+			candidate := evaluateRerankWindow(profile, truncateWords(snippet, 128))
+			candidate.Text = truncateWords(snippet, 128)
+			candidate.Valid = rerankWindowIsValid(profile, candidate)
+			return candidate
+		}
+	}
+	return bestAny
+}
+
+func splitRerankSentences(content string) []string {
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+
+	cleaned := rerankHTMLTagRE.ReplaceAllString(content, " ")
+	cleaned = rerankImageShareRE.ReplaceAllString(cleaned, " ")
+	cleaned = strings.ReplaceAll(cleaned, "\u003cb\u003e", " ")
+	cleaned = strings.ReplaceAll(cleaned, "\u003c/b\u003e", " ")
+	cleaned = strings.ReplaceAll(cleaned, "\r\n", "\n")
+	cleaned = strings.ReplaceAll(cleaned, "\r", "\n")
+	cleaned = strings.ReplaceAll(cleaned, "...", " ")
+
+	rawBlocks := strings.Split(cleaned, "\n\n")
+	out := make([]string, 0, len(rawBlocks))
+	for _, block := range rawBlocks {
+		block = strings.TrimSpace(block)
+		if block == "" {
+			continue
+		}
+		out = append(out, strings.Join(strings.Fields(block), " "))
+	}
+	return out
+}
+
+func buildRerankQueryProfile(query string) rerankQueryProfile {
+	lower := strings.ToLower(strings.TrimSpace(query))
+	tokens := uniqueStrings(rerankTokenize(query, true))
+	tokenSet := make(map[string]struct{}, len(tokens))
+	for _, token := range tokens {
+		tokenSet[token] = struct{}{}
+	}
+	return rerankQueryProfile{
+		Raw:              strings.TrimSpace(query),
+		Lower:            lower,
+		Tokens:           tokens,
+		TokenSet:         tokenSet,
+		Entities:         rerankQueryEntities(query),
+		WantsBoth:        strings.Contains(lower, "both"),
+		WantsTemporal:    strings.Contains(lower, "when") || strings.Contains(lower, "date") || strings.Contains(lower, "time"),
+		WantsWhy:         strings.HasPrefix(lower, "why "),
+		WantsHow:         strings.HasPrefix(lower, "how "),
+		WantsCompetition: tokenInSet("competition", tokenSet) || tokenInSet("participate", tokenSet),
+	}
+}
+
+func evaluateRerankWindow(profile rerankQueryProfile, window string) rerankWindowCandidate {
+	window = strings.TrimSpace(window)
+	if window == "" {
+		return rerankWindowCandidate{Score: math.Inf(-1)}
+	}
+	windowLower := strings.ToLower(window)
+	windowTokens := rerankTokenize(window, false)
+	windowSet := make(map[string]struct{}, len(windowTokens))
+	for _, token := range windowTokens {
+		windowSet[token] = struct{}{}
+	}
+
+	score := 0.0
+	overlap := 0.0
+	for _, token := range profile.Tokens {
+		if _, ok := windowSet[token]; ok {
+			overlap += 1.0
+		}
+	}
+	score += overlap * 1.2
+
+	entityHits := 0
+	for _, entity := range profile.Entities {
+		if strings.Contains(windowLower, strings.ToLower(entity)) {
+			entityHits++
+		}
+	}
+	score += float64(entityHits) * 0.9
+	if len(profile.Entities) > 0 && entityHits == 0 {
+		score -= 0.9
+	}
+	if profile.WantsBoth && len(profile.Entities) >= 2 {
+		if entityHits == len(profile.Entities) {
+			score += 1.5
+		} else {
+			score -= 0.75
+		}
+	}
+
+	if profile.WantsTemporal {
+		if rerankTemporalCueRE.MatchString(window) {
+			score += 1.25
+		} else {
+			score -= 0.8
+		}
+		if strings.Contains(windowLower, "ago") {
+			score += 0.75
+		}
+	}
+	if profile.WantsWhy {
+		if strings.Contains(windowLower, "because") || strings.Contains(windowLower, "since") {
+			score += 0.5
+		}
+	}
+	if profile.WantsHow {
+		if strings.Contains(windowLower, "by ") || strings.Contains(windowLower, "through ") || strings.Contains(windowLower, "focus") {
+			score += 0.4
+		}
+	}
+	if profile.WantsCompetition {
+		cues := 0
+		for cue := range rerankCompetitionCueTokens {
+			if _, ok := windowSet[cue]; ok {
+				cues++
+			}
+		}
+		if cues == 0 {
+			score -= 0.8
+		} else {
+			score += float64(cues) * 0.65
+		}
+	}
+	score -= float64(strings.Count(window, "?")) * 0.8
+
+	score -= float64(len(strings.Fields(window))) * 0.004
+	return rerankWindowCandidate{
+		Score:           score,
+		EntityHits:      entityHits,
+		HasTemporalCue:  rerankTemporalCueRE.MatchString(window),
+		CompetitionCues: countCompetitionCues(windowSet),
+	}
+}
+
+func rerankTokenize(input string, dropStopwords bool) []string {
+	parts := searchDedupeTokenSplitRE.Split(strings.ToLower(strings.TrimSpace(input)), -1)
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = rerankNormalizeToken(part)
+		if len(part) < 2 {
+			continue
+		}
+		if dropStopwords {
+			if _, ok := rerankStopwords[part]; ok {
+				continue
+			}
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func rerankNormalizeToken(token string) string {
+	token = strings.ToLower(strings.TrimSpace(token))
+	switch {
+	case strings.HasPrefix(token, "compet"):
+		return "competition"
+	case token == "contest":
+		return "competition"
+	case strings.HasPrefix(token, "particip"):
+		return "participate"
+	case strings.HasPrefix(token, "confiden"):
+		return "confidence"
+	case strings.HasPrefix(token, "motiv"):
+		return "motivation"
+	case strings.HasSuffix(token, "ies") && len(token) > 4:
+		token = token[:len(token)-3] + "y"
+	case strings.HasSuffix(token, "s") && len(token) > 3:
+		token = token[:len(token)-1]
+	}
+	return token
+}
+
+func rerankQueryEntities(query string) []string {
+	parts := strings.FieldsFunc(strings.TrimSpace(query), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '\'' && r != '-'
+	})
+	entities := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		lower := strings.ToLower(part)
+		if _, ok := rerankQuestionWords[lower]; ok {
+			continue
+		}
+		runes := []rune(part)
+		if len(runes) == 0 || !unicode.IsUpper(runes[0]) {
+			continue
+		}
+		entities = append(entities, part)
+	}
+	return uniqueStrings(entities)
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func tokenInSet(token string, set map[string]struct{}) bool {
+	_, ok := set[token]
+	return ok
+}
+
+func rerankWindowIsValid(profile rerankQueryProfile, candidate rerankWindowCandidate) bool {
+	if strings.TrimSpace(candidate.Text) == "" {
+		return false
+	}
+	if len(profile.Entities) > 0 && candidate.EntityHits == 0 {
+		return false
+	}
+	if profile.WantsBoth && len(profile.Entities) >= 2 && candidate.EntityHits < len(profile.Entities) {
+		return false
+	}
+	if profile.WantsTemporal && !candidate.HasTemporalCue {
+		return false
+	}
+	if profile.WantsCompetition && candidate.CompetitionCues == 0 {
+		return false
+	}
+	return true
+}
+
+func countCompetitionCues(windowSet map[string]struct{}) int {
+	count := 0
+	for cue := range rerankCompetitionCueTokens {
+		if _, ok := windowSet[cue]; ok {
+			count++
+		}
+	}
+	return count
+}
+
+func truncateWords(input string, limit int) string {
+	if limit <= 0 {
+		return strings.TrimSpace(input)
+	}
+	words := strings.Fields(strings.TrimSpace(input))
+	if len(words) <= limit {
+		return strings.Join(words, " ")
+	}
+	return strings.Join(words[:limit], " ")
 }

@@ -1303,6 +1303,41 @@ func TestSearchHybrid_RerankOffMatchesBaseline(t *testing.T) {
 	}
 }
 
+func TestExtractRerankEvidenceWindow_PrefersTemporalAnswerSpan(t *testing.T) {
+	result := Result{
+		Content: `Gina (D5:13): This quote kept me positive through tough times. We all need a push sometimes, right? Even made a tattoo to remind myself about it.
+
+Jon (D5:14): Love the tattoo, did you just get it?
+
+Gina (D5:15): Thanks! Got the tattoo a few years ago, it stands for freedom - dancing without worrying what people think. A reminder to follow my passions and express myself.`,
+		SourceSection:  "Session 5 - 9:32 am on 8 February, 2023",
+		TemporalAnchor: "2023-02-08",
+	}
+
+	window := extractRerankEvidenceWindow("When did Gina get her tattoo?", result)
+	if !strings.Contains(strings.ToLower(window), "few years ago") {
+		t.Fatalf("expected temporal answer span, got %q", window)
+	}
+}
+
+func TestExtractRerankEvidenceWindow_PrefersConfidenceAnswerSpan(t *testing.T) {
+	result := Result{
+		Content: `Jon (D10:7): I've been feeling kinda low on confidence lately. It's hard to run a business when you don't have faith in yourself. Any tips on how you stay confident in your business?
+
+Gina (D10:8): I get it, Jon. Confidence is important in business. I stay motivated by reminding myself of my successes and progress. It also helps to have a good support system. Just focus on why you started this – because you love it!`,
+		SourceSection: "Session 10 - 11:24 am on 25 April, 2023",
+	}
+
+	window := extractRerankEvidenceWindow("How does Gina stay confident in her business?", result)
+	lower := strings.ToLower(window)
+	if !strings.Contains(lower, "successes and progress") {
+		t.Fatalf("expected confidence answer span, got %q", window)
+	}
+	if !strings.Contains(lower, "support system") {
+		t.Fatalf("expected support-system cue, got %q", window)
+	}
+}
+
 func TestSearchHybrid_FallbackNilEmbedder(t *testing.T) {
 	s := newTestStore(t)
 	seedTestData(t, s)

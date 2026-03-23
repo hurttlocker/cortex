@@ -73,28 +73,53 @@ cortex ask "<question>" \
 
 ## Results
 
-### Same-Run Off vs On
+### Phase 1: Full-Memory Rerank Input
+
+Initial shipped input format:
+
+- query + section/date metadata + full memory content
+
+Measured result:
 
 | Mode | Questions | F1 | Exact match | Avg latency | Median latency | Degraded | Avg packed tokens |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `ask --rerank off` | 81 | `10.53%` | `0.00%` | `5452.20 ms` | `5520.53 ms` | `12` | `450.22` |
 | `ask --rerank on` | 81 | `1.14%` | `0.00%` | `10650.59 ms` | `9798.32 ms` | `1` | `434.74` |
 
-Delta:
+This was a hard regression.
 
-- F1: `-9.39`
-- average latency: `+5198.39 ms`
-- degraded count: `-11`
+### Phase 2: Evidence-Window Rerank Input
+
+Revised input format:
+
+- query + section/date metadata + extracted evidence window
+- evidence window selection:
+  - deterministic 1-3 block span
+  - simple lexical/entity/temporal scoring
+  - max `128` tokens
+
+Measured result:
+
+| Mode | Questions | F1 | Exact match | Avg latency | Median latency | Degraded | Avg packed tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `ask --rerank off` | 81 | `12.48%` | `0.00%` | `5202.57 ms` | `5257.60 ms` | `9` | `450.22` |
+| `ask --rerank on` | 81 | `11.93%` | `0.00%` | `11751.15 ms` | `11180.24 ms` | `6` | `441.74` |
+
+Phase 2 delta:
+
+- F1: `-0.55`
+- average latency: `+6548.58 ms`
+- degraded count: `-3`
 
 ### Category Breakdown
 
-`ask --rerank off`
+Phase 2 `ask --rerank off`
 
 - category `1`: `14.98%` F1
 - category `2`: `12.19%` F1
 - category `4`: `8.43%` F1
 
-`ask --rerank on`
+Phase 2 `ask --rerank on`
 
 - category `1`: `0.00%` F1
 - category `2`: `0.00%` F1
@@ -106,44 +131,47 @@ Previously recorded `cortex ask` baseline on March 22, 2026:
 
 - `15.77%` F1
 
-This rerun without reranking measured `10.53%` F1, so the historical `15.77%` number and this branch-local rerun should not be compared directly as if they were a controlled A/B. The trustworthy comparison for this work is the same-run delta:
+This rerun without reranking measured `10.53%` in Phase 1 and `12.48%` in Phase 2, so the historical `15.77%` number and this branch-local rerun should not be compared directly as if they were a controlled A/B. The trustworthy comparison for this work is the same-run delta within each phase.
 
 - `10.53%` without rerank
 - `1.14%` with rerank
 
 ## Interpretation
 
-The first shipped reranker does not help the real `cortex ask` path yet.
+The first shipped reranker input was wrong for Cortex’s retrieval unit.
 
-What went wrong:
+What changed after diagnosis:
 
-- the `base` int8 reranker is too weak for these long conversational evidence chunks
-- the reranker reorders the packed evidence aggressively enough that the reader often falls back to weaker context and outputs low-information answers
-- citation integrity improved numerically because the model often answered with fewer or no factual claims, but that was not a quality win
+- switched from full memory blobs to extracted evidence windows before cross-encoder scoring
+- preserved full memory content in the returned results and only changed reranker input text
 
-What I tested during debugging:
+What that fixed:
 
-- switched rerank input construction away from raw HTML-marked snippets and toward richer section/content text
-- spot-checked the stronger `m3` reranker
+- the reranker stopped catastrophically inverting the product path
+- diagnostic questions recovered:
+  - `conv-30:62` stayed correct
+  - `conv-30:11` kept the answer-bearing memory in the reranked set and `ask` answered correctly
+  - `conv-30:27` improved enough for `ask` to answer correctly, though the ideal dual-entity memory still was not rank 1
 
-What I found:
+What remains true:
 
-- the richer text construction did not recover the `base` model enough
+- the default `base` int8 reranker is still slightly worse than no reranker on the full 81-question slice
+- latency is still materially higher
 - `m3` looks directionally better on a spot check, but it is too slow for the current per-query CLI process model
 
 ## Conclusion
 
-The infrastructure is working:
+The infrastructure is working and the input fix materially improved it:
 
 - optional local model setup
 - graceful `auto|on|off` flagging
 - rerank insertion in the hybrid/RRF hot path
 - real ONNX inference in Go
 
-But the current default model/configuration is not merge-ready as a retrieval improvement. On the measured `conv-30` slice it regressed badly:
+But the current default model/configuration is still not merge-ready as a retrieval improvement. After the evidence-window fix it is close to neutral, not positive:
 
-- `10.53%` F1 without rerank
-- `1.14%` F1 with rerank
+- `12.48%` F1 without rerank
+- `11.93%` F1 with rerank
 
 The likely next step is not another small tuning pass on `bge-reranker-base:int8`. The better path is:
 
