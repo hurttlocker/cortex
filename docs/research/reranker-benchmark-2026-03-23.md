@@ -115,15 +115,15 @@ Phase 2 delta:
 
 Phase 2 `ask --rerank off`
 
-- category `1`: `14.98%` F1
-- category `2`: `12.19%` F1
-- category `4`: `8.43%` F1
+- category `1`: `19.22%` F1
+- category `2`: `15.83%` F1
+- category `4`: `8.82%` F1
 
 Phase 2 `ask --rerank on`
 
-- category `1`: `0.00%` F1
-- category `2`: `0.00%` F1
-- category `4`: `2.10%` F1
+- category `1`: `13.20%` F1
+- category `2`: `10.63%` F1
+- category `4`: `12.37%` F1
 
 ### Historical Comparison
 
@@ -133,8 +133,12 @@ Previously recorded `cortex ask` baseline on March 22, 2026:
 
 This rerun without reranking measured `10.53%` in Phase 1 and `12.48%` in Phase 2, so the historical `15.77%` number and this branch-local rerun should not be compared directly as if they were a controlled A/B. The trustworthy comparison for this work is the same-run delta within each phase.
 
-- `10.53%` without rerank
-- `1.14%` with rerank
+- Phase 1:
+  - `10.53%` without rerank
+  - `1.14%` with rerank
+- Phase 2:
+  - `12.48%` without rerank
+  - `11.93%` with rerank
 
 ## Interpretation
 
@@ -178,3 +182,64 @@ The likely next step is not another small tuning pass on `bge-reranker-base:int8
 1. move reranking into a long-lived process or daemon so `m3` is feasible
 2. benchmark `m3` or another stronger reranker on the same 81-question slice
 3. only merge once the reranked path is at least neutral against the same-run no-rerank baseline
+
+## Parking Note
+
+This branch is parked.
+
+What is working:
+
+- the pipeline itself is correct
+- ONNX output interpretation is correct
+- evidence windowing fixed the catastrophic scoring failure from Phase 1
+- the 3-question diagnostic is clean enough to trust the architecture:
+  - `conv-30:62` stayed correct
+  - `conv-30:11` kept the answer-bearing memory in the reranked set and `ask` answered correctly
+  - `conv-30:27` remained answerable after reranking, even though the ideal dual-entity memory was not rank 1
+
+Why it is parked:
+
+- the shipped `base` int8 model is near-neutral on F1 and still slightly worse than no reranker
+- it adds about `6.5s` average latency on the measured `ask` path
+- that is not worth shipping as a regression
+
+Two paths to revisit:
+
+### A. Better Model via Reranker Daemon
+
+`m3` looked better on the spot check, but the current CLI process model pays model/session startup per query. The right architecture here is a long-lived reranker daemon:
+
+1. start a local daemon process that loads the ONNX model and tokenizer once
+2. expose a tiny local transport, either:
+   - Unix domain socket on macOS/Linux
+   - localhost HTTP on a fixed loopback port
+3. request shape:
+   - `POST /rerank`
+   - body: `{query, candidates:[{id,text}], top_k}`
+4. response shape:
+   - `{results:[{id, score}]}`
+5. CLI flow:
+   - `cortex` checks daemon availability first
+   - if available, send rerank requests to the daemon
+   - if unavailable, fall back to in-process reranking or skip gracefully
+6. operational behavior:
+   - idle timeout or explicit `cortex rerank-daemon stop`
+   - versioned model cache under `~/.cortex/models/rerank/`
+   - single shared ONNX session per loaded model
+
+That would amortize `m3` cold start across all queries and make the real latency question about warm inference, not startup.
+
+### B. Quantized M3
+
+The second path is a faster `m3` variant:
+
+- another ONNX `m3` quantization
+- smaller-weight or graph-optimized export
+- potentially a variant tuned for CPU latency instead of raw parity
+
+The target is to keep the better ranking behavior from `m3` while cutting cold start enough that the current CLI path is still usable, or at least making the daemon path lighter.
+
+What is needed to unpark:
+
+- either a model that beats the no-rerank baseline on F1 with less than `2s` added latency
+- or a daemon architecture that amortizes `m3` cold start enough to make warm-query latency acceptable
