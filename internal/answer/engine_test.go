@@ -21,14 +21,18 @@ func (m mockSearcher) Search(ctx context.Context, query string, opts search.Opti
 }
 
 type mockProvider struct {
-	resp string
-	err  error
-	seen *string
+	resp       string
+	err        error
+	seenPrompt *string
+	seenSystem *string
 }
 
 func (m mockProvider) Complete(ctx context.Context, prompt string, opts llm.CompletionOpts) (string, error) {
-	if m.seen != nil {
-		*m.seen = prompt
+	if m.seenPrompt != nil {
+		*m.seenPrompt = prompt
+	}
+	if m.seenSystem != nil {
+		*m.seenSystem = opts.System
 	}
 	if m.err != nil {
 		return "", m.err
@@ -88,6 +92,24 @@ func TestAnswer_SuccessWithValidCitations(t *testing.T) {
 	}
 }
 
+func TestAnswer_AcceptsDanglingTrailingCitation(t *testing.T) {
+	e := NewEngine(
+		mockSearcher{results: []search.Result{{MemoryID: 1, SourceFile: "doc1.md", Score: 0.93, Content: "Ethereum moved to proof of stake."}}},
+		mockProvider{resp: "Ethereum uses proof of stake [1"},
+		"openrouter/x-ai/grok-4.1-fast",
+	)
+	res, err := e.Answer(context.Background(), Options{Query: "eth staking", Search: search.Options{Limit: 5}})
+	if err != nil {
+		t.Fatalf("Answer err: %v", err)
+	}
+	if res.Degraded {
+		t.Fatalf("expected non-degraded result, got reason=%q", res.Reason)
+	}
+	if len(res.Citations) != 1 || res.Citations[0].Index != 1 {
+		t.Fatalf("expected citation [1], got %+v", res.Citations)
+	}
+}
+
 func TestAnswer_HandlesProviderError(t *testing.T) {
 	e := NewEngine(
 		mockSearcher{results: []search.Result{{MemoryID: 1, SourceFile: "a.md", Score: 0.7, Content: "abc"}}},
@@ -123,7 +145,7 @@ func TestAnswer_IncludesAnchorDateInPrompt(t *testing.T) {
 			Content:    "Jon mentioned the studio expansion.",
 			Metadata:   &store.Metadata{TimestampStart: "2023-03-23T19:28:00Z"},
 		}}},
-		mockProvider{resp: "Studio expansion happened [1].", seen: &prompt},
+		mockProvider{resp: "Studio expansion happened [1].", seenPrompt: &prompt},
 		"openrouter/x-ai/grok-4.1-fast",
 	)
 	_, err := e.Answer(context.Background(), Options{Query: "studio expansion", Search: search.Options{Limit: 5}})
@@ -135,5 +157,35 @@ func TestAnswer_IncludesAnchorDateInPrompt(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "anchor_date: 2023-03-23") {
 		t.Fatalf("expected anchor_date in prompt, got %q", prompt)
+	}
+}
+
+func TestAnswer_UsesShortestExactPromptGuidance(t *testing.T) {
+	var system string
+	e := NewEngine(
+		mockSearcher{results: []search.Result{{
+			MemoryID:   1,
+			SourceFile: "conv-30.md",
+			Score:      0.9,
+			Content:    "Jon's official opening night is June 20, 2023.",
+		}}},
+		mockProvider{resp: "June 20, 2023 [1].", seenSystem: &system},
+		"openrouter/x-ai/grok-4.1-fast",
+	)
+	_, err := e.Answer(context.Background(), Options{Query: "When is Jon's opening night?", Search: search.Options{Limit: 5}})
+	if err != nil {
+		t.Fatalf("Answer err: %v", err)
+	}
+	if system == "" {
+		t.Fatal("expected system prompt to be captured")
+	}
+	for _, needle := range []string{
+		"Answer in the shortest form possible.",
+		"For dates and times, give the exact date",
+		"Do not elaborate, summarize, or add narrative filler.",
+	} {
+		if !strings.Contains(system, needle) {
+			t.Fatalf("expected system prompt to contain %q, got %q", needle, system)
+		}
 	}
 }

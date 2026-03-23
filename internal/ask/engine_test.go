@@ -105,6 +105,72 @@ func TestAsk_CitationIntegrityFailure(t *testing.T) {
 	}
 }
 
+func TestAsk_AcceptsDanglingTrailingCitation(t *testing.T) {
+	e := NewEngine(mockProvider{
+		resp: "Jon's ideal studio should have Marley flooring [1",
+	}, "google/gemini-2.5-flash-lite")
+	res, err := e.Ask(context.Background(), Options{
+		Question: "what?",
+		Results:  []search.Result{{MemoryID: 1, SourceFile: "doc.md", Score: 0.8, Content: "Marley flooring is ideal"}},
+	})
+	if err != nil {
+		t.Fatalf("Ask err: %v", err)
+	}
+	if res.Degraded {
+		t.Fatalf("expected non-degraded result, got reason=%q raw=%q", res.Reason, res.RawAnswer)
+	}
+	if len(res.Citations) != 1 || res.Citations[0].Index != 1 {
+		t.Fatalf("expected citation [1], got %+v", res.Citations)
+	}
+}
+
+func TestAsk_AcceptsCommaSeparatedCitationGroup(t *testing.T) {
+	e := NewEngine(mockProvider{
+		resp: "Jon and Gina both started businesses they care about [1, 2].",
+	}, "google/gemini-2.5-flash-lite")
+	res, err := e.Ask(context.Background(), Options{
+		Question: "what?",
+		Results: []search.Result{
+			{MemoryID: 1, SourceFile: "doc.md", Score: 0.8, Content: "Jon started a dance studio"},
+			{MemoryID: 2, SourceFile: "doc.md", Score: 0.7, Content: "Gina started a clothing store"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask err: %v", err)
+	}
+	if res.Degraded {
+		t.Fatalf("expected non-degraded result, got reason=%q raw=%q", res.Reason, res.RawAnswer)
+	}
+	if len(res.Citations) != 2 {
+		t.Fatalf("expected 2 citations, got %+v", res.Citations)
+	}
+}
+
+func TestAsk_RepairsMissingCitationsFromOverlap(t *testing.T) {
+	e := NewEngine(mockProvider{
+		resp: "Jon thinks the ideal dance studio should have Marley flooring.",
+	}, "google/gemini-2.5-flash-lite")
+	res, err := e.Ask(context.Background(), Options{
+		Question: "what?",
+		Results: []search.Result{
+			{MemoryID: 1, SourceFile: "doc.md", Score: 0.95, Content: "Jon says the ideal dance studio should have Marley flooring because it is grippy and easy to clean."},
+			{MemoryID: 2, SourceFile: "doc.md", Score: 0.70, Content: "Gina likes supportive studios."},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask err: %v", err)
+	}
+	if res.Degraded {
+		t.Fatalf("expected repaired non-degraded result, got reason=%q raw=%q", res.Reason, res.RawAnswer)
+	}
+	if len(res.Citations) == 0 || res.Citations[0].Index != 1 {
+		t.Fatalf("expected repaired citation [1], got %+v", res.Citations)
+	}
+	if res.Answer == "" || res.Answer == "not enough evidence" {
+		t.Fatalf("unexpected repaired answer: %q", res.Answer)
+	}
+}
+
 func TestAsk_HandlesProviderError(t *testing.T) {
 	e := NewEngine(mockProvider{err: errors.New("boom")}, "google/gemini-2.5-flash-lite")
 	res, err := e.Ask(context.Background(), Options{

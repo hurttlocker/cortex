@@ -147,6 +147,46 @@ func TestGoogleProviderComplete(t *testing.T) {
 	}
 }
 
+func TestGoogleProviderComplete_ConcatenatesAllParts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := googleResponse{
+			Candidates: []struct {
+				Content struct {
+					Parts []googlePart `json:"parts"`
+				} `json:"content"`
+			}{
+				{
+					Content: struct {
+						Parts []googlePart `json:"parts"`
+					}{
+						Parts: []googlePart{
+							{Text: "Jon's dance studio opening is on June 20, 2023"},
+							{Text: " [1]."},
+						},
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p := &googleProvider{
+		apiKey:  "test-key",
+		model:   "gemini-2.5-flash",
+		baseURL: server.URL,
+	}
+
+	result, err := p.Complete(context.Background(), "test prompt", CompletionOpts{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Jon's dance studio opening is on June 20, 2023 [1]." {
+		t.Fatalf("unexpected result: %q", result)
+	}
+}
+
 func TestGoogleProviderComplete_NormalizesPrefixedModelOverride(t *testing.T) {
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
