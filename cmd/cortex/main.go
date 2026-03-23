@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -34,6 +35,7 @@ import (
 	cortexmcp "github.com/hurttlocker/cortex/internal/mcp"
 	"github.com/hurttlocker/cortex/internal/observe"
 	"github.com/hurttlocker/cortex/internal/reason"
+	"github.com/hurttlocker/cortex/internal/rerank"
 	"github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
 	"github.com/mark3labs/mcp-go/server"
@@ -81,6 +83,8 @@ func main() {
 		exitWithError(runAnswer(args[1:]))
 	case "ask":
 		exitWithError(runAsk(args[1:]))
+	case "rerank-setup":
+		exitWithError(runRerankSetup(args[1:]))
 	case "lifecycle":
 		exitWithError(runLifecycle(args[1:]))
 	case "beliefs":
@@ -133,6 +137,8 @@ func main() {
 		exitWithError(runProjects(args[1:]))
 	case "agents":
 		exitWithError(runAgents(args[1:]))
+	case "entity":
+		exitWithError(runEntity(args[1:]))
 	case "tag":
 		exitWithError(runTag(args[1:]))
 	case "reason":
@@ -857,8 +863,10 @@ func runSearch(args []string) error {
 	includeSuperseded := false
 	dedupe := true
 	factMode := false
+	entityGraph := false
 	expandFlag := false
 	llmFlag := ""
+	rerankMode := rerank.ModeAuto
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -942,6 +950,8 @@ func runSearch(args []string) error {
 			includeSuperseded = true
 		case args[i] == "--facts":
 			factMode = true
+		case args[i] == "--entity-graph":
+			entityGraph = true
 		case args[i] == "--dedupe":
 			dedupe = true
 		case args[i] == "--no-dedupe":
@@ -1012,6 +1022,21 @@ func runSearch(args []string) error {
 			embedFlag = args[i]
 		case strings.HasPrefix(args[i], "--embed="):
 			embedFlag = strings.TrimPrefix(args[i], "--embed=")
+		case args[i] == "--rerank":
+			if i+1 < len(args) {
+				if parsed, err := rerank.ParseMode(args[i+1]); err == nil {
+					i++
+					rerankMode = parsed
+					continue
+				}
+			}
+			rerankMode = rerank.ModeOn
+		case strings.HasPrefix(args[i], "--rerank="):
+			parsed, err := rerank.ParseMode(strings.TrimPrefix(args[i], "--rerank="))
+			if err != nil {
+				return err
+			}
+			rerankMode = parsed
 		case strings.HasPrefix(args[i], "-"):
 			return fmt.Errorf("unknown flag: %s", args[i])
 		default:
@@ -1021,7 +1046,7 @@ func runSearch(args []string) error {
 
 	query := strings.Join(queryParts, " ")
 	if query == "" {
-		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--budget N] [--facts] [--embed <provider/model>] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--dedupe|--no-dedupe] [--explain] [--json] [--agent <id>] [--channel <name>] [--session-key <key>] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--boost-agent <id>] [--boost-channel <name>] [--boost-session-key <key>] [--source <provider>] [--intent memory|import|connector|all] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
+		return fmt.Errorf("usage: cortex search <query> [--mode keyword|semantic|hybrid|rrf] [--limit N] [--budget N] [--facts] [--entity-graph] [--embed <provider/model>] [--rerank[=auto|on|off]] [--expand] [--llm <provider/model>] [--class rule,decision] [--no-class-boost] [--include-superseded] [--dedupe|--no-dedupe] [--explain] [--json] [--agent <id>] [--channel <name>] [--session-key <key>] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--boost-agent <id>] [--boost-channel <name>] [--boost-session-key <key>] [--source <provider>] [--intent memory|import|connector|all] [--source-boost <prefix[:weight]>] [--after YYYY-MM-DD] [--before YYYY-MM-DD] [--show-metadata]")
 	}
 	if limit < 1 || limit > 1000 {
 		return fmt.Errorf("--limit must be between 1 and 1000")
@@ -1060,6 +1085,9 @@ func runSearch(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := configureSearchReranker(engine, rerankMode, true); err != nil {
+		return err
+	}
 
 	ctx := context.Background()
 
@@ -1095,6 +1123,7 @@ func runSearch(args []string) error {
 		Mode:              searchMode,
 		Limit:             searchLimit,
 		MinScore:          minScore,
+		EntityGraph:       entityGraph,
 		Project:           projectFlag,
 		Classes:           classes,
 		DisableClassBoost: disableClassBoost,
@@ -1113,6 +1142,7 @@ func runSearch(args []string) error {
 		BoostAgent:        boostAgentFlag,
 		BoostChannel:      boostChannelFlag,
 		BoostSessionKey:   boostSessionKeyFlag,
+		RerankMode:        rerankMode,
 	}
 
 	if factMode {
@@ -1373,6 +1403,137 @@ func resolveAskProvider(modelFlag string) (llm.Provider, string, string, error) 
 	return nil, "", "no_llm_configured", nil
 }
 
+func configureSearchReranker(engine *search.Engine, mode rerank.Mode, allowPrompt bool) error {
+	if engine == nil || mode == rerank.ModeOff {
+		return nil
+	}
+
+	spec, err := rerank.ResolveModelSpec(os.Getenv("CORTEX_RERANK_MODEL"))
+	if err != nil {
+		return err
+	}
+	files, err := rerank.ResolveModelFiles(spec)
+	if err != nil {
+		return err
+	}
+
+	if !rerank.ModelReady(files) {
+		if mode == rerank.ModeOn && allowPrompt && isTTY() {
+			if !confirmDownload(fmt.Sprintf("Reranker model %s is not installed (%s). Download now?", spec.DisplayName, rerankSizeHint(spec))) {
+				return nil
+			}
+			files, err = rerank.EnsureModel(context.Background(), spec)
+			if err != nil {
+				return err
+			}
+		} else {
+			if mode == rerank.ModeOn && globalVerbose {
+				fmt.Fprintln(os.Stderr, "  Reranker requested but model is not installed; run `cortex rerank-setup`.")
+			}
+			return nil
+		}
+	}
+
+	scorer, err := rerank.NewONNXScorer(rerank.Config{
+		Spec:              spec,
+		Files:             files,
+		LibraryPath:       rerank.DetectORTLibraryPath(),
+		BatchSize:         8,
+		MaxSequenceLength: spec.MaxSequenceLen,
+	})
+	if err != nil {
+		if errors.Is(err, rerank.ErrORTUnavailable) || errors.Is(err, rerank.ErrModelNotReady) {
+			if mode == rerank.ModeOn && globalVerbose {
+				fmt.Fprintf(os.Stderr, "  Reranker unavailable: %v\n", err)
+			}
+			return nil
+		}
+		return err
+	}
+
+	engine.SetReranker(rerank.NewService(scorer, 30))
+	return nil
+}
+
+func confirmDownload(prompt string) bool {
+	fmt.Fprintf(os.Stderr, "%s [y/N]: ", prompt)
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return false
+	}
+	line = strings.ToLower(strings.TrimSpace(line))
+	return line == "y" || line == "yes"
+}
+
+func rerankSizeHint(spec rerank.ModelSpec) string {
+	switch spec.Key {
+	case "m3":
+		return "~570MB"
+	default:
+		return "~280MB"
+	}
+}
+
+func runRerankSetup(args []string) error {
+	modelFlag := ""
+	jsonOutput := false
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--model" && i+1 < len(args):
+			i++
+			modelFlag = args[i]
+		case strings.HasPrefix(args[i], "--model="):
+			modelFlag = strings.TrimPrefix(args[i], "--model=")
+		case args[i] == "--json":
+			jsonOutput = true
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s\nusage: cortex rerank-setup [--model base|m3] [--json]", args[i])
+		default:
+			return fmt.Errorf("usage: cortex rerank-setup [--model base|m3] [--json]")
+		}
+	}
+
+	spec, err := rerank.ResolveModelSpec(modelFlag)
+	if err != nil {
+		return err
+	}
+	files, err := rerank.EnsureModel(context.Background(), spec)
+	if err != nil {
+		return err
+	}
+
+	payload := struct {
+		Model       string `json:"model"`
+		ModelPath   string `json:"model_path"`
+		Tokenizer   string `json:"tokenizer_path"`
+		ORTLibrary  string `json:"onnxruntime_library,omitempty"`
+		LibraryOkay bool   `json:"onnxruntime_found"`
+	}{
+		Model:       spec.DisplayName,
+		ModelPath:   files.ModelPath,
+		Tokenizer:   files.TokenizerPath,
+		ORTLibrary:  rerank.DetectORTLibraryPath(),
+		LibraryOkay: rerank.DetectORTLibraryPath() != "",
+	}
+
+	if jsonOutput || !isTTY() {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(payload)
+	}
+
+	fmt.Printf("Reranker model ready: %s\n", payload.Model)
+	fmt.Printf("  model: %s\n", payload.ModelPath)
+	fmt.Printf("  tokenizer: %s\n", payload.Tokenizer)
+	if payload.LibraryOkay {
+		fmt.Printf("  onnxruntime: %s\n", payload.ORTLibrary)
+	} else {
+		fmt.Println("  onnxruntime: not found (set ONNXRUNTIME_SHARED_LIBRARY_PATH or install the shared library)")
+	}
+	return nil
+}
+
 func newSearchEngineForModeStrict(s store.Store, mode search.Mode, embedFlag string) (*search.Engine, error) {
 	needsEmbedder := mode == search.ModeHybrid || mode == search.ModeRRF || mode == search.ModeSemantic
 	embedExplicit := strings.TrimSpace(embedFlag) != ""
@@ -1419,6 +1580,8 @@ func runAsk(args []string) error {
 	sourceBoostFlags := []string{}
 	jsonOutput := false
 	maxSentences := 6
+	rerankMode := rerank.ModeAuto
+	entityGraph := false
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -1465,6 +1628,21 @@ func runAsk(args []string) error {
 			embedFlag = args[i]
 		case strings.HasPrefix(args[i], "--embed="):
 			embedFlag = strings.TrimPrefix(args[i], "--embed=")
+		case args[i] == "--rerank":
+			if i+1 < len(args) {
+				if parsed, err := rerank.ParseMode(args[i+1]); err == nil {
+					i++
+					rerankMode = parsed
+					continue
+				}
+			}
+			rerankMode = rerank.ModeOn
+		case strings.HasPrefix(args[i], "--rerank="):
+			parsed, err := rerank.ParseMode(strings.TrimPrefix(args[i], "--rerank="))
+			if err != nil {
+				return err
+			}
+			rerankMode = parsed
 		case args[i] == "--project" && i+1 < len(args):
 			i++
 			projectFlag = args[i]
@@ -1520,8 +1698,10 @@ func runAsk(args []string) error {
 			maxSentences = v
 		case args[i] == "--json":
 			jsonOutput = true
+		case args[i] == "--entity-graph":
+			entityGraph = true
 		case strings.HasPrefix(args[i], "-"):
-			return fmt.Errorf("unknown flag: %s\nusage: cortex ask <query> [--mode hybrid|bm25|semantic|rrf] [--limit 8] [--budget 1500] [--model provider/model] [--embed <provider/model>] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--json]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: cortex ask <query> [--mode hybrid|bm25|semantic|rrf] [--limit 8] [--budget 1500] [--model provider/model] [--embed <provider/model>] [--rerank[=auto|on|off]] [--entity-graph] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--json]", args[i])
 		default:
 			queryParts = append(queryParts, args[i])
 		}
@@ -1529,7 +1709,7 @@ func runAsk(args []string) error {
 
 	query := strings.TrimSpace(strings.Join(queryParts, " "))
 	if query == "" {
-		return fmt.Errorf("usage: cortex ask <query> [--mode hybrid|bm25|semantic|rrf] [--limit 8] [--budget 1500] [--model provider/model] [--embed <provider/model>] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--json]")
+		return fmt.Errorf("usage: cortex ask <query> [--mode hybrid|bm25|semantic|rrf] [--limit 8] [--budget 1500] [--model provider/model] [--embed <provider/model>] [--rerank[=auto|on|off]] [--entity-graph] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--json]")
 	}
 
 	modeParsed, err := search.ParseMode(mode)
@@ -1560,6 +1740,9 @@ func runAsk(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := configureSearchReranker(searchEngine, rerankMode, true); err != nil {
+		return err
+	}
 
 	provider, resolvedModel, degradeReason, err := resolveAskProvider(modelFlag)
 	if err != nil {
@@ -1578,6 +1761,7 @@ func runAsk(args []string) error {
 	results, err := searchEngine.Search(context.Background(), query, search.Options{
 		Mode:              modeParsed,
 		Limit:             searchLimit,
+		EntityGraph:       entityGraph,
 		Project:           projectFlag,
 		Agent:             agentFlag,
 		Channel:           channelFlag,
@@ -1588,6 +1772,7 @@ func runAsk(args []string) error {
 		Scope:             scopeFilters,
 		SourceBoosts:      parsedSourceBoosts,
 		IncludeSuperseded: false,
+		RerankMode:        rerankMode,
 	})
 	if err != nil {
 		return err
@@ -1682,6 +1867,7 @@ func runAnswer(args []string) error {
 	maxContextChars := 5500
 	perResultChars := 1000
 	verbose := false
+	rerankMode := rerank.ModeAuto
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -1713,6 +1899,21 @@ func runAnswer(args []string) error {
 			embedFlag = args[i]
 		case strings.HasPrefix(args[i], "--embed="):
 			embedFlag = strings.TrimPrefix(args[i], "--embed=")
+		case args[i] == "--rerank":
+			if i+1 < len(args) {
+				if parsed, err := rerank.ParseMode(args[i+1]); err == nil {
+					i++
+					rerankMode = parsed
+					continue
+				}
+			}
+			rerankMode = rerank.ModeOn
+		case strings.HasPrefix(args[i], "--rerank="):
+			parsed, err := rerank.ParseMode(strings.TrimPrefix(args[i], "--rerank="))
+			if err != nil {
+				return err
+			}
+			rerankMode = parsed
 		case args[i] == "--project" && i+1 < len(args):
 			i++
 			projectFlag = args[i]
@@ -1777,7 +1978,7 @@ func runAnswer(args []string) error {
 		case args[i] == "--verbose" || args[i] == "-v":
 			verbose = true
 		case strings.HasPrefix(args[i], "-"):
-			return fmt.Errorf("unknown flag: %s\nusage: cortex answer <query> [--mode hybrid] [--limit 5] [--model provider/model] [--embed <provider/model>] [--max-sentences 6] [--json]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: cortex answer <query> [--mode hybrid] [--limit 5] [--model provider/model] [--embed <provider/model>] [--rerank[=auto|on|off]] [--max-sentences 6] [--json]", args[i])
 		default:
 			queryParts = append(queryParts, args[i])
 		}
@@ -1785,7 +1986,7 @@ func runAnswer(args []string) error {
 
 	query := strings.TrimSpace(strings.Join(queryParts, " "))
 	if query == "" {
-		return fmt.Errorf("usage: cortex answer <query> [--mode hybrid] [--limit 5] [--model provider/model] [--embed <provider/model>] [--max-sentences 6] [--json]")
+		return fmt.Errorf("usage: cortex answer <query> [--mode hybrid] [--limit 5] [--model provider/model] [--embed <provider/model>] [--rerank[=auto|on|off]] [--max-sentences 6] [--json]")
 	}
 
 	modeParsed, err := search.ParseMode(mode)
@@ -1812,6 +2013,9 @@ func runAnswer(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := configureSearchReranker(searchEngine, rerankMode, true); err != nil {
+		return err
+	}
 	provider, resolvedModel, degradeReason, err := answer.ResolveProvider(modelFlag)
 	if err != nil {
 		return err
@@ -1831,6 +2035,7 @@ func runAnswer(args []string) error {
 			BoostAgent:   agentFlag,
 			Source:       sourceFlag,
 			SourceBoosts: parsedSourceBoosts,
+			RerankMode:   rerankMode,
 		},
 		MaxSentences:    maxSentences,
 		MaxContextChars: maxContextChars,
@@ -10805,6 +11010,207 @@ func runAgents(args []string) error {
 	return nil
 }
 
+func runEntity(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex entity <list|profile|merge|backfill> ...")
+	}
+
+	switch args[0] {
+	case "list":
+		jsonOutput := false
+		limit := 100
+		offset := 0
+		for i := 1; i < len(args); i++ {
+			switch {
+			case args[i] == "--json":
+				jsonOutput = true
+			case args[i] == "--limit" && i+1 < len(args):
+				i++
+				v, err := strconv.Atoi(args[i])
+				if err != nil || v < 1 {
+					return fmt.Errorf("invalid --limit value: %s", args[i])
+				}
+				limit = v
+			case strings.HasPrefix(args[i], "--limit="):
+				v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--limit="))
+				if err != nil || v < 1 {
+					return fmt.Errorf("invalid --limit value: %s", args[i])
+				}
+				limit = v
+			case args[i] == "--offset" && i+1 < len(args):
+				i++
+				v, err := strconv.Atoi(args[i])
+				if err != nil || v < 0 {
+					return fmt.Errorf("invalid --offset value: %s", args[i])
+				}
+				offset = v
+			case strings.HasPrefix(args[i], "--offset="):
+				v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--offset="))
+				if err != nil || v < 0 {
+					return fmt.Errorf("invalid --offset value: %s", args[i])
+				}
+				offset = v
+			default:
+				return fmt.Errorf("unknown argument: %s\nusage: cortex entity list [--limit N] [--offset N] [--json]", args[i])
+			}
+		}
+
+		s, err := store.NewStore(getStoreConfig())
+		if err != nil {
+			return fmt.Errorf("opening store: %w", err)
+		}
+		defer s.Close()
+
+		entities, err := s.ListEntities(context.Background(), limit, offset)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(entities)
+		}
+		if len(entities) == 0 {
+			fmt.Println("No canonical entities found yet.")
+			return nil
+		}
+		fmt.Printf("%-6s  %-28s  %-10s  %8s  %8s\n", "ID", "NAME", "TYPE", "ALIASES", "FACTS")
+		fmt.Println(strings.Repeat("─", 70))
+		for _, entity := range entities {
+			fmt.Printf("%-6d  %-28s  %-10s  %8d  %8d\n", entity.ID, truncateString(entity.CanonicalName, 28), entity.Type, entity.AliasCount, entity.FactCount)
+		}
+		return nil
+
+	case "profile":
+		jsonOutput := false
+		nameParts := make([]string, 0, len(args)-1)
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--json":
+				jsonOutput = true
+			default:
+				nameParts = append(nameParts, args[i])
+			}
+		}
+		name := strings.TrimSpace(strings.Join(nameParts, " "))
+		if name == "" {
+			return fmt.Errorf("usage: cortex entity profile <name> [--json]")
+		}
+
+		s, err := store.NewStore(getStoreConfig())
+		if err != nil {
+			return fmt.Errorf("opening store: %w", err)
+		}
+		defer s.Close()
+
+		entity, err := s.GetEntityByName(context.Background(), name)
+		if err != nil {
+			return err
+		}
+		if entity == nil {
+			return fmt.Errorf("entity %q not found", name)
+		}
+		profile, err := s.RebuildEntityProfile(context.Background(), entity.ID)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(struct {
+				Entity  *store.Entity `json:"entity"`
+				Profile string        `json:"profile"`
+			}{
+				Entity:  entity,
+				Profile: profile,
+			})
+		}
+		fmt.Print(profile)
+		return nil
+
+	case "merge":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: cortex entity merge <keep_id> <merge_id>")
+		}
+		keepID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid keep entity id: %s", args[1])
+		}
+		mergeID, err := strconv.ParseInt(args[2], 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid merge entity id: %s", args[2])
+		}
+
+		s, err := store.NewStore(getStoreConfig())
+		if err != nil {
+			return fmt.Errorf("opening store: %w", err)
+		}
+		defer s.Close()
+
+		if err := s.MergeEntities(context.Background(), keepID, mergeID); err != nil {
+			return err
+		}
+		fmt.Printf("Merged entity %d into %d\n", mergeID, keepID)
+		return nil
+
+	case "backfill":
+		jsonOutput := false
+		limit := 0
+		for i := 1; i < len(args); i++ {
+			switch {
+			case args[i] == "--json":
+				jsonOutput = true
+			case args[i] == "--limit" && i+1 < len(args):
+				i++
+				v, err := strconv.Atoi(args[i])
+				if err != nil || v < 1 {
+					return fmt.Errorf("invalid --limit value: %s", args[i])
+				}
+				limit = v
+			case strings.HasPrefix(args[i], "--limit="):
+				v, err := strconv.Atoi(strings.TrimPrefix(args[i], "--limit="))
+				if err != nil || v < 1 {
+					return fmt.Errorf("invalid --limit value: %s", args[i])
+				}
+				limit = v
+			default:
+				return fmt.Errorf("unknown argument: %s\nusage: cortex entity backfill [--limit N] [--json]", args[i])
+			}
+		}
+
+		s, err := store.NewStore(getStoreConfig())
+		if err != nil {
+			return fmt.Errorf("opening store: %w", err)
+		}
+		defer s.Close()
+
+		resolved, unresolved, err := s.BackfillFactEntities(context.Background(), limit)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(struct {
+				Resolved   int `json:"resolved"`
+				Unresolved int `json:"unresolved"`
+			}{
+				Resolved:   resolved,
+				Unresolved: unresolved,
+			})
+		}
+		fmt.Printf("Backfilled entities for %d facts", resolved)
+		if unresolved > 0 {
+			fmt.Printf(" (%d unresolved)", unresolved)
+		}
+		fmt.Println()
+		return nil
+
+	default:
+		return fmt.Errorf("unknown entity subcommand: %s\nusage: cortex entity <list|profile|merge|backfill> ...", args[0])
+	}
+}
+
 func runProjects(args []string) error {
 	jsonOutput := false
 	for _, arg := range args {
@@ -10845,6 +11251,17 @@ func runProjects(args []string) error {
 		fmt.Printf("%-20s  %8d  %8d\n", name, p.MemoryCount, p.FactCount)
 	}
 	return nil
+}
+
+func truncateString(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
 }
 
 func runTag(args []string) error {
@@ -12238,6 +12655,7 @@ var cortexCommands = []string{
 	"graph", "cluster",
 	"reason", "bench", "eval",
 	"cleanup", "backfill-scope", "optimize", "embed", "tag", "answer", "ask", "lifecycle", "beliefs", "suppress", "source-weight",
+	"rerank-setup",
 	"connect",
 	"mcp", "doctor", "completion", "version", "help",
 }
@@ -12319,6 +12737,7 @@ Memory:
   query                 Filter facts by metadata (--where clauses)
   answer <query>        Search + synthesize short answer with citations
   ask <query>           Budget-aware evidence-grounded synthesis with citations
+  rerank-setup          Download the local cross-encoder reranker model
   lifecycle run         Apply built-in lifecycle policies to facts
   beliefs               Belief lifecycle stats + manual state overrides
   list                  List memories or facts
@@ -12340,6 +12759,7 @@ Observe:
   stale                 Find outdated facts (confidence decay)
   conflicts             Detect contradictory facts
   agents                List known agents with per-agent stats
+  entity                List, inspect, and merge canonical entities
   projects              List project tags with counts
 
 Knowledge Graph:

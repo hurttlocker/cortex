@@ -29,7 +29,7 @@ func TestNewStore(t *testing.T) {
 
 	// Verify tables exist by querying each
 	ss := s.(*SQLiteStore)
-	tables := []string{"memories", "facts", "clusters", "fact_clusters", "embeddings", "recall_log",
+	tables := []string{"memories", "facts", "entities", "entity_aliases", "unresolved_entities", "clusters", "fact_clusters", "embeddings", "recall_log",
 		"memory_events", "snapshots", "lenses", "meta"}
 	for _, table := range tables {
 		var name string
@@ -90,6 +90,20 @@ func TestFactStateColumnExists(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected state column to exist, count=%d", count)
+	}
+}
+
+func TestFactEntityIDColumnExists(t *testing.T) {
+	s := newTestStore(t)
+	ss := s.(*SQLiteStore)
+
+	var count int
+	err := ss.db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('facts') WHERE name='entity_id'").Scan(&count)
+	if err != nil {
+		t.Fatalf("checking entity_id column: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected entity_id column to exist, count=%d", count)
 	}
 }
 

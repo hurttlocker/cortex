@@ -22,6 +22,7 @@ import (
 
 	"github.com/hurttlocker/cortex/internal/ann"
 	"github.com/hurttlocker/cortex/internal/embed"
+	"github.com/hurttlocker/cortex/internal/rerank"
 	"github.com/hurttlocker/cortex/internal/store"
 	"github.com/hurttlocker/cortex/internal/temporal"
 )
@@ -91,6 +92,7 @@ var operatorCueTokens = map[string]struct{}{
 }
 
 var searchDedupeTokenSplitRE = regexp.MustCompile(`[^a-z0-9]+`)
+var rerankHTMLTagRE = regexp.MustCompile(`<[^>]+>`)
 
 var (
 	tradingIntentTokens = map[string]struct{}{
@@ -185,6 +187,7 @@ type Options struct {
 	Mode              Mode     // Search mode (default: keyword)
 	Limit             int      // Max results (default: 10)
 	MinScore          float64  // Minimum search score threshold (default: mode-dependent, -1 = use default)
+	EntityGraph       bool     // Enable entity-profile/entity-graph retrieval augmentations
 	Project           string   // Scope search to a specific project (empty = all)
 	Classes           []string // Filter by memory class (rule, decision, preference, identity, status, scratch)
 	DisableClassBoost bool     // Disable class-aware weighting (default: false)
@@ -207,6 +210,7 @@ type Options struct {
 	Explain           bool          // Attach explainability/provenance payloads to results
 	DisableDedupe     bool          // Keep overlapping same-source results instead of collapsing them
 	TemporalQuery     *temporal.Query
+	RerankMode        rerank.Mode
 }
 
 // Default minimum score thresholds by mode.
@@ -262,6 +266,7 @@ type Result struct {
 	TemporalNorms  []temporal.Norm `json:"temporal_norms,omitempty"`
 	TokenEstimate  int             `json:"token_estimate,omitempty"`
 	Truncated      bool            `json:"truncated,omitempty"`
+	RerankScore    *float64        `json:"rerank_score,omitempty"`
 	Explain        *ExplainDetails `json:"explain,omitempty"`
 }
 
@@ -325,6 +330,9 @@ type RankComponents struct {
 	HybridSemanticNormalized   *float64 `json:"hybrid_semantic_normalized,omitempty"`
 	HybridBM25Contribution     *float64 `json:"hybrid_bm25_contribution,omitempty"`
 	HybridSemanticContribution *float64 `json:"hybrid_semantic_contribution,omitempty"`
+	EntityChannelScore         *float64 `json:"entity_channel_score,omitempty"`
+	RerankBaseScore            *float64 `json:"rerank_base_score,omitempty"`
+	RerankScore                *float64 `json:"rerank_score,omitempty"`
 
 	// Metadata-aware ranking (Issue #148 / #230)
 	AgentBoost      float64 `json:"agent_boost,omitempty"`
@@ -361,6 +369,7 @@ type Engine struct {
 	store    store.Store
 	embedder embed.Embedder // nil = BM25 only
 	hnsw     *ann.Index     // nil = brute-force semantic search
+	reranker *rerank.Service
 }
 
 // NewEngine creates a search engine backed by the given store.
@@ -371,6 +380,10 @@ func NewEngine(s store.Store) *Engine {
 // NewEngineWithEmbedder creates a search engine with semantic search capability.
 func NewEngineWithEmbedder(s store.Store, e embed.Embedder) *Engine {
 	return &Engine{store: s, embedder: e}
+}
+
+func (e *Engine) SetReranker(service *rerank.Service) {
+	e.reranker = service
 }
 
 // SetHNSW attaches an HNSW index for fast approximate nearest neighbor search.
@@ -556,6 +569,19 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	}
 
 	if err != nil || len(results) == 0 {
+		if err != nil {
+			return results, err
+		}
+	}
+
+	if opts.EntityGraph {
+		injected, injectErr := e.searchEntityProfiles(ctx, retrievalQuery, opts)
+		if injectErr == nil && len(injected) > 0 {
+			results = mergeInjectedResults(results, injected)
+		}
+	}
+
+	if len(results) == 0 {
 		return results, err
 	}
 
@@ -2940,14 +2966,19 @@ func (e *Engine) searchHybrid(ctx context.Context, query string, opts Options) (
 		return bm25Result.results, nil
 	}
 
-	return mergeWeightedScores(bm25Result.results, semanticResult.results, opts.Limit, opts.Explain), nil
+	fusionLimit := opts.Limit
+	if e.shouldApplyRerank(opts.RerankMode) {
+		fusionLimit = rerankCandidateLimit(opts.Limit)
+	}
+	merged := mergeWeightedScores(bm25Result.results, semanticResult.results, fusionLimit, opts.Explain)
+	return e.applyRerank(ctx, query, merged, opts), nil
 }
 
 // searchRRF performs both BM25 and semantic search, merging results with
 // Reciprocal Rank Fusion (RRF).
 func (e *Engine) searchRRF(ctx context.Context, query string, opts Options) ([]Result, error) {
-	if e.embedder == nil {
-		// Graceful degradation: fall back to BM25 when no embedder is configured.
+	if e.embedder == nil && !opts.EntityGraph {
+		// Graceful degradation: preserve legacy BM25 fallback when the entity channel is off.
 		fmt.Fprintf(os.Stderr, "Note: RRF mode requires an embedder; falling back to BM25 keyword search.\n")
 		fmt.Fprintf(os.Stderr, "  Use --embed <provider/model> for RRF results.\n")
 		return e.searchBM25(ctx, query, opts)
@@ -2966,47 +2997,74 @@ func (e *Engine) searchRRF(ctx context.Context, query string, opts Options) ([]R
 
 	bm25Chan := make(chan searchResult, 1)
 	semanticChan := make(chan searchResult, 1)
+	entityChan := make(chan searchResult, 1)
 
 	go func() {
 		results, err := e.searchBM25(ctx, query, candidateOpts)
 		bm25Chan <- searchResult{results, err}
 	}()
 
-	go func() {
-		results, err := e.searchSemantic(ctx, query, candidateOpts)
-		semanticChan <- searchResult{results, err}
-	}()
+	if e.embedder != nil {
+		go func() {
+			results, err := e.searchSemantic(ctx, query, candidateOpts)
+			semanticChan <- searchResult{results, err}
+		}()
+	} else {
+		fmt.Fprintf(os.Stderr, "Note: RRF mode requires an embedder; semantic channel disabled.\n")
+		fmt.Fprintf(os.Stderr, "  Use --embed <provider/model> for semantic RRF results.\n")
+		semanticChan <- searchResult{}
+	}
+
+	if opts.EntityGraph {
+		go func() {
+			results, err := e.searchEntityChannel(ctx, query, candidateOpts)
+			entityChan <- searchResult{results, err}
+		}()
+	} else {
+		entityChan <- searchResult{}
+	}
 
 	bm25Result := <-bm25Chan
 	semanticResult := <-semanticChan
+	entityResult := <-entityChan
 
-	if bm25Result.err != nil && semanticResult.err != nil {
-		return nil, fmt.Errorf("both searches failed: BM25: %w, Semantic: %v", bm25Result.err, semanticResult.err)
-	} else if bm25Result.err != nil {
-		return fuseRRFWithOptions(
-			nil,
-			semanticResult.results,
-			opts.Limit,
-			opts.Explain,
-			DefaultRRFConfig(),
-		), nil
-	} else if semanticResult.err != nil {
-		return fuseRRFWithOptions(
-			bm25Result.results,
-			nil,
-			opts.Limit,
-			opts.Explain,
-			DefaultRRFConfig(),
-		), nil
+	if bm25Result.err != nil && semanticResult.err != nil && entityResult.err != nil {
+		return nil, fmt.Errorf("all RRF channels failed: BM25: %w, Semantic: %v, Entity: %v", bm25Result.err, semanticResult.err, entityResult.err)
 	}
 
-	return fuseRRFWithOptions(
-		bm25Result.results,
-		semanticResult.results,
-		opts.Limit,
+	channels := make([]rrfChannel, 0, 3)
+	if bm25Result.err == nil && len(bm25Result.results) > 0 {
+		channels = append(channels, rrfChannel{name: "bm25", results: bm25Result.results, weight: DefaultRRFConfig().BM25Weight})
+	}
+	if semanticResult.err == nil && len(semanticResult.results) > 0 {
+		channels = append(channels, rrfChannel{name: "semantic", results: semanticResult.results, weight: DefaultRRFConfig().SemanticWeight})
+	}
+	if entityResult.err == nil && len(entityResult.results) > 0 {
+		channels = append(channels, rrfChannel{name: "entity", results: entityResult.results, weight: DefaultRRFConfig().EntityWeight})
+	}
+	if len(channels) == 0 {
+		if bm25Result.err != nil {
+			return nil, bm25Result.err
+		}
+		return nil, semanticResult.err
+	}
+
+	fused := fuseRRFChannelsWithOptions(
+		channels,
+		rerankFusionLimit(opts.Limit, e.shouldApplyRerank(opts.RerankMode)),
 		opts.Explain,
 		DefaultRRFConfig(),
-	), nil
+	)
+	if opts.EntityGraph {
+		bridgeResults, err := e.discoverBridgeResults(ctx, query, fused, candidateOpts)
+		if err == nil && len(bridgeResults) > 0 {
+			fused = mergeInjectedResults(fused, bridgeResults)
+			if limit := rerankFusionLimit(opts.Limit, e.shouldApplyRerank(opts.RerankMode)); limit > 0 && len(fused) > limit {
+				fused = fused[:limit]
+			}
+		}
+	}
+	return e.applyRerank(ctx, query, fused, opts), nil
 }
 
 // mergeWeightedScores combines BM25 and semantic results using normalized score fusion.
@@ -3184,4 +3242,120 @@ func normalizeResultScores(results []Result) []float64 {
 	}
 
 	return scores
+}
+
+func rerankFusionLimit(limit int, active bool) int {
+	if !active {
+		return limit
+	}
+	return rerankCandidateLimit(limit)
+}
+
+func rerankCandidateLimit(limit int) int {
+	if limit <= 0 {
+		return 30
+	}
+	candidateLimit := limit * 3
+	if candidateLimit < 30 {
+		candidateLimit = 30
+	}
+	return candidateLimit
+}
+
+func normalizedRerankMode(mode rerank.Mode) rerank.Mode {
+	if mode == "" {
+		return rerank.ModeAuto
+	}
+	return mode
+}
+
+func (e *Engine) shouldApplyRerank(mode rerank.Mode) bool {
+	if normalizedRerankMode(mode) == rerank.ModeOff {
+		return false
+	}
+	return e.reranker != nil && e.reranker.Available()
+}
+
+func (e *Engine) applyRerank(ctx context.Context, query string, results []Result, opts Options) []Result {
+	limit := opts.Limit
+	if limit <= 0 || limit > len(results) {
+		limit = len(results)
+	}
+	if !e.shouldApplyRerank(opts.RerankMode) {
+		if len(results) > limit {
+			return results[:limit]
+		}
+		return results
+	}
+
+	candidates := make([]rerank.Candidate, 0, len(results))
+	for i, result := range results {
+		candidates = append(candidates, rerank.Candidate{
+			Index:     i,
+			BaseScore: result.Score,
+			Text:      rerankText(result),
+		})
+	}
+
+	scored, err := e.reranker.Rerank(ctx, query, candidates, limit)
+	if err != nil {
+		if len(results) > limit {
+			return results[:limit]
+		}
+		return results
+	}
+
+	reranked := make([]Result, 0, len(scored))
+	modelName := e.reranker.Name()
+	for _, candidate := range scored {
+		result := results[candidate.Index]
+		baseScore := result.Score
+		result.Score = candidate.RerankScore
+		result.RerankScore = floatPtr(candidate.RerankScore)
+		if opts.Explain {
+			ensureExplain(&result)
+			result.Explain.RankComponents.RerankBaseScore = floatPtr(baseScore)
+			result.Explain.RankComponents.RerankScore = floatPtr(candidate.RerankScore)
+			if modelName != "" {
+				if result.Explain.Why == "" {
+					result.Explain.Why = fmt.Sprintf("reranked by %s", modelName)
+				} else {
+					result.Explain.Why += "; reranked by " + modelName
+				}
+			}
+		}
+		reranked = append(reranked, result)
+	}
+	return reranked
+}
+
+func rerankText(result Result) string {
+	parts := make([]string, 0, 4)
+	if section := strings.TrimSpace(result.SourceSection); section != "" {
+		parts = append(parts, "section: "+section)
+	}
+	if anchor := strings.TrimSpace(result.TemporalAnchor); anchor != "" {
+		parts = append(parts, "anchor_date: "+anchor)
+	}
+
+	content := cleanRerankText(result.Content)
+	snippet := cleanRerankText(result.Snippet)
+
+	switch {
+	case content != "":
+		parts = append(parts, content)
+	case snippet != "":
+		parts = append(parts, snippet)
+	}
+
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func cleanRerankText(input string) string {
+	input = rerankHTMLTagRE.ReplaceAllString(input, " ")
+	input = strings.ReplaceAll(input, "\u003cb\u003e", " ")
+	input = strings.ReplaceAll(input, "\u003c/b\u003e", " ")
+	input = strings.ReplaceAll(input, "...", " ")
+	input = strings.Join(strings.Fields(input), " ")
+	return strings.TrimSpace(input)
 }
