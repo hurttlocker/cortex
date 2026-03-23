@@ -189,3 +189,39 @@ func TestAnswer_UsesShortestExactPromptGuidance(t *testing.T) {
 		}
 	}
 }
+
+func TestAnswer_GroupsSourcesBySceneLabel(t *testing.T) {
+	var prompt string
+	e := NewEngine(
+		mockSearcher{results: []search.Result{
+			{
+				MemoryID:      1,
+				SourceFile:    "conv-30.md",
+				SourceSection: "Session 9",
+				Score:         0.95,
+				Content:       "Jon started a dance studio after leaving banking.",
+				Metadata:      &store.Metadata{SessionKey: "conv-30:session-9"},
+			},
+			{
+				MemoryID:      2,
+				SourceFile:    "conv-30.md",
+				SourceSection: "Session 9",
+				Score:         0.91,
+				Content:       "The official opening night is June 20, 2023.",
+				Metadata:      &store.Metadata{SessionKey: "conv-30:session-9"},
+			},
+		}},
+		mockProvider{resp: "June 20, 2023 [2].", seenPrompt: &prompt},
+		"openrouter/x-ai/grok-4.1-fast",
+	)
+	_, err := e.Answer(context.Background(), Options{Query: "When is Jon's opening night?", Search: search.Options{Limit: 5}})
+	if err != nil {
+		t.Fatalf("Answer err: %v", err)
+	}
+	if !strings.Contains(prompt, "Source group 1") {
+		t.Fatalf("expected grouped source header, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "session:conv-30:session-9") {
+		t.Fatalf("expected session label in grouped prompt, got %q", prompt)
+	}
+}

@@ -96,30 +96,8 @@ func (e *Engine) Ask(ctx context.Context, opts Options) (*Result, error) {
 		return fallbackResult(question, results, opts, "no_llm_configured", ""), nil
 	}
 
-	ctxLines := make([]string, 0, len(results)*4)
-	remaining := opts.MaxContextChars
-	for i, r := range results {
-		clean, stripped := sanitizeRetrieved(r.Content)
-		if stripped != "" {
-			// ignore stripped content silently; the retrieval layer already surfaced clean evidence
-		}
-		clean = truncate(clean, opts.PerResultChars)
-		block := fmt.Sprintf(
-			"[%d] source:%s section:%s score:%.2f fact_ids:%s\n%s",
-			i+1,
-			sourceLabel(r),
-			strings.TrimSpace(r.SourceSection),
-			r.Score,
-			formatFactIDs(r.FactIDs),
-			clean,
-		)
-		if len(block)+1 > remaining {
-			break
-		}
-		ctxLines = append(ctxLines, block)
-		remaining -= len(block) + 1
-	}
-	if len(ctxLines) == 0 {
+	ctxText := buildGroupedEvidenceContext(results, opts.MaxContextChars, opts.PerResultChars)
+	if ctxText == "" {
 		return &Result{
 			Question:     question,
 			Answer:       "not enough evidence",
@@ -153,7 +131,7 @@ Rules:
 	userPrompt := fmt.Sprintf(
 		"Question:\n%s\n\nAvailable evidence:\n%s\n\nWrite the shortest direct answer possible with inline citations after each sentence or clause. If the evidence is insufficient, reply exactly: not enough evidence.",
 		question,
-		strings.Join(ctxLines, "\n\n"),
+		ctxText,
 	)
 
 	resp, err := e.llm.Complete(ctx, userPrompt, llm.CompletionOpts{
@@ -213,6 +191,63 @@ Rules:
 		Budget:       opts.Budget,
 		PackedTokens: opts.PackedTokens,
 	}, nil
+}
+
+func buildGroupedEvidenceContext(results []search.Result, maxContextChars int, perResultChars int) string {
+	type evidenceGroup struct {
+		label  string
+		blocks []string
+	}
+
+	groupOrder := make([]string, 0, len(results))
+	groupMap := make(map[string]*evidenceGroup, len(results))
+	for i, r := range results {
+		clean, _ := sanitizeRetrieved(r.Content)
+		clean = truncate(clean, perResultChars)
+		key := search.SceneLabelForResult(r)
+		group, ok := groupMap[key]
+		if !ok {
+			group = &evidenceGroup{label: key}
+			groupMap[key] = group
+			groupOrder = append(groupOrder, key)
+		}
+		block := fmt.Sprintf(
+			"[%d] source:%s section:%s score:%.2f fact_ids:%s\n%s",
+			i+1,
+			sourceLabel(r),
+			strings.TrimSpace(r.SourceSection),
+			r.Score,
+			formatFactIDs(r.FactIDs),
+			clean,
+		)
+		group.blocks = append(group.blocks, block)
+	}
+
+	remaining := maxContextChars
+	lines := make([]string, 0, len(results)*3)
+	for i, key := range groupOrder {
+		group := groupMap[key]
+		header := fmt.Sprintf("Evidence group %d — %s", i+1, group.label)
+		groupLines := []string{header}
+		for _, block := range group.blocks {
+			candidate := strings.Join(append(groupLines, block), "\n\n")
+			if len(candidate)+1 > remaining {
+				break
+			}
+			groupLines = append(groupLines, block)
+		}
+		if len(groupLines) == 1 {
+			continue
+		}
+		groupText := strings.Join(groupLines, "\n\n")
+		if len(groupText)+2 > remaining {
+			break
+		}
+		lines = append(lines, groupText)
+		remaining -= len(groupText) + 2
+	}
+
+	return strings.Join(lines, "\n\n")
 }
 
 func fallbackResult(question string, results []search.Result, opts Options, reason, errorDetail string) *Result {

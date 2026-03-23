@@ -126,28 +126,8 @@ func (e *Engine) Answer(ctx context.Context, opts Options) (*Result, error) {
 		return fallbackResult(results, "no_llm_configured"), nil
 	}
 
-	ctxLines := make([]string, 0, len(results)*3)
-	remaining := opts.MaxContextChars
-	for i, r := range results {
-		clean, stripped := sanitizeRetrieved(r.Content)
-		if stripped != "" && opts.Verbose {
-			fmt.Fprintf(os.Stderr, "[answer] stripped prompt-injection-like content from %s: %q\n", r.SourceFile, truncate(stripped, 220))
-		}
-		clean = truncate(clean, opts.PerResultChars)
-		block := fmt.Sprintf("[%d] source:%s score:%.2f\n%s", i+1, sourceLabel(r), r.Score, clean)
-		if anchorDate := resultAnchorDate(r); anchorDate != "" {
-			block += fmt.Sprintf("\nanchor_date: %s", anchorDate)
-		}
-		if temporalInfo := resultTemporalInfo(r); temporalInfo != "" {
-			block += "\n" + temporalInfo
-		}
-		if len(block)+1 > remaining {
-			break
-		}
-		ctxLines = append(ctxLines, block)
-		remaining -= len(block) + 1
-	}
-	if len(ctxLines) == 0 {
+	ctxText := buildGroupedSourceContext(results, opts.MaxContextChars, opts.PerResultChars, opts.Verbose)
+	if ctxText == "" {
 		return fallbackResult(results, "empty_context_after_sanitize"), nil
 	}
 
@@ -161,8 +141,9 @@ Rules:
 - For names, titles, places, and numbers, give the exact value from the sources.
 - Do not elaborate, summarize, or add narrative filler.
 - Prefer one short sentence unless the question clearly needs more.
+- Read grouped evidence blocks as scene-level context when present.
 - Every factual claim must include citation markers like [1] or [2][4].`)
-	userPrompt := fmt.Sprintf("Question: %s\n\nSources:\n%s\n\nReturn the shortest exact answer possible with citations. For dates, give the exact date. For names, give the exact name. Do not elaborate.", opts.Query, strings.Join(ctxLines, "\n\n"))
+	userPrompt := fmt.Sprintf("Question: %s\n\nSources:\n%s\n\nReturn the shortest exact answer possible with citations. For dates, give the exact date. For names, give the exact name. Do not elaborate.", opts.Query, ctxText)
 
 	resp, err := e.llm.Complete(ctx, userPrompt, llm.CompletionOpts{
 		System:      systemPrompt,
@@ -190,6 +171,64 @@ Rules:
 		Model:     e.model,
 		Provider:  providerOfModel(e.model),
 	}, nil
+}
+
+func buildGroupedSourceContext(results []search.Result, maxContextChars int, perResultChars int, verbose bool) string {
+	type sourceGroup struct {
+		label  string
+		blocks []string
+	}
+
+	groupOrder := make([]string, 0, len(results))
+	groupMap := make(map[string]*sourceGroup, len(results))
+	for i, r := range results {
+		clean, stripped := sanitizeRetrieved(r.Content)
+		if stripped != "" && verbose {
+			fmt.Fprintf(os.Stderr, "[answer] stripped prompt-injection-like content from %s: %q\n", r.SourceFile, truncate(stripped, 220))
+		}
+		clean = truncate(clean, perResultChars)
+		block := fmt.Sprintf("[%d] source:%s score:%.2f\n%s", i+1, sourceLabel(r), r.Score, clean)
+		if anchorDate := resultAnchorDate(r); anchorDate != "" {
+			block += fmt.Sprintf("\nanchor_date: %s", anchorDate)
+		}
+		if temporalInfo := resultTemporalInfo(r); temporalInfo != "" {
+			block += "\n" + temporalInfo
+		}
+		key := search.SceneLabelForResult(r)
+		group, ok := groupMap[key]
+		if !ok {
+			group = &sourceGroup{label: key}
+			groupMap[key] = group
+			groupOrder = append(groupOrder, key)
+		}
+		group.blocks = append(group.blocks, block)
+	}
+
+	remaining := maxContextChars
+	lines := make([]string, 0, len(results)*3)
+	for i, key := range groupOrder {
+		group := groupMap[key]
+		header := fmt.Sprintf("Source group %d — %s", i+1, group.label)
+		groupLines := []string{header}
+		for _, block := range group.blocks {
+			candidate := strings.Join(append(groupLines, block), "\n\n")
+			if len(candidate)+1 > remaining {
+				break
+			}
+			groupLines = append(groupLines, block)
+		}
+		if len(groupLines) == 1 {
+			continue
+		}
+		groupText := strings.Join(groupLines, "\n\n")
+		if len(groupText)+2 > remaining {
+			break
+		}
+		lines = append(lines, groupText)
+		remaining -= len(groupText) + 2
+	}
+
+	return strings.Join(lines, "\n\n")
 }
 
 func fallbackResult(results []search.Result, reason string) *Result {

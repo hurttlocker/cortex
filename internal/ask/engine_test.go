@@ -3,18 +3,24 @@ package ask
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/hurttlocker/cortex/internal/llm"
 	"github.com/hurttlocker/cortex/internal/search"
+	"github.com/hurttlocker/cortex/internal/store"
 )
 
 type mockProvider struct {
-	resp string
-	err  error
+	resp       string
+	err        error
+	seenPrompt *string
 }
 
 func (m mockProvider) Complete(ctx context.Context, prompt string, opts llm.CompletionOpts) (string, error) {
+	if m.seenPrompt != nil {
+		*m.seenPrompt = prompt
+	}
 	if m.err != nil {
 		return "", m.err
 	}
@@ -185,6 +191,44 @@ func TestAsk_HandlesProviderError(t *testing.T) {
 	}
 	if res.Error == "" {
 		t.Fatal("expected underlying error detail to be populated")
+	}
+}
+
+func TestAsk_GroupsEvidenceBlocksByScene(t *testing.T) {
+	var prompt string
+	e := NewEngine(mockProvider{
+		resp:       "June 20, 2023 [1].",
+		seenPrompt: &prompt,
+	}, "google/gemini-2.5-flash-lite")
+	_, err := e.Ask(context.Background(), Options{
+		Question: "When is Jon's opening night?",
+		Results: []search.Result{
+			{
+				MemoryID:      1,
+				SourceFile:    "conv-30.md",
+				SourceSection: "Session 9",
+				Score:         0.95,
+				Content:       "Jon started a dance studio after leaving banking.",
+				Metadata:      &store.Metadata{SessionKey: "conv-30:session-9"},
+			},
+			{
+				MemoryID:      2,
+				SourceFile:    "conv-30.md",
+				SourceSection: "Session 9",
+				Score:         0.91,
+				Content:       "The official opening night is June 20, 2023.",
+				Metadata:      &store.Metadata{SessionKey: "conv-30:session-9"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask err: %v", err)
+	}
+	if !strings.Contains(prompt, "Evidence group 1") {
+		t.Fatalf("expected grouped evidence header, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "session:conv-30:session-9") {
+		t.Fatalf("expected session label in grouped prompt, got %q", prompt)
 	}
 }
 

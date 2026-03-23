@@ -3155,6 +3155,15 @@ func (e *Engine) searchRRF(ctx context.Context, query string, opts Options, stra
 		opts.Explain,
 		cfg,
 	)
+	if strategy.EnableSceneExpand {
+		sceneResults, err := e.searchSceneExpansion(ctx, query, fused, candidateOpts, strategy)
+		if err == nil && len(sceneResults) > 0 {
+			fused = mergeInjectedResults(fused, sceneResults)
+			if limit := rerankFusionLimit(opts.Limit, e.shouldApplyRerank(opts.RerankMode)); limit > 0 && len(fused) > limit {
+				fused = fused[:limit]
+			}
+		}
+	}
 	if opts.EntityGraph {
 		bridgeResults, err := e.discoverBridgeResults(ctx, query, fused, candidateOpts)
 		if err == nil && len(bridgeResults) > 0 {
