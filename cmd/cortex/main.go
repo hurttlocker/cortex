@@ -1503,6 +1503,7 @@ func runRerankSetup(args []string) error {
 		return err
 	}
 
+	ortLibrary := rerank.DetectORTLibraryPath()
 	payload := struct {
 		Model       string `json:"model"`
 		ModelPath   string `json:"model_path"`
@@ -1513,8 +1514,8 @@ func runRerankSetup(args []string) error {
 		Model:       spec.DisplayName,
 		ModelPath:   files.ModelPath,
 		Tokenizer:   files.TokenizerPath,
-		ORTLibrary:  rerank.DetectORTLibraryPath(),
-		LibraryOkay: rerank.DetectORTLibraryPath() != "",
+		ORTLibrary:  ortLibrary,
+		LibraryOkay: ortLibrary != "",
 	}
 
 	if jsonOutput || !isTTY() {
