@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hurttlocker/cortex/internal/ann"
+	"github.com/hurttlocker/cortex/internal/rerank"
 	"github.com/hurttlocker/cortex/internal/store"
 	"github.com/hurttlocker/cortex/internal/temporal"
 )
@@ -1095,6 +1096,10 @@ type mockEmbedder struct {
 	embeddings map[string][]float32
 }
 
+type mockRerankScorer struct {
+	scores []float64
+}
+
 func newMockEmbedder() *mockEmbedder {
 	return &mockEmbedder{
 		dimensions: 384,
@@ -1131,6 +1136,13 @@ func (m *mockEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 
 func (m *mockEmbedder) Dimensions() int {
 	return m.dimensions
+}
+
+func (m mockRerankScorer) Name() string    { return "mock-reranker" }
+func (m mockRerankScorer) Available() bool { return true }
+func (m mockRerankScorer) Close() error    { return nil }
+func (m mockRerankScorer) Score(ctx context.Context, query string, docs []string) ([]float64, error) {
+	return append([]float64(nil), m.scores[:len(docs)]...), nil
 }
 
 func TestSearchSemantic_WithEmbedder(t *testing.T) {
@@ -1210,6 +1222,119 @@ func TestSearchHybrid_RRF(t *testing.T) {
 		if result.Score <= 0 {
 			t.Errorf("Expected positive RRF score, got %f", result.Score)
 		}
+	}
+}
+
+func TestSearchHybrid_RerankChangesResultOrder(t *testing.T) {
+	s := newTestStore(t)
+	seedTestData(t, s)
+	ctx := context.Background()
+
+	embedder := newMockEmbedder()
+	if err := s.AddEmbedding(ctx, 3, []float32{0.8, 0.2, 0.1}); err != nil {
+		t.Fatalf("add embedding 3: %v", err)
+	}
+	if err := s.AddEmbedding(ctx, 10, []float32{0.7, 0.2, 0.2}); err != nil {
+		t.Fatalf("add embedding 10: %v", err)
+	}
+	embedder.embeddings["Go programming"] = []float32{0.75, 0.25, 0.15}
+
+	engine := NewEngineWithEmbedder(s, embedder)
+	baseline, err := engine.Search(ctx, "Go programming", Options{Mode: ModeHybrid, Limit: 2})
+	if err != nil {
+		t.Fatalf("baseline search: %v", err)
+	}
+	if len(baseline) < 2 {
+		t.Fatalf("expected at least 2 baseline results, got %d", len(baseline))
+	}
+
+	engine.SetReranker(rerank.NewService(mockRerankScorer{scores: []float64{0.1, 0.9}}, 2))
+	reranked, err := engine.Search(ctx, "Go programming", Options{Mode: ModeHybrid, Limit: 2, RerankMode: rerank.ModeOn})
+	if err != nil {
+		t.Fatalf("reranked search: %v", err)
+	}
+	if len(reranked) != 2 {
+		t.Fatalf("expected 2 reranked results, got %d", len(reranked))
+	}
+	if reranked[0].MemoryID != baseline[1].MemoryID {
+		t.Fatalf("expected reranker to promote baseline rank 2, got memory_id=%d want=%d", reranked[0].MemoryID, baseline[1].MemoryID)
+	}
+	if reranked[0].RerankScore == nil {
+		t.Fatal("expected rerank score to be attached")
+	}
+}
+
+func TestSearchHybrid_RerankOffMatchesBaseline(t *testing.T) {
+	s := newTestStore(t)
+	seedTestData(t, s)
+	ctx := context.Background()
+
+	embedder := newMockEmbedder()
+	if err := s.AddEmbedding(ctx, 3, []float32{0.8, 0.2, 0.1}); err != nil {
+		t.Fatalf("add embedding 3: %v", err)
+	}
+	if err := s.AddEmbedding(ctx, 10, []float32{0.7, 0.2, 0.2}); err != nil {
+		t.Fatalf("add embedding 10: %v", err)
+	}
+	embedder.embeddings["Go programming"] = []float32{0.75, 0.25, 0.15}
+
+	baselineEngine := NewEngineWithEmbedder(s, embedder)
+	baseline, err := baselineEngine.Search(ctx, "Go programming", Options{Mode: ModeHybrid, Limit: 2})
+	if err != nil {
+		t.Fatalf("baseline search: %v", err)
+	}
+
+	rerankEngine := NewEngineWithEmbedder(s, embedder)
+	rerankEngine.SetReranker(rerank.NewService(mockRerankScorer{scores: []float64{0.1, 0.9}}, 2))
+	got, err := rerankEngine.Search(ctx, "Go programming", Options{Mode: ModeHybrid, Limit: 2, RerankMode: rerank.ModeOff})
+	if err != nil {
+		t.Fatalf("rerank-off search: %v", err)
+	}
+	if len(got) != len(baseline) {
+		t.Fatalf("len(got) = %d, want %d", len(got), len(baseline))
+	}
+	for i := range baseline {
+		if got[i].MemoryID != baseline[i].MemoryID {
+			t.Fatalf("rank %d memory_id=%d, want %d", i, got[i].MemoryID, baseline[i].MemoryID)
+		}
+		if got[i].RerankScore != nil {
+			t.Fatalf("expected rerank score to be nil when rerank off")
+		}
+	}
+}
+
+func TestExtractRerankEvidenceWindow_PrefersTemporalAnswerSpan(t *testing.T) {
+	result := Result{
+		Content: `Gina (D5:13): This quote kept me positive through tough times. We all need a push sometimes, right? Even made a tattoo to remind myself about it.
+
+Jon (D5:14): Love the tattoo, did you just get it?
+
+Gina (D5:15): Thanks! Got the tattoo a few years ago, it stands for freedom - dancing without worrying what people think. A reminder to follow my passions and express myself.`,
+		SourceSection:  "Session 5 - 9:32 am on 8 February, 2023",
+		TemporalAnchor: "2023-02-08",
+	}
+
+	window := extractRerankEvidenceWindow("When did Gina get her tattoo?", result)
+	if !strings.Contains(strings.ToLower(window), "few years ago") {
+		t.Fatalf("expected temporal answer span, got %q", window)
+	}
+}
+
+func TestExtractRerankEvidenceWindow_PrefersConfidenceAnswerSpan(t *testing.T) {
+	result := Result{
+		Content: `Jon (D10:7): I've been feeling kinda low on confidence lately. It's hard to run a business when you don't have faith in yourself. Any tips on how you stay confident in your business?
+
+Gina (D10:8): I get it, Jon. Confidence is important in business. I stay motivated by reminding myself of my successes and progress. It also helps to have a good support system. Just focus on why you started this – because you love it!`,
+		SourceSection: "Session 10 - 11:24 am on 25 April, 2023",
+	}
+
+	window := extractRerankEvidenceWindow("How does Gina stay confident in her business?", result)
+	lower := strings.ToLower(window)
+	if !strings.Contains(lower, "successes and progress") {
+		t.Fatalf("expected confidence answer span, got %q", window)
+	}
+	if !strings.Contains(lower, "support system") {
+		t.Fatalf("expected support-system cue, got %q", window)
 	}
 }
 

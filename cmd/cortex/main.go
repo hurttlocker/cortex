@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -85,6 +86,8 @@ func main() {
 		exitWithError(runAsk(args[1:]))
 	case "rerank-setup":
 		exitWithError(runRerankSetup(args[1:]))
+	case "rerank-serve":
+		exitWithError(runRerankServe(args[1:]))
 	case "lifecycle":
 		exitWithError(runLifecycle(args[1:]))
 	case "beliefs":
@@ -1408,6 +1411,13 @@ func configureSearchReranker(engine *search.Engine, mode rerank.Mode, allowPromp
 		return nil
 	}
 
+	if service, err := loadDaemonReranker(mode); err != nil {
+		return err
+	} else if service != nil {
+		engine.SetReranker(service)
+		return nil
+	}
+
 	spec, err := rerank.ResolveModelSpec(os.Getenv("CORTEX_RERANK_MODEL"))
 	if err != nil {
 		return err
@@ -1453,6 +1463,32 @@ func configureSearchReranker(engine *search.Engine, mode rerank.Mode, allowPromp
 
 	engine.SetReranker(rerank.NewService(scorer, 30))
 	return nil
+}
+
+type rerankPinger interface {
+	Ping(ctx context.Context) error
+}
+
+const daemonRerankMaxCandidates = 4
+
+func loadDaemonReranker(mode rerank.Mode) (*rerank.Service, error) {
+	scorer := rerank.NewDaemonScorer(rerank.DaemonClientConfig{
+		BaseURL: rerank.ResolveDaemonURL(),
+		Timeout: 4 * time.Second,
+	})
+	pinger, ok := scorer.(rerankPinger)
+	if !ok {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+	if err := pinger.Ping(ctx); err != nil {
+		if mode == rerank.ModeOn && globalVerbose {
+			fmt.Fprintf(os.Stderr, "  Rerank daemon unavailable at %s: %v\n", rerank.ResolveDaemonURL(), err)
+		}
+		return nil, nil
+	}
+	return rerank.NewService(scorer, daemonRerankMaxCandidates), nil
 }
 
 func confirmDownload(prompt string) bool {
@@ -1503,6 +1539,7 @@ func runRerankSetup(args []string) error {
 		return err
 	}
 
+	ortLibrary := rerank.DetectORTLibraryPath()
 	payload := struct {
 		Model       string `json:"model"`
 		ModelPath   string `json:"model_path"`
@@ -1513,8 +1550,8 @@ func runRerankSetup(args []string) error {
 		Model:       spec.DisplayName,
 		ModelPath:   files.ModelPath,
 		Tokenizer:   files.TokenizerPath,
-		ORTLibrary:  rerank.DetectORTLibraryPath(),
-		LibraryOkay: rerank.DetectORTLibraryPath() != "",
+		ORTLibrary:  ortLibrary,
+		LibraryOkay: ortLibrary != "",
 	}
 
 	if jsonOutput || !isTTY() {
@@ -1532,6 +1569,111 @@ func runRerankSetup(args []string) error {
 		fmt.Println("  onnxruntime: not found (set ONNXRUNTIME_SHARED_LIBRARY_PATH or install the shared library)")
 	}
 	return nil
+}
+
+func runRerankServe(args []string) error {
+	port := rerank.DefaultDaemonPort
+	host := rerank.DefaultDaemonHost
+	modelFlag := "m3"
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--port" && i+1 < len(args):
+			i++
+			parsed, err := strconv.Atoi(args[i])
+			if err != nil || parsed < 1 || parsed > 65535 {
+				return fmt.Errorf("--port must be between 1 and 65535")
+			}
+			port = parsed
+		case strings.HasPrefix(args[i], "--port="):
+			parsed, err := strconv.Atoi(strings.TrimPrefix(args[i], "--port="))
+			if err != nil || parsed < 1 || parsed > 65535 {
+				return fmt.Errorf("--port must be between 1 and 65535")
+			}
+			port = parsed
+		case args[i] == "--host" && i+1 < len(args):
+			i++
+			host = strings.TrimSpace(args[i])
+		case strings.HasPrefix(args[i], "--host="):
+			host = strings.TrimSpace(strings.TrimPrefix(args[i], "--host="))
+		case args[i] == "--model" && i+1 < len(args):
+			i++
+			modelFlag = args[i]
+		case strings.HasPrefix(args[i], "--model="):
+			modelFlag = strings.TrimPrefix(args[i], "--model=")
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag: %s\nusage: cortex rerank-serve [--port 9720] [--host 127.0.0.1] [--model m3]", args[i])
+		default:
+			return fmt.Errorf("usage: cortex rerank-serve [--port 9720] [--host 127.0.0.1] [--model m3]")
+		}
+	}
+
+	spec, err := rerank.ResolveModelSpec(modelFlag)
+	if err != nil {
+		return err
+	}
+	files, err := rerank.EnsureModel(context.Background(), spec)
+	if err != nil {
+		return err
+	}
+	scorer, err := rerank.NewONNXScorer(rerank.Config{
+		Spec:              spec,
+		Files:             files,
+		LibraryPath:       rerank.DetectORTLibraryPath(),
+		BatchSize:         8,
+		MaxSequenceLength: spec.MaxSequenceLen,
+	})
+	if err != nil {
+		return err
+	}
+	defer scorer.Close()
+
+	baseURL, err := rerank.NormalizeDaemonURL(host, port)
+	if err != nil {
+		return fmt.Errorf("build daemon address: %w", err)
+	}
+	parsedURL, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("parse daemon address: %w", err)
+	}
+	serverAddr := parsedURL.Host
+	if serverAddr == "" {
+		return fmt.Errorf("invalid daemon address %q", baseURL)
+	}
+
+	srv := &http.Server{
+		Addr:              serverAddr,
+		Handler:           rerank.NewDaemonHandler(scorer),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	if isTTY() {
+		fmt.Printf("Rerank daemon listening on %s using %s\n", baseURL, scorer.Name())
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		err := srv.ListenAndServe()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("shutdown rerank daemon: %w", err)
+		}
+		return nil
+	case err := <-errCh:
+		return err
+	}
 }
 
 func newSearchEngineForModeStrict(s store.Store, mode search.Mode, embedFlag string) (*search.Engine, error) {
@@ -12655,7 +12797,7 @@ var cortexCommands = []string{
 	"graph", "cluster",
 	"reason", "bench", "eval",
 	"cleanup", "backfill-scope", "optimize", "embed", "tag", "answer", "ask", "lifecycle", "beliefs", "suppress", "source-weight",
-	"rerank-setup",
+	"rerank-setup", "rerank-serve",
 	"connect",
 	"mcp", "doctor", "completion", "version", "help",
 }
@@ -12738,6 +12880,7 @@ Memory:
   answer <query>        Search + synthesize short answer with citations
   ask <query>           Budget-aware evidence-grounded synthesis with citations
   rerank-setup          Download the local cross-encoder reranker model
+  rerank-serve          Run the local reranker daemon for warm cross-encoder scoring
   lifecycle run         Apply built-in lifecycle policies to facts
   beliefs               Belief lifecycle stats + manual state overrides
   list                  List memories or facts
