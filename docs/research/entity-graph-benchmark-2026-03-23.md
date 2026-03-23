@@ -136,6 +136,26 @@ With `--entity-graph`, the result set still keeps `Session 1`, but it also injec
 
 That matches the intended behavior: broader entity-linked candidate coverage before answer synthesis.
 
+## Post-Fix Verification
+
+After bringing in the ask citation repair path and making entity graph auto-enable for the RRF fusion path when entities exist, I reran the 4 `conv-30` commonality questions through:
+
+```bash
+/tmp/cortex-entitygraph-bench-v4 \
+  --db /tmp/cortex-locomo-entitygraph-fresh2-2026-03-23/cortex.db \
+  ask \"<question>\" \
+  --mode rrf \
+  --embed openrouter/text-embedding-3-small \
+  --model google/gemini-2.5-flash \
+  --json
+```
+
+Result:
+
+- degraded responses: `0 / 4`
+
+That check matters more than the raw F1 on this micro-slice, because the merge blocker was citation degradation under the richer candidate pool.
+
 ## Caveats
 
 - This benchmark does not use the full 107-question target union; it uses a transparent targeted slice of 30 questions for runtime reasons.

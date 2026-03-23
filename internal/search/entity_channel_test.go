@@ -32,18 +32,6 @@ func TestSearchEntityProfilesInjectsKnownEntityFacts(t *testing.T) {
 	}
 
 	engine := NewEngine(s)
-
-	withoutEntityGraph, err := engine.Search(ctx, "What does Alice do?", Options{
-		Mode:  ModeKeyword,
-		Limit: 5,
-	})
-	if err != nil {
-		t.Fatalf("search without entity graph: %v", err)
-	}
-	if len(withoutEntityGraph) != 0 {
-		t.Fatalf("expected no baseline keyword hits, got %d", len(withoutEntityGraph))
-	}
-
 	withEntityGraph, err := engine.Search(ctx, "What does Alice do?", Options{
 		Mode:        ModeKeyword,
 		Limit:       5,
@@ -63,6 +51,46 @@ func TestSearchEntityProfilesInjectsKnownEntityFacts(t *testing.T) {
 	}
 	if len(withEntityGraph[0].FactIDs) == 0 {
 		t.Fatal("expected injected result to carry fact ids")
+	}
+}
+
+func TestSearchAutoEnablesEntityProfilesWhenEntitiesExist(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	memID, err := s.AddMemory(ctx, &store.Memory{
+		Content:       "General meeting notes without the entity name in the body.",
+		SourceFile:    "entity-profile-auto.md",
+		SourceSection: "notes",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:    memID,
+		Subject:     "Alice",
+		Predicate:   "role",
+		Object:      "project manager",
+		FactType:    "relationship",
+		Confidence:  0.95,
+		SourceQuote: "Alice is the project manager.",
+	}); err != nil {
+		t.Fatalf("add fact: %v", err)
+	}
+
+	engine := NewEngine(s)
+	results, err := engine.Search(ctx, "What does Alice do?", Options{
+		Mode:  ModeRRF,
+		Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("auto entity search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected entity graph auto-detection to surface the Alice memory")
+	}
+	if results[0].MemoryID != memID {
+		t.Fatalf("top result memory_id = %d, want %d", results[0].MemoryID, memID)
 	}
 }
 

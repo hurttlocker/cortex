@@ -551,6 +551,7 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 	if intentErr != nil {
 		return nil, intentErr
 	}
+	opts.EntityGraph = e.shouldUseEntityGraph(ctx, opts)
 
 	var results []Result
 	var err error

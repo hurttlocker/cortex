@@ -125,6 +125,20 @@ func (e *Engine) searchEntityProfiles(ctx context.Context, query string, opts Op
 	return results, nil
 }
 
+func (e *Engine) shouldUseEntityGraph(ctx context.Context, opts Options) bool {
+	if opts.EntityGraph {
+		return true
+	}
+	if opts.Mode != ModeRRF {
+		return false
+	}
+	if e == nil || e.store == nil {
+		return false
+	}
+	entities, err := e.store.ListEntities(ctx, 1, 0)
+	return err == nil && len(entities) > 0
+}
+
 func (e *Engine) resolveQueryEntities(ctx context.Context, query string) ([]*store.Entity, error) {
 	candidates := extractQueryEntityCandidates(query)
 	if len(candidates) == 0 {
