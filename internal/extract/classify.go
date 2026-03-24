@@ -50,11 +50,15 @@ AVAILABLE TYPES:
 - state: Current conditions, statuses ("ADA bot is LIVE", "disk usage at 92%")
 - location: Geographic or path references ("lives in Philadelphia", "binary at ~/bin/cortex")
 - config: Technical settings, parameters ("model is Haiku 4.5", "port 8090")
+- event: Completed changes, incidents, measured outcomes ("scanner crashed at 9:25", "mode switched from demo to live")
+- rule: Operational guidance, thresholds, procedures ("always run go test", "keep Wednesday P&L above 1500")
 - kv: Generic key-value when no better type fits (LAST RESORT only)
 
 RULES:
 - Classify based on the SEMANTIC MEANING, not just keyword matching
 - Use "decision" when someone CHOSE or LOCKED something (even if it looks like config)
+- Use "event" for completed changes, incidents, shipped work, and measured outcomes
+- Use "rule" for procedures, thresholds, and operational guidance
 - Use "relationship" when two entities are connected (even if stated as key-value)
 - Use "temporal" when a date/time is the key information
 - Only use "kv" when genuinely no other type fits

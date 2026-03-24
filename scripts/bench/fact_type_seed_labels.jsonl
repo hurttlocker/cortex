@@ -1,0 +1,50 @@
+{"fact_id":3888,"label":"location","teacher_reason":"Branch names are reference locations in the repo, not generic kv facts."}
+{"fact_id":1424,"label":"event","teacher_reason":"A completed documentation update is an event/result."}
+{"fact_id":3264,"label":"location","teacher_reason":"A script path is a location/reference."}
+{"fact_id":844,"label":"rule","teacher_reason":"Exit conditions and thresholds are operational rules."}
+{"fact_id":3071,"label":"event","teacher_reason":"A commit shipping a feature is a completed event."}
+{"fact_id":431,"label":"event","teacher_reason":"Added Phase 6 is a completed change event."}
+{"fact_id":2586,"label":"event","teacher_reason":"A measured strategy result belongs to event/history."}
+{"fact_id":4501,"label":"config","teacher_reason":"Detection formats describe system behavior/configuration."}
+{"fact_id":771,"label":"kv","teacher_reason":"High-level strategic benefit statement is still too generic."}
+{"fact_id":5830,"label":"event","teacher_reason":"A concrete observed sales number is an event/result."}
+{"fact_id":1932,"label":"config","teacher_reason":"Environment/API key additions are configuration."}
+{"fact_id":4950,"label":"config","teacher_reason":"Terminal UI addons and styling are implementation configuration."}
+{"fact_id":1976,"label":"event","teacher_reason":"Speed improvement from 3.2h to 15m is a measured event/result."}
+{"fact_id":5529,"label":"rule","teacher_reason":"Product framing that constrains usage is a rule/guideline."}
+{"fact_id":5252,"label":"state","teacher_reason":"Not filed yet is a current status/state."}
+{"fact_id":1479,"label":"event","teacher_reason":"The fix that added a delete query is a completed change event."}
+{"fact_id":1255,"label":"relationship","teacher_reason":"Noemie being SB's agent is an entity relationship."}
+{"fact_id":1364,"label":"state","teacher_reason":"Dead code existing in the codebase is a state/condition."}
+{"fact_id":3022,"label":"config","teacher_reason":"Delivery class values are system configuration."}
+{"fact_id":5297,"label":"config","teacher_reason":"UI row composition and icon layout are configuration/design settings."}
+{"fact_id":2323,"label":"decision","teacher_reason":"The analyzed tradeoff is a decision-oriented planning fact."}
+{"fact_id":1133,"label":"event","teacher_reason":"A set of recent PRs shipped is event history."}
+{"fact_id":5664,"label":"config","teacher_reason":"Smart mode behavior is product configuration/behavior definition."}
+{"fact_id":534,"label":"config","teacher_reason":"Declared output artifacts are system output/config semantics."}
+{"fact_id":2077,"label":"state","teacher_reason":"UI overhaul pending is a current status."}
+{"fact_id":646,"label":"event","teacher_reason":"The midday read being correct on a specific day is event history."}
+{"fact_id":4550,"label":"event","teacher_reason":"Switching mode from demo to live is a completed event."}
+{"fact_id":4623,"label":"config","teacher_reason":"Haptic feedback implementation detail is configuration/behavior."}
+{"fact_id":5441,"label":"config","teacher_reason":"Repo pill styling and naming are UI configuration."}
+{"fact_id":4907,"label":"rule","teacher_reason":"Architectural constraint that requires a sidecar is an operational rule."}
+{"fact_id":4093,"label":"event","teacher_reason":"A transcript read returning correct entries is an observed validation event."}
+{"fact_id":3187,"label":"event","teacher_reason":"A replay producing one thin event is result history."}
+{"fact_id":5738,"label":"kv","teacher_reason":"Travel cost estimate is still generic informational kv."}
+{"fact_id":2380,"label":"rule","teacher_reason":"Constraint goals and thresholds are rules."}
+{"fact_id":5374,"label":"event","teacher_reason":"The scanner crash at a specific time is an event."}
+{"fact_id":3614,"label":"decision","teacher_reason":"Best next ROI and lane guidance is a decision/judgment."}
+{"fact_id":2835,"label":"config","teacher_reason":"Install mode using git checkout on dev is configuration."}
+{"fact_id":1823,"label":"rule","teacher_reason":"Remaining required steps are procedural rules/tasks."}
+{"fact_id":1639,"label":"kv","teacher_reason":"Same command after repro is too generic without broader semantics."}
+{"fact_id":5333,"label":"config","teacher_reason":"In-chat search UI behavior is product configuration."}
+{"fact_id":3976,"label":"event","teacher_reason":"Delegation being spawned via a runtime/mode is a completed event/capability observation."}
+{"fact_id":4347,"label":"location","teacher_reason":"A branch name is a repo location/reference."}
+{"fact_id":3774,"label":"event","teacher_reason":"Peak mid and settled prices are event/performance history."}
+{"fact_id":4080,"label":"config","teacher_reason":"JSONL entry type schema is configuration/interface structure."}
+{"fact_id":2067,"label":"event","teacher_reason":"Enumerated epic work shipped/dispatched is event history."}
+{"fact_id":5551,"label":"config","teacher_reason":"Plugin version minimum and methods are configuration/interface details."}
+{"fact_id":5128,"label":"event","teacher_reason":"Slash command support shipping is an event/capability addition."}
+{"fact_id":1907,"label":"config","teacher_reason":"A function signature change is API/configuration detail."}
+{"fact_id":2155,"label":"event","teacher_reason":"The Feb 26 SOL miss with scanner evidence is event history."}
+{"fact_id":4624,"label":"location","teacher_reason":"Main branch head points to a concrete git reference location."}

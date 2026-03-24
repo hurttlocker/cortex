@@ -1,0 +1,16 @@
+{"fact_id":-1,"label":"rule","text":"subject ops runbook\npredicate restart_command\nobject cortex import <path>\nquote Run cortex import <path> before refreshing the worktree list."}
+{"fact_id":-2,"label":"rule","text":"subject gateway runbook\npredicate recovery_step\nobject openclaw gateway restart\nquote If the gateway stalls, run openclaw gateway restart before rechecking status."}
+{"fact_id":-3,"label":"rule","text":"subject ci policy\npredicate required_step\nobject go test ./...\nquote Always run go test ./... before pushing to main."}
+{"fact_id":-4,"label":"rule","text":"subject risk policy\npredicate floor\nobject keep Wednesday P&L above 1500 while lowering drawdown\nquote Constraint goal: keep Wednesday P&L > 1500 while lowering DD and preserving hit-rate."}
+{"fact_id":-5,"label":"rule","text":"subject trading exits\npredicate short_exits\nobject above SMA220 or oversold bounce with 10% stop\nquote Short exits: Above SMA220, distance < -10% target, oversold bounce, 10% stop."}
+{"fact_id":-6,"label":"event","text":"subject cortex ide\npredicate shipped\nobject monaco editor full feature set\nquote Monaco Editor shipped with Cmd+S save, dirty indicator, and inline editing."}
+{"fact_id":-7,"label":"event","text":"subject scanner\npredicate crashed_at\nobject 2026-03-24 09:25 ET\nquote Scanner launched at 9:25 AM and crashed immediately, so no trade detection happened."}
+{"fact_id":-8,"label":"event","text":"subject search hardening\npredicate completed\nobject all docs updated\nquote All docs updated: README, TOOLS, skills, lessons, and shared context."}
+{"fact_id":-9,"label":"event","text":"subject runtime adapter\npredicate validated\nobject readTranscript returned correct entries\nquote readTranscript returned the correct five entries with roles, tool names, and text."}
+{"fact_id":-10,"label":"event","text":"subject mobile integration\npredicate shipped\nobject slash command support\nquote Claude Code mobile slash commands support shipped for compact, cost, and review."}
+{"fact_id":-11,"label":"config","text":"subject terminal\npredicate polish\nobject addon-web-links addon-search red cursor font 12px\nquote Terminal polish includes addon-web-links, addon-search, red cursor, and 12px font."}
+{"fact_id":-12,"label":"config","text":"subject plugin\npredicate minimum_version\nobject 1.3.0\nquote Plugin updated: minimum 1.3.0 and searchFacts method required."}
+{"fact_id":-13,"label":"location","text":"subject backtest runner\npredicate path\nobject repos/triple-crown-strategy-lab/scripts/run_v24_rescue_grid.py\nquote Replay-driven signal builder lives at repos/triple-crown-strategy-lab/scripts/run_v24_rescue_grid.py."}
+{"fact_id":-14,"label":"location","text":"subject branch\npredicate ref\nobject fix/plugin-recall-session-bias\nquote Branch: fix/plugin-recall-session-bias."}
+{"fact_id":-15,"label":"kv","text":"subject strategy note\npredicate summary\nobject more money enables meaningful pnl and wider targets\nquote More money enables meaningful P&L, multiple strategies, more tokens, and wider targets."}
+{"fact_id":-16,"label":"kv","text":"subject travel note\npredicate groceries\nobject 150-300 for a week\nquote Groceries full villa stock cost 150-300 for a week."}

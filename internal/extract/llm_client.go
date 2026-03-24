@@ -32,6 +32,9 @@ FACT TYPES:
 - location: Geographic references (lives in NYC, office in SF, meeting at Starbucks)
 - decision: Choices made (chose option A, decided to postpone, approved the proposal)
 - state: Current conditions (status: active, running, temperature: 72°F)
+- config: Technical settings (model is Haiku 4.5, port 8090, theme blue glass)
+- event: Completed changes, incidents, measured outcomes (scanner crashed at 9:25, shipped mobile slash commands)
+- rule: Operational guidance, thresholds, procedures (always run go test, keep Wednesday P&L above 1500)
 
 JSON SCHEMA:
 {
@@ -365,7 +368,8 @@ func (c *LLMClient) validateFact(fact ExtractedFact) error {
 	// Validate fact type
 	validTypes := map[string]bool{
 		"kv": true, "relationship": true, "preference": true, "temporal": true,
-		"identity": true, "location": true, "decision": true, "state": true,
+		"identity": true, "location": true, "decision": true, "state": true, "config": true,
+		"event": true, "rule": true,
 	}
 	if !validTypes[fact.FactType] {
 		return fmt.Errorf("invalid fact type: %s", fact.FactType)

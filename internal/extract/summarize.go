@@ -37,7 +37,7 @@ RULES:
 6. Each output fact must list which input fact IDs it replaces
 7. If a fact is unique and can't be merged, keep it as-is
 
-FACT TYPES: kv, relationship, preference, temporal, identity, location, decision, state, config
+FACT TYPES: kv, relationship, preference, temporal, identity, location, decision, state, config, event, rule
 
 Return ONLY a JSON object:
 {

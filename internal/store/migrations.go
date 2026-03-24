@@ -63,6 +63,9 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.migrateFactStateColumn(); err != nil {
 		return fmt.Errorf("migrating fact state column: %w", err)
 	}
+	if err := s.migrateFactTypeEnum(); err != nil {
+		return fmt.Errorf("migrating fact type enum: %w", err)
+	}
 
 	// Schema evolution: multi-column FTS5 with source context (v0.2.0 — Issue #26)
 	if err := s.migrateFTSMultiColumn(); err != nil {
@@ -219,7 +222,7 @@ func (s *SQLiteStore) runBootstrapDDL() error {
 			subject         TEXT,
 			predicate       TEXT,
 			object          TEXT,
-			fact_type       TEXT NOT NULL CHECK(fact_type IN ('kv','relationship','preference','temporal','identity','location','decision','state','config')),
+			fact_type       TEXT NOT NULL CHECK(fact_type IN ('kv','relationship','preference','temporal','identity','location','decision','state','config','event','rule')),
 			confidence      REAL DEFAULT 1.0,
 			decay_rate      REAL DEFAULT 0.01,
 			last_reinforced DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -586,6 +589,105 @@ func (s *SQLiteStore) migrateFactStateColumn() error {
 		return fmt.Errorf("backfilling active state: %w", err)
 	}
 	return nil
+}
+
+// migrateFactTypeEnum expands the fact_type CHECK constraint with newer semantic
+// classes without requiring a fresh database.
+func (s *SQLiteStore) migrateFactTypeEnum() error {
+	var createSQL string
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='facts'`).Scan(&createSQL); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	lower := strings.ToLower(createSQL)
+	if strings.Contains(lower, "'event'") && strings.Contains(lower, "'rule'") {
+		return nil
+	}
+
+	if _, err := s.db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = s.db.Exec(`PRAGMA foreign_keys=ON`)
+	}()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`CREATE TABLE facts_new (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			memory_id       INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+			entity_id       INTEGER REFERENCES entities(id),
+			subject         TEXT,
+			predicate       TEXT,
+			object          TEXT,
+			fact_type       TEXT NOT NULL CHECK(fact_type IN ('kv','relationship','preference','temporal','identity','location','decision','state','config','event','rule')),
+			confidence      REAL DEFAULT 1.0,
+			decay_rate      REAL DEFAULT 0.01,
+			last_reinforced DATETIME DEFAULT CURRENT_TIMESTAMP,
+			source_quote    TEXT,
+			temporal_norm   TEXT,
+			created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+			state           TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','core','retired','superseded')),
+			superseded_by   INTEGER REFERENCES facts_new(id),
+			agent_id        TEXT NOT NULL DEFAULT '',
+			observer_agent  TEXT NOT NULL DEFAULT '',
+			observed_entity TEXT NOT NULL DEFAULT '',
+			session_id      TEXT NOT NULL DEFAULT '',
+			project_id      TEXT NOT NULL DEFAULT '',
+			token_estimate  INTEGER NOT NULL DEFAULT 0
+		)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO facts_new (
+			id, memory_id, entity_id, subject, predicate, object, fact_type, confidence, decay_rate,
+			last_reinforced, source_quote, temporal_norm, created_at, state, superseded_by, agent_id,
+			observer_agent, observed_entity, session_id, project_id, token_estimate
+		)
+		SELECT
+			id, memory_id, entity_id, subject, predicate, object, fact_type, confidence, decay_rate,
+			last_reinforced, source_quote, temporal_norm, created_at, state, superseded_by, agent_id,
+			observer_agent, observed_entity, session_id, project_id, token_estimate
+		FROM facts`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE facts`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE facts_new RENAME TO facts`); err != nil {
+		return err
+	}
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_facts_memory_id ON facts(memory_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_entity_id ON facts(entity_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_type ON facts(fact_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate ON facts(subject, predicate)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_state ON facts(state)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_agent_id ON facts(agent_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_observer_agent ON facts(observer_agent)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_observed_entity ON facts(observed_entity)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_session_id ON facts(session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_project_id ON facts(project_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_token_estimate ON facts(token_estimate)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_scope_lookup ON facts(project_id, observer_agent, observed_entity, session_id, state, superseded_by)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_scope_subject_predicate ON facts(project_id, observer_agent, observed_entity, subject, predicate, state, superseded_by)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_superseded_by ON facts(superseded_by)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_conflict_scan ON facts(superseded_by, subject, predicate, object)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_stale_scan ON facts(superseded_by, confidence, last_reinforced)`,
+		`CREATE INDEX IF NOT EXISTS idx_facts_memid_superseded ON facts(memory_id, superseded_by)`,
+	}
+	for _, stmt := range indexes {
+		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // migrateFTSMultiColumn upgrades FTS5 from single-column (content only) to

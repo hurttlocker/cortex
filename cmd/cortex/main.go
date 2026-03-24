@@ -726,7 +726,6 @@ func runImport(args []string) error {
 
 		// Run LLM enrichment (default when extracting, skip with --no-enrich)
 		// Graceful degradation: if no API key, skip silently with one-line notice.
-		llmAvailable := enableEnrichment
 		if enableEnrichment && extractionStats != nil {
 			enrichLLM := llmFlag
 			if enrichLLM == "" {
@@ -740,7 +739,6 @@ func runImport(args []string) error {
 			// Pre-check: can we create the provider?
 			if _, err := tryCreateProvider(enrichLLM); err != nil {
 				fmt.Fprintf(os.Stderr, "  Skipping LLM enrichment (no API key). Set OPENROUTER_API_KEY for richer facts, or pass --no-enrich to silence this.\n")
-				llmAvailable = false
 			} else {
 				fmt.Println("\nRunning LLM enrichment...")
 				enrichStats, err := runEnrichmentOnImportedMemories(ctx, s, enrichLLM, totalResult.NewMemoryIDs)
@@ -755,20 +753,19 @@ func runImport(args []string) error {
 			}
 		}
 
-		// Auto-classify kv facts from this import (default when enriching, skip with --no-classify)
-		if llmAvailable && !noClassify && !opts.DryRun {
+		// Auto-classify kv facts from this import (embedded local model by default).
+		if !noClassify && !opts.DryRun {
 			classifyLLM := llmFlag
 			if classifyLLM == "" {
-				if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
-					classifyLLM = resolvedCfg.EffectiveLLMModel("classify", extract.DefaultClassifyModel).Value
-				}
-				if classifyLLM == "" {
-					classifyLLM = extract.DefaultClassifyModel // deepseek-v3.2
+				classifyLLM = "local"
+			}
+			if !strings.EqualFold(classifyLLM, "local") {
+				if _, err := tryCreateProvider(classifyLLM); err != nil {
+					fmt.Fprintf(os.Stderr, "  Skipping classification (no provider for %s). Pass --no-classify to silence this.\n", classifyLLM)
+					classifyLLM = ""
 				}
 			}
-			if _, err := tryCreateProvider(classifyLLM); err != nil {
-				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key). Set OPENROUTER_API_KEY for auto-classification, or pass --no-classify to silence this.\n")
-			} else {
+			if classifyLLM != "" || llmFlag == "" || strings.EqualFold(llmFlag, "local") {
 				fmt.Println("\nClassifying facts...")
 				classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM, totalResult.NewMemoryIDs)
 				if err != nil {
@@ -4843,6 +4840,7 @@ func runClassify(args []string) error {
 	dryRun := false
 	jsonOutput := false
 	agentFlag := ""
+	reclassify := false
 
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -4879,6 +4877,8 @@ func runClassify(args []string) error {
 			limit = n
 		case args[i] == "--dry-run" || args[i] == "-n":
 			dryRun = true
+		case args[i] == "--reclassify":
+			reclassify = true
 		case args[i] == "--json":
 			jsonOutput = true
 		case strings.HasPrefix(args[i], "-"):
@@ -4887,22 +4887,7 @@ func runClassify(args []string) error {
 	}
 
 	if llmFlag == "" {
-		if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
-			llmFlag = resolvedCfg.EffectiveLLMModel("classify", extract.DefaultClassifyModel).Value
-		}
-		if llmFlag == "" {
-			llmFlag = extract.DefaultClassifyModel // deepseek-v3.2
-		}
-	}
-
-	// Create LLM provider
-	llmCfg, err := llm.ParseLLMFlag(llmFlag)
-	if err != nil {
-		return fmt.Errorf("parsing --llm: %w", err)
-	}
-	provider, err := llm.NewProvider(llmCfg)
-	if err != nil {
-		return fmt.Errorf("creating LLM provider: %w", err)
+		llmFlag = "local"
 	}
 
 	// Open store
@@ -4933,14 +4918,13 @@ func runClassify(args []string) error {
 		return nil
 	}
 
-	if limit > 0 && len(facts) > limit {
-		facts = facts[:limit]
-	}
-
 	fmt.Printf("Found %d kv-type facts to classify (batch size: %d, concurrency: %d, model: %s)\n",
-		len(facts), batchSize, concurrency, provider.Name())
+		len(facts), batchSize, concurrency, llmFlag)
 	if dryRun {
 		fmt.Println("DRY RUN — no changes will be applied")
+	}
+	if reclassify {
+		fmt.Println("RECLASSIFY — backfilling existing kv facts")
 	}
 	fmt.Println()
 
@@ -4959,13 +4943,13 @@ func runClassify(args []string) error {
 	// Run classification
 	opts := extract.ClassifyOpts{
 		BatchSize:     batchSize,
-		MinConfidence: 0.8,
+		MinConfidence: 0.45,
 		Limit:         limit,
 		DryRun:        dryRun,
 		Concurrency:   concurrency,
 	}
 
-	result, err := extract.ClassifyFacts(ctx, provider, classifyFacts, opts)
+	result, err := runFactClassification(ctx, llmFlag, classifyFacts, opts)
 	if err != nil {
 		return fmt.Errorf("classification failed: %w", err)
 	}
@@ -5317,9 +5301,10 @@ func runList(args []string) error {
 		validTypes := map[string]bool{
 			"kv": true, "relationship": true, "preference": true, "temporal": true,
 			"identity": true, "location": true, "decision": true, "state": true, "config": true,
+			"event": true, "rule": true,
 		}
 		if !validTypes[factType] {
-			return fmt.Errorf("unknown fact type %q (valid: kv, relationship, preference, temporal, identity, location, decision, state, config)", factType)
+			return fmt.Errorf("unknown fact type %q (valid: kv, relationship, preference, temporal, identity, location, decision, state, config, event, rule)", factType)
 		}
 	}
 
@@ -5690,16 +5675,6 @@ func classifyImportedKVFacts(ctx context.Context, s store.Store, llmFlag string,
 		return &ClassifyImportStats{}, nil
 	}
 
-	// Resolve LLM provider
-	llmCfg, err := llm.ParseLLMFlag(llmFlag)
-	if err != nil {
-		return nil, fmt.Errorf("parsing LLM flag: %w", err)
-	}
-	provider, err := llm.NewProvider(llmCfg)
-	if err != nil {
-		return nil, fmt.Errorf("creating LLM provider: %w", err)
-	}
-
 	// Convert to ClassifyableFact format
 	classifyFacts := make([]extract.ClassifyableFact, len(kvFacts))
 	for i, f := range kvFacts {
@@ -5716,9 +5691,9 @@ func classifyImportedKVFacts(ctx context.Context, s store.Store, llmFlag string,
 	classifyOpts := extract.ClassifyOpts{
 		BatchSize:     extract.DefaultClassifyBatchSize,
 		Concurrency:   extract.DefaultClassifyConcurrency,
-		MinConfidence: 0.8,
+		MinConfidence: 0.45,
 	}
-	result, err := extract.ClassifyFacts(ctx, provider, classifyFacts, classifyOpts)
+	result, err := runFactClassification(ctx, llmFlag, classifyFacts, classifyOpts)
 	if err != nil {
 		return nil, fmt.Errorf("classifying facts: %w", err)
 	}
@@ -5742,6 +5717,23 @@ func classifyImportedKVFacts(ctx context.Context, s store.Store, llmFlag string,
 		Errors:       errors,
 		Duration:     time.Since(start),
 	}, nil
+}
+
+func runFactClassification(ctx context.Context, modelFlag string, facts []extract.ClassifyableFact, opts extract.ClassifyOpts) (*extract.ClassifyResult, error) {
+	modelFlag = strings.TrimSpace(modelFlag)
+	if modelFlag == "" || strings.EqualFold(modelFlag, "local") {
+		return extract.ClassifyFactsLocal(facts, opts)
+	}
+
+	llmCfg, err := llm.ParseLLMFlag(modelFlag)
+	if err != nil {
+		return nil, fmt.Errorf("parsing --llm: %w", err)
+	}
+	provider, err := llm.NewProvider(llmCfg)
+	if err != nil {
+		return nil, fmt.Errorf("creating LLM provider: %w", err)
+	}
+	return extract.ClassifyFacts(ctx, provider, facts, opts)
 }
 
 // EmbeddingStats holds statistics about embedding run.
@@ -7058,16 +7050,15 @@ func runReimport(args []string) error {
 		if !noClassify && !noEnrich {
 			classifyLLM := llmFlag
 			if classifyLLM == "" {
-				if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
-					classifyLLM = resolvedCfg.EffectiveLLMModel("classify", extract.DefaultClassifyModel).Value
-				}
-				if classifyLLM == "" {
-					classifyLLM = extract.DefaultClassifyModel
+				classifyLLM = "local"
+			}
+			if !strings.EqualFold(classifyLLM, "local") {
+				if _, err := tryCreateProvider(classifyLLM); err != nil {
+					fmt.Fprintf(os.Stderr, "  Skipping classification (no provider for %s). Set OPENROUTER_API_KEY, or pass --no-classify to silence this.\n", classifyLLM)
+					classifyLLM = ""
 				}
 			}
-			if _, err := tryCreateProvider(classifyLLM); err != nil {
-				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key). Set OPENROUTER_API_KEY, or pass --no-classify to silence this.\n")
-			} else {
+			if classifyLLM != "" || llmFlag == "" || strings.EqualFold(llmFlag, "local") {
 				fmt.Println("  Classifying facts...")
 				classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM, totalResult.NewMemoryIDs)
 				if err != nil {
@@ -7312,16 +7303,15 @@ Examples:
 		if !noClassify && !noEnrich {
 			classifyLLM := llmFlag
 			if classifyLLM == "" {
-				if resolvedCfg, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{}); err == nil {
-					classifyLLM = resolvedCfg.EffectiveLLMModel("classify", extract.DefaultClassifyModel).Value
-				}
-				if classifyLLM == "" {
-					classifyLLM = extract.DefaultClassifyModel
+				classifyLLM = "local"
+			}
+			if !strings.EqualFold(classifyLLM, "local") {
+				if _, err := tryCreateProvider(classifyLLM); err != nil {
+					fmt.Fprintf(os.Stderr, "  Skipping classification (no provider for %s). Pass --no-classify to silence this.\n", classifyLLM)
+					classifyLLM = ""
 				}
 			}
-			if _, err := tryCreateProvider(classifyLLM); err != nil {
-				fmt.Fprintf(os.Stderr, "  Skipping classification (no API key). Pass --no-classify to silence this.\n")
-			} else {
+			if classifyLLM != "" || llmFlag == "" || strings.EqualFold(llmFlag, "local") {
 				fmt.Println("  Classifying facts...")
 				classifyStats, err := classifyImportedKVFacts(ctx, s, classifyLLM, result.NewMemoryIDs)
 				if err != nil {
@@ -12921,7 +12911,7 @@ Memory:
 
 Facts:
   extract <file>        Extract facts from a file (without importing)
-  classify              Reclassify kv facts using LLM
+  classify              Reclassify kv facts using local model or LLM
   reinforce <id>        Reset decay timer on a fact
   supersede <id>        Mark a fact as superseded by a newer one
   fact keep <id>        Mark a fact as core / operator-kept

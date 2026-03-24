@@ -27,7 +27,7 @@ type ExtractedFact struct {
 	Subject          string         `json:"subject"`           // Who/what this is about
 	Predicate        string         `json:"predicate"`         // The relationship or attribute
 	Object           string         `json:"object"`            // The value or related entity
-	FactType         string         `json:"type"`              // kv, relationship, preference, temporal, identity, location, decision, state
+	FactType         string         `json:"type"`              // kv, relationship, preference, temporal, identity, location, decision, state, config, event, rule
 	Confidence       float64        `json:"confidence"`        // 0.0–1.0
 	SourceQuote      string         `json:"source_quote"`      // Exact text this was extracted from
 	ExtractionMethod string         `json:"extraction_method"` // always "rules" for Tier 1
@@ -42,8 +42,10 @@ var BaseDecayRates = map[string]float64{
 	"relationship": 0.02,
 	"location":     0.03,
 	"config":       0.03,
+	"rule":         0.04,
 	"decision":     0.05,
 	"kv":           0.05,
+	"event":        0.08,
 	"state":        0.10,
 	"temporal":     0.15,
 }

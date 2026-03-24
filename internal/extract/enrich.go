@@ -341,7 +341,7 @@ func isDuplicateOfRuleFact(candidate ExtractedFact, ruleFacts []ExtractedFact) b
 // isValidFactType checks if a fact type is one of the recognized types.
 func isValidFactType(ft string) bool {
 	switch ft {
-	case "kv", "relationship", "preference", "temporal", "identity", "location", "decision", "state", "config":
+	case "kv", "relationship", "preference", "temporal", "identity", "location", "decision", "state", "config", "event", "rule":
 		return true
 	default:
 		return false

@@ -358,8 +358,9 @@ func (s *SQLiteStore) UpdateFactConfidence(ctx context.Context, id int64, confid
 
 // UpdateFactType changes the fact_type of a fact. Used by `cortex classify`.
 func (s *SQLiteStore) UpdateFactType(ctx context.Context, id int64, factType string) error {
+	decayRate := defaultDecayRateForFactType(factType)
 	result, err := s.db.ExecContext(ctx,
-		"UPDATE facts SET fact_type = ? WHERE id = ?", factType, id,
+		"UPDATE facts SET fact_type = ?, decay_rate = ? WHERE id = ?", factType, decayRate, id,
 	)
 	if err != nil {
 		return fmt.Errorf("updating fact type: %w", err)
@@ -373,6 +374,29 @@ func (s *SQLiteStore) UpdateFactType(ctx context.Context, id int64, factType str
 		return fmt.Errorf("fact %d not found", id)
 	}
 	return nil
+}
+
+func defaultDecayRateForFactType(factType string) float64 {
+	switch strings.ToLower(strings.TrimSpace(factType)) {
+	case "identity":
+		return 0.01
+	case "preference", "relationship":
+		return 0.02
+	case "location", "config":
+		return 0.03
+	case "rule":
+		return 0.04
+	case "decision", "kv":
+		return 0.05
+	case "event":
+		return 0.08
+	case "state":
+		return 0.10
+	case "temporal":
+		return 0.15
+	default:
+		return 0.05
+	}
 }
 
 // UpdateFactState changes the lifecycle state of a fact.

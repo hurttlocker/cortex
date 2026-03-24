@@ -552,7 +552,7 @@ func TestIsDuplicateOfRuleFact(t *testing.T) {
 }
 
 func TestIsValidFactType(t *testing.T) {
-	valid := []string{"kv", "relationship", "preference", "temporal", "identity", "location", "decision", "state"}
+	valid := []string{"kv", "relationship", "preference", "temporal", "identity", "location", "decision", "state", "config", "event", "rule"}
 	for _, ft := range valid {
 		if !isValidFactType(ft) {
 			t.Errorf("expected %q to be valid", ft)
