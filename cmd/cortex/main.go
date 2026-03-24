@@ -429,7 +429,7 @@ func boolToInt(v bool) int {
 
 func runImport(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--no-enrich] [--no-classify] [--include .md,.txt] [--exclude .go,.js] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--llm <provider/model>] [--embed <provider/model>]")
+		return fmt.Errorf("usage: cortex import <path> [--recursive] [--dry-run] [--extract] [--no-enrich] [--no-classify] [--include .md,.txt] [--exclude .go,.js] [--project <name>] [--class <class>] [--auto-tag] [--metadata <json>] [--capture-dedupe] [--import-quality-gate] [--llm <provider/model>] [--embed <provider/model>]")
 	}
 
 	// Parse flags
@@ -448,6 +448,7 @@ func runImport(args []string) error {
 	includeExts := ""
 	excludeExts := ""
 	captureDedupe := false
+	importQualityGate := false
 	similarityThreshold := 0.95
 	dedupeWindowSec := 300
 	captureLowSignal := false
@@ -490,6 +491,8 @@ func runImport(args []string) error {
 			autoTag = true
 		case args[i] == "--capture-dedupe":
 			captureDedupe = true
+		case args[i] == "--import-quality-gate":
+			importQualityGate = true
 		case args[i] == "--similarity-threshold" && i+1 < len(args):
 			i++
 			f, err := strconv.ParseFloat(args[i], 64)
@@ -645,6 +648,13 @@ func runImport(args []string) error {
 	wireWebhook(s)
 
 	engine := ingest.NewEngine(s)
+	if importQualityGate {
+		gate, err := ingest.NewImportKeepDropGate()
+		if err != nil {
+			return fmt.Errorf("configuring import quality gate: %w", err)
+		}
+		opts.ImportKeepDropGate = gate
+	}
 	ctx := context.Background()
 	importStart := time.Now()
 	totalFactsExtracted := 0
