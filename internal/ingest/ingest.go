@@ -373,6 +373,31 @@ func (e *Engine) processMemory(ctx context.Context, raw RawMemory, opts ImportOp
 		}
 	}
 
+	if opts.ImportKeepDropGate != nil {
+		score := opts.ImportKeepDropGate.ScoreRaw(raw, opts.MemoryClass)
+		if !opts.ImportKeepDropGate.KeepRaw(raw, opts.MemoryClass) {
+			result.MemoriesDenied++
+			if opts.DryRun {
+				result.DeniedDetails = append(result.DeniedDetails, DeniedImport{
+					File:    raw.SourceFile,
+					Line:    raw.SourceLine,
+					Pattern: "import_quality_gate",
+					Reason:  fmt.Sprintf("score=%.4f below threshold", score),
+				})
+			}
+			if !opts.DryRun {
+				if counter, ok := e.store.(interface {
+					IncrementDeniedAtImportCount(context.Context, int64) error
+				}); ok {
+					if err := counter.IncrementDeniedAtImportCount(ctx, 1); err != nil {
+						return fmt.Errorf("incrementing denied-at-import count: %w", err)
+					}
+				}
+			}
+			return nil
+		}
+	}
+
 	if opts.DryRun {
 		result.MemoriesNew++
 		return nil

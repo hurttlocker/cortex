@@ -74,17 +74,18 @@ type DeniedImport struct {
 
 // ImportOptions configures an import operation.
 type ImportOptions struct {
-	Recursive   bool
-	DryRun      bool
-	MaxFileSize int64       // bytes, default 10MB
-	Project     string      // Project tag to assign to imported memories
-	MemoryClass string      // Optional class to assign (rule, decision, preference, identity, status, scratch)
-	AutoTag     bool        // Infer project from file paths using default rules
-	Metadata    interface{} // *store.Metadata — stored as interface{} to avoid circular import
-	ProgressFn  func(current, total int, file string)
-	Include     []string // Only import files with these extensions (e.g. ".md", ".txt")
-	Exclude     []string // Skip files with these extensions (e.g. ".go", ".js")
-	Denylist    []cfgresolver.DenylistEntry
+	Recursive          bool
+	DryRun             bool
+	MaxFileSize        int64       // bytes, default 10MB
+	Project            string      // Project tag to assign to imported memories
+	MemoryClass        string      // Optional class to assign (rule, decision, preference, identity, status, scratch)
+	AutoTag            bool        // Infer project from file paths using default rules
+	Metadata           interface{} // *store.Metadata — stored as interface{} to avoid circular import
+	ProgressFn         func(current, total int, file string)
+	Include            []string // Only import files with these extensions (e.g. ".md", ".txt")
+	Exclude            []string // Skip files with these extensions (e.g. ".go", ".js")
+	Denylist           []cfgresolver.DenylistEntry
+	ImportKeepDropGate *ImportKeepDropGate
 
 	// Capture hygiene controls (Issue #36).
 	// Conservative defaults are applied by Normalize().
