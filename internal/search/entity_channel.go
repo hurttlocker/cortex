@@ -125,11 +125,14 @@ func (e *Engine) searchEntityProfiles(ctx context.Context, query string, opts Op
 	return results, nil
 }
 
-func (e *Engine) shouldUseEntityGraph(ctx context.Context, opts Options) bool {
+func (e *Engine) shouldUseEntityGraph(ctx context.Context, query string, opts Options, strategy queryStrategyDecision) bool {
 	if opts.EntityGraph {
 		return true
 	}
 	if opts.Mode != ModeRRF {
+		return false
+	}
+	if len(strategy.Entities) == 0 && strategy.Primary != StrategyEntity && strategy.Primary != StrategyComparison && strategy.Primary != StrategyBridge {
 		return false
 	}
 	if e == nil || e.store == nil {

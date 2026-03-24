@@ -1706,7 +1706,7 @@ func newSearchEngineForModeStrict(s store.Store, mode search.Mode, embedFlag str
 
 func runAsk(args []string) error {
 	var queryParts []string
-	mode := "hybrid"
+	mode := "rrf"
 	limit := 8
 	limitExplicit := false
 	budget := 1500
@@ -1843,7 +1843,7 @@ func runAsk(args []string) error {
 		case args[i] == "--entity-graph":
 			entityGraph = true
 		case strings.HasPrefix(args[i], "-"):
-			return fmt.Errorf("unknown flag: %s\nusage: cortex ask <query> [--mode hybrid|bm25|semantic|rrf] [--limit 8] [--budget 1500] [--model provider/model] [--embed <provider/model>] [--rerank[=auto|on|off]] [--entity-graph] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--json]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: cortex ask <query> [--mode rrf|hybrid|bm25|semantic] [--limit 8] [--budget 1500] [--model provider/model] [--embed <provider/model>] [--rerank[=auto|on|off]] [--entity-graph] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--json]", args[i])
 		default:
 			queryParts = append(queryParts, args[i])
 		}
@@ -1851,7 +1851,7 @@ func runAsk(args []string) error {
 
 	query := strings.TrimSpace(strings.Join(queryParts, " "))
 	if query == "" {
-		return fmt.Errorf("usage: cortex ask <query> [--mode hybrid|bm25|semantic|rrf] [--limit 8] [--budget 1500] [--model provider/model] [--embed <provider/model>] [--rerank[=auto|on|off]] [--entity-graph] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--json]")
+		return fmt.Errorf("usage: cortex ask <query> [--mode rrf|hybrid|bm25|semantic] [--limit 8] [--budget 1500] [--model provider/model] [--embed <provider/model>] [--rerank[=auto|on|off]] [--entity-graph] [--scope agent:<id>|entity:<id>|session:<id>|project:<id>] [--json]")
 	}
 
 	modeParsed, err := search.ParseMode(mode)
@@ -1996,7 +1996,7 @@ func providerName(provider llm.Provider, model string) string {
 
 func runAnswer(args []string) error {
 	var queryParts []string
-	mode := "hybrid"
+	mode := "rrf"
 	limit := 5
 	modelFlag := ""
 	embedFlag := ""
@@ -2120,7 +2120,7 @@ func runAnswer(args []string) error {
 		case args[i] == "--verbose" || args[i] == "-v":
 			verbose = true
 		case strings.HasPrefix(args[i], "-"):
-			return fmt.Errorf("unknown flag: %s\nusage: cortex answer <query> [--mode hybrid] [--limit 5] [--model provider/model] [--embed <provider/model>] [--rerank[=auto|on|off]] [--max-sentences 6] [--json]", args[i])
+			return fmt.Errorf("unknown flag: %s\nusage: cortex answer <query> [--mode rrf|hybrid|bm25|semantic] [--limit 5] [--model provider/model] [--embed <provider/model>] [--rerank[=auto|on|off]] [--max-sentences 6] [--json]", args[i])
 		default:
 			queryParts = append(queryParts, args[i])
 		}
@@ -2128,7 +2128,7 @@ func runAnswer(args []string) error {
 
 	query := strings.TrimSpace(strings.Join(queryParts, " "))
 	if query == "" {
-		return fmt.Errorf("usage: cortex answer <query> [--mode hybrid] [--limit 5] [--model provider/model] [--embed <provider/model>] [--rerank[=auto|on|off]] [--max-sentences 6] [--json]")
+		return fmt.Errorf("usage: cortex answer <query> [--mode rrf|hybrid|bm25|semantic] [--limit 5] [--model provider/model] [--embed <provider/model>] [--rerank[=auto|on|off]] [--max-sentences 6] [--json]")
 	}
 
 	modeParsed, err := search.ParseMode(mode)
@@ -9867,6 +9867,16 @@ func outputTTYSearch(query string, results []search.Result, showMetadata bool, e
 		if explain && r.Explain != nil {
 			e := r.Explain
 			fmt.Printf("     🔎 source=%s\n", e.Provenance.Source)
+			if e.QueryStrategy != nil {
+				fmt.Printf("     🧭 strategy=%s", e.QueryStrategy.Primary)
+				if len(e.QueryStrategy.Entities) > 0 {
+					fmt.Printf(" entities=%s", strings.Join(e.QueryStrategy.Entities, ","))
+				}
+				if e.QueryStrategy.TemporalIntent {
+					fmt.Print(" temporal=true")
+				}
+				fmt.Println()
+			}
 			if !e.Provenance.Timestamp.IsZero() {
 				fmt.Printf("     ⏱ imported=%s  age=%.1f days\n", e.Provenance.Timestamp.Format(time.RFC3339), e.Provenance.AgeDays)
 			}
@@ -9889,6 +9899,17 @@ func outputTTYSearch(query string, results []search.Result, showMetadata bool, e
 			}
 			if e.RankComponents.HybridBM25Contribution != nil && e.RankComponents.HybridSemanticContribution != nil {
 				fmt.Printf("     • hybrid: bm25=%.3f semantic=%.3f\n", *e.RankComponents.HybridBM25Contribution, *e.RankComponents.HybridSemanticContribution)
+			}
+			if e.RankComponents.EntityChannelScore != nil || e.RankComponents.TemporalChannelScore != nil {
+				entityScore := 0.0
+				temporalScore := 0.0
+				if e.RankComponents.EntityChannelScore != nil {
+					entityScore = *e.RankComponents.EntityChannelScore
+				}
+				if e.RankComponents.TemporalChannelScore != nil {
+					temporalScore = *e.RankComponents.TemporalChannelScore
+				}
+				fmt.Printf("     • rrf extras: entity=%.3f temporal=%.3f\n", entityScore, temporalScore)
 			}
 			if e.RankComponents.SourceWeight != 0 {
 				fmt.Printf("     • source_weight=%.3f\n", e.RankComponents.SourceWeight)
