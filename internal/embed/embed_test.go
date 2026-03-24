@@ -571,6 +571,61 @@ func TestEmbed_OllamaProvider(t *testing.T) {
 	}
 }
 
+func TestOllamaRequestTimeout(t *testing.T) {
+	if got := ollamaRequestTimeout(1); got != 10*time.Second {
+		t.Fatalf("timeout(1) = %s, want 10s", got)
+	}
+	if got := ollamaRequestTimeout(3); got != 30*time.Second {
+		t.Fatalf("timeout(3) = %s, want 30s", got)
+	}
+	if got := ollamaRequestTimeout(0); got != 10*time.Second {
+		t.Fatalf("timeout(0) = %s, want 10s", got)
+	}
+}
+
+func TestEmbed_OllamaBatchTimeoutContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(2 * time.Second):
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(EmbedResponse{
+				Data: []struct {
+					Embedding []float32 `json:"embedding"`
+					Index     int       `json:"index"`
+				}{
+					{Embedding: []float32{0.1, 0.2, 0.3}, Index: 0},
+				},
+			})
+		case <-r.Context().Done():
+			return
+		}
+	}))
+	defer server.Close()
+
+	config := &EmbedConfig{
+		Provider:    "ollama",
+		Model:       "all-minilm",
+		Endpoint:    server.URL,
+		MaxRetries:  0,
+		TimeoutSecs: 60,
+	}
+
+	client, err := NewClient(config)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	_, err = client.EmbedBatch(ctx, []string{"slow text"})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") && !strings.Contains(err.Error(), "sending request") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestEmbed_OpenAIProvider(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check Authorization header

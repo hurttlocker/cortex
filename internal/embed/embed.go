@@ -80,6 +80,13 @@ type Client struct {
 	mu     sync.Mutex
 }
 
+func ollamaRequestTimeout(textCount int) time.Duration {
+	if textCount <= 0 {
+		textCount = 1
+	}
+	return time.Duration(textCount) * 10 * time.Second
+}
+
 // HealthCheck pings the embedding provider to verify connectivity.
 // For Ollama, hits /api/tags (lightweight). For others, sends a minimal embed request.
 func (c *Client) HealthCheck(ctx context.Context) error {
@@ -441,8 +448,15 @@ func (c *Client) attemptEmbedBatch(ctx context.Context, texts []string) ([][]flo
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
+	requestCtx := ctx
+	if c.config.Provider == "ollama" {
+		var cancel context.CancelFunc
+		requestCtx, cancel = context.WithTimeout(ctx, ollamaRequestTimeout(len(texts)))
+		defer cancel()
+	}
+
 	// Create HTTP request
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.config.Endpoint, bytes.NewBuffer(requestBody))
+	httpReq, err := http.NewRequestWithContext(requestCtx, "POST", c.config.Endpoint, bytes.NewBuffer(requestBody))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
