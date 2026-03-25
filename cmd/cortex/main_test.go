@@ -1171,6 +1171,8 @@ func TestRunEmbed_StatusReportsCoverage(t *testing.T) {
 		globalDBPath = oldDBPath
 		globalReadOnly = oldReadOnly
 	})
+	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
+	t.Setenv("CORTEX_DISABLE_OLLAMA_AUTODETECT", "1")
 
 	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
 	if err != nil {
@@ -1209,6 +1211,9 @@ func TestRunEmbed_StatusReportsCoverage(t *testing.T) {
 	}
 	if !strings.Contains(out, "remaining=1") {
 		t.Fatalf("expected remaining count in status output, got %q", out)
+	}
+	if !strings.Contains(out, `provider="onnx/all-minilm-l6-v2"`) {
+		t.Fatalf("expected resolved provider in status output, got %q", out)
 	}
 }
 
@@ -1829,9 +1834,34 @@ func TestMain_CorruptDBIncludesRecoveryHint(t *testing.T) {
 
 func TestMain_OpenRouterMissingKeyIncludesHint(t *testing.T) {
 	homeDir := t.TempDir()
+	dbPath := filepath.Join(homeDir, "cortex.db")
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+	memID, err := s.AddMemory(ctx, &store.Memory{Content: "classify seed", SourceFile: "seed.md"})
+	if err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "cortex",
+		Predicate:  "setting",
+		Object:     "enabled",
+		Confidence: 0.9,
+		FactType:   "kv",
+	}); err != nil {
+		t.Fatalf("AddFact: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close store: %v", err)
+	}
+
 	exitCode, out := runMainSubprocessWithEnv(t, map[string]string{
 		"OPENROUTER_API_KEY": "",
 		"HOME":               homeDir,
+		"CORTEX_DB":          dbPath,
 	}, "classify", "--llm", "openrouter/deepseek/deepseek-v3.2", "--limit", "1")
 	if exitCode != 1 {
 		t.Fatalf("exit code = %d, want 1; output=%q", exitCode, out)
@@ -2066,6 +2096,8 @@ func TestRunDoctor_JSONHealthyDB(t *testing.T) {
 	oldDBPath := globalDBPath
 	globalDBPath = dbPath
 	t.Cleanup(func() { globalDBPath = oldDBPath })
+	t.Setenv("HOME", filepath.Join(tmpDir, "home"))
+	t.Setenv("CORTEX_DISABLE_OLLAMA_AUTODETECT", "1")
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
 
 	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
@@ -2138,6 +2170,10 @@ func TestRunDoctor_JSONHealthyDB(t *testing.T) {
 	if !ok || llm.Status != "pass" {
 		t.Fatalf("expected llm_keys check to pass, got %+v", llm)
 	}
+	embedder, ok := findDoctorCheck(report, "embedder")
+	if !ok || embedder.Status != "pass" {
+		t.Fatalf("expected embedder check to pass, got %+v", embedder)
+	}
 }
 
 func TestRunDoctor_ResolvedConfigProviderOnlyPasses(t *testing.T) {
@@ -2169,6 +2205,7 @@ func TestRunDoctor_ResolvedConfigProviderOnlyPasses(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
 	t.Setenv("CORTEX_LLM", "")
+	t.Setenv("CORTEX_DISABLE_OLLAMA_AUTODETECT", "1")
 
 	var (
 		runErr error

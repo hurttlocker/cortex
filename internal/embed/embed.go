@@ -1,13 +1,12 @@
-// Package embed provides text-to-vector embedding via OpenAI-compatible APIs.
+// Package embed provides text-to-vector embedding via HTTP APIs and local ONNX.
 //
 // Supports multiple providers:
 // - ollama: http://localhost:11434/v1/embeddings
 // - openai: https://api.openai.com/v1/embeddings
 // - openrouter: https://openrouter.ai/api/v1/embeddings
 // - deepseek: https://api.deepseek.com/v1/embeddings
+// - onnx: local ONNX Runtime inference
 // - custom: user-specified endpoint
-//
-// All providers use the OpenAI-compatible /v1/embeddings format for consistency.
 package embed
 
 import (
@@ -35,13 +34,18 @@ type Embedder interface {
 
 // EmbedConfig holds embedding provider configuration.
 type EmbedConfig struct {
-	Provider    string // "ollama", "openai", "deepseek", "openrouter", "custom"
-	Model       string // model name
-	Endpoint    string // full API URL
-	APIKey      string
-	MaxRetries  int // default: 3
-	TimeoutSecs int // per-request timeout (default: 60)
-	dimensions  int // auto-detected on first call
+	Provider       string // "ollama", "openai", "deepseek", "openrouter", "onnx", "custom"
+	Model          string // model name
+	Endpoint       string // full API URL
+	APIKey         string
+	MaxRetries     int // default: 3
+	TimeoutSecs    int // per-request timeout (default: 60)
+	ResolvedFrom   string
+	ResolvedDetail string
+	ModelPath      string
+	Local          bool
+	WillDownload   bool
+	dimensions     int // auto-detected on first call
 }
 
 // EmbedRequest represents an OpenAI-compatible embeddings request.
@@ -167,7 +171,7 @@ func ParseEmbedFlag(flag string) (*EmbedConfig, error) {
 		return nil, fmt.Errorf("invalid --embed format: expected 'provider/model', got %q", flag)
 	}
 
-	provider := flag[:slashIdx]
+	provider := strings.ToLower(flag[:slashIdx])
 	model := flag[slashIdx+1:]
 
 	if provider == "" {
@@ -198,12 +202,26 @@ func ParseEmbedFlag(flag string) (*EmbedConfig, error) {
 	case "openrouter":
 		config.Endpoint = "https://openrouter.ai/api/v1/embeddings"
 		config.APIKey = os.Getenv("OPENROUTER_API_KEY")
+	case "onnx":
+		spec, err := ResolveONNXModelSpec(model)
+		if err != nil {
+			return nil, err
+		}
+		files, err := ResolveONNXModelFiles(spec)
+		if err != nil {
+			return nil, err
+		}
+		config.Model = spec.Key
+		config.ModelPath = files.ModelPath
+		config.Local = true
+		config.WillDownload = !ONNXModelReady(files)
+		config.dimensions = spec.Dimensions
 	case "custom":
 		// Custom provider - user must set endpoint and key via env vars
 		config.Endpoint = os.Getenv("CORTEX_EMBED_ENDPOINT")
 		config.APIKey = os.Getenv("CORTEX_EMBED_API_KEY")
 	default:
-		return nil, fmt.Errorf("unknown provider %q. Supported: ollama, openai, deepseek, openrouter, custom", provider)
+		return nil, fmt.Errorf("unknown provider %q. Supported: ollama, onnx, openai, deepseek, openrouter, custom", provider)
 	}
 
 	// Only apply generic overrides for custom provider (other providers have their own env vars)
@@ -233,53 +251,6 @@ func NewEmbedConfig(providerModel string) (*EmbedConfig, error) {
 	return ParseEmbedFlag(providerModel)
 }
 
-// ResolveEmbedConfig resolves configuration from all sources.
-// Priority: config file < env vars < CLI flag
-func ResolveEmbedConfig(cliFlag string) (*EmbedConfig, error) {
-	resolved, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{CLIEmbed: cliFlag})
-	if err != nil {
-		return nil, err
-	}
-
-	flag := strings.TrimSpace(cliFlag)
-	if flag == "" {
-		flag = strings.TrimSpace(resolved.EmbedProvider.Value)
-	}
-	if flag == "" {
-		return nil, nil // No embedding configuration found
-	}
-
-	if !strings.Contains(flag, "/") {
-		// Provider-only entry in config/env; use sensible defaults.
-		switch strings.ToLower(flag) {
-		case "ollama":
-			flag = "ollama/nomic-embed-text"
-		case "openrouter":
-			flag = "openrouter/text-embedding-3-small"
-		case "openai":
-			flag = "openai/text-embedding-3-small"
-		case "deepseek":
-			flag = "deepseek/deepseek-embedding"
-		}
-	}
-
-	config, err := ParseEmbedFlag(flag)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(config.APIKey) == "" {
-		if strings.TrimSpace(resolved.EmbedAPIKey.Value) != "" {
-			config.APIKey = resolved.EmbedAPIKey.Value
-		} else if rv := resolved.APIKeyForProvider(config.Provider); strings.TrimSpace(rv.Value) != "" {
-			config.APIKey = rv.Value
-		}
-	}
-	if strings.TrimSpace(resolved.EmbedEndpoint.Value) != "" {
-		config.Endpoint = resolved.EmbedEndpoint.Value
-	}
-	return config, nil
-}
-
 // Validate checks if the embedding configuration is valid and complete.
 func (c *EmbedConfig) Validate() error {
 	if c.Provider == "" {
@@ -288,12 +259,12 @@ func (c *EmbedConfig) Validate() error {
 	if c.Model == "" {
 		return fmt.Errorf("model is required")
 	}
-	if c.Endpoint == "" {
+	if c.Provider != "onnx" && c.Provider != "test" && c.Endpoint == "" {
 		return fmt.Errorf("endpoint is required")
 	}
 
 	// API key validation (except for Ollama and test providers which don't need one)
-	if c.Provider != "ollama" && c.Provider != "test" && c.APIKey == "" {
+	if c.Provider != "ollama" && c.Provider != "onnx" && c.Provider != "test" && c.APIKey == "" {
 		return fmt.Errorf("API key is required for provider %q (set via environment variable)", c.Provider)
 	}
 
@@ -308,13 +279,16 @@ func (c *EmbedConfig) Validate() error {
 }
 
 // NewClient creates a new embedding client with the given configuration.
-func NewClient(config *EmbedConfig) (*Client, error) {
+func NewClient(config *EmbedConfig) (Embedder, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
 
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	if config.Provider == "onnx" {
+		return NewONNXEmbedder(config)
 	}
 
 	transport := &http.Transport{

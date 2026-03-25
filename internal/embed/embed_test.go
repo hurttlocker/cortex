@@ -52,6 +52,16 @@ func TestParseEmbedFlag(t *testing.T) {
 			},
 		},
 		{
+			name: "onnx all-minilm",
+			flag: "onnx/all-minilm-l6-v2",
+			want: &EmbedConfig{
+				Provider:    "onnx",
+				Model:       "all-minilm-l6-v2",
+				MaxRetries:  3,
+				TimeoutSecs: 60,
+			},
+		},
+		{
 			name:    "empty flag",
 			flag:    "",
 			wantErr: true,
@@ -132,6 +142,16 @@ func TestEmbedConfig_Validate(t *testing.T) {
 				Model:       "text-embedding-3-small",
 				Endpoint:    "https://api.openai.com/v1/embeddings",
 				APIKey:      "sk-test",
+				MaxRetries:  3,
+				TimeoutSecs: 60,
+			},
+			want: true,
+		},
+		{
+			name: "valid onnx",
+			config: EmbedConfig{
+				Provider:    "onnx",
+				Model:       "all-minilm-l6-v2",
 				MaxRetries:  3,
 				TimeoutSecs: 60,
 			},
@@ -672,30 +692,38 @@ func TestEmbed_OpenAIProvider(t *testing.T) {
 	}
 }
 
-// TestResolveEmbedConfig_NoConfigReturnsNil verifies that when no config file or
-// env var provides an embed provider, ResolveEmbedConfig("") returns nil without error.
-// This is the base case for hybrid auto-resolve: if nil, fall back gracefully.
-func TestResolveEmbedConfig_NoConfigReturnsNil(t *testing.T) {
-	// Isolate from the caller's real ~/.cortex/config.yaml and env.
+func TestResolveEmbedConfig_AutoDetectsONNXFallback(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CORTEX_EMBED", "")
 	t.Setenv("CORTEX_EMBED_ENDPOINT", "")
 	t.Setenv("CORTEX_EMBED_API_KEY", "")
+	t.Setenv("CORTEX_DISABLE_OLLAMA_AUTODETECT", "1")
 
 	cfg, err := ResolveEmbedConfig("")
 	if err != nil {
-		t.Fatalf("ResolveEmbedConfig with no config should not error, got: %v", err)
+		t.Fatalf("ResolveEmbedConfig should not error, got: %v", err)
 	}
-	if cfg != nil {
-		t.Errorf("ResolveEmbedConfig with no config should return nil, got: %+v", cfg)
+	if cfg == nil {
+		t.Fatal("ResolveEmbedConfig should auto-detect ONNX, got nil")
+	}
+	if cfg.Provider != "onnx" {
+		t.Fatalf("expected provider onnx, got %q", cfg.Provider)
+	}
+	if cfg.Model != "all-minilm-l6-v2" {
+		t.Fatalf("expected model all-minilm-l6-v2, got %q", cfg.Model)
+	}
+	if cfg.ResolvedFrom != "auto-detected" {
+		t.Fatalf("expected auto-detected source, got %q", cfg.ResolvedFrom)
+	}
+	if cfg.ModelPath == "" {
+		t.Fatal("expected ONNX model path to be populated")
 	}
 }
 
-// TestResolveEmbedConfig_EnvVarResolution verifies that CORTEX_EMBED env var is
-// picked up when no CLI flag is passed — the mechanism hybrid auto-resolve relies on.
 func TestResolveEmbedConfig_EnvVarResolution(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CORTEX_EMBED", "ollama/nomic-embed-text")
+	t.Setenv("CORTEX_DISABLE_OLLAMA_AUTODETECT", "1")
 
 	cfg, err := ResolveEmbedConfig("")
 	if err != nil {
