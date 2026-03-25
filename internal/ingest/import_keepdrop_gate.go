@@ -184,13 +184,13 @@ func augmentImportQualityText(raw RawMemory, memoryClass string) string {
 }
 
 var (
-	importPositivePathRE = regexp.MustCompile(`(?i)(readme|memory|decision|rule|prd|docs/|design|spec|architecture|roadmap)`)
-	importNegativePathRE = regexp.MustCompile(`(?i)(/logs?/|/tmp/|/cache/|/node_modules/|/target/|\.log$|\.tmp$|\.out$)`)
-	importLowSignalAckRE = regexp.MustCompile(`(?i)\b(?:got it|sounds good|thank you|thanks!|okay|ok|cool|awesome|roger|copy that|noted)\b`)
-	importCLICommandRE  = regexp.MustCompile(`(?i)\b(?:git|go|cortex|openclaw|npm|python3|pip|ollama|gh)\b`)
-	importOpsKeywordRE  = regexp.MustCompile(`(?i)\b(?:gateway|restart|status|import|search|test|build|push|pull|deploy|alert|maintenance|db_size_high)\b`)
+	importPositivePathRE     = regexp.MustCompile(`(?i)(readme|memory|decision|rule|prd|docs/|design|spec|architecture|roadmap)`)
+	importNegativePathRE     = regexp.MustCompile(`(?i)(/logs?/|/tmp/|/cache/|/node_modules/|/target/|\.log$|\.tmp$|\.out$)`)
+	importLowSignalAckRE     = regexp.MustCompile(`(?i)\b(?:got it|sounds good|thank you|thanks!|okay|ok|cool|awesome|roger|copy that|noted)\b`)
+	importCLICommandRE       = regexp.MustCompile(`(?i)\b(?:git|go|cortex|openclaw|npm|python3|pip|ollama|gh)\b`)
+	importOpsKeywordRE       = regexp.MustCompile(`(?i)\b(?:gateway|restart|status|import|search|test|build|push|pull|deploy|alert|maintenance|db_size_high)\b`)
 	importEndpointOrConfigRE = regexp.MustCompile(`(?i)(?:/[a-z0-9._~!$&'()*+,;=:@%/-]+|[A-Z_]{3,}=)`)
-	importProtocolNoiseRE = regexp.MustCompile(
+	importProtocolNoiseRE    = regexp.MustCompile(
 		`(?i)\b(?:heartbeat|status: ok|health check|ping|pong|keepalive|session started|session ended|connected|disconnected|retrying|ws_token|bearer token|http 200|http 201|trace_id|request_id)\b`,
 	)
 )
