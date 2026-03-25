@@ -236,11 +236,11 @@ func remediationHint(err error) string {
 	case strings.Contains(msg, "health check failed"):
 		return "Embedding provider is unreachable. Check that the service is running, or switch providers with `--embed <provider/model>`."
 	case strings.Contains(msg, "unknown provider") && strings.Contains(msg, "supported"):
-		return "Supported embed providers: ollama, openai, deepseek, openrouter, custom. Example: `--embed ollama/nomic-embed-text`"
+		return "Supported embed providers: ollama, onnx, openai, deepseek, openrouter, custom. Example: `--embed onnx/all-minilm-l6-v2`"
 	case strings.Contains(msg, "api key is required for provider"):
 		return "Set the API key for your embed provider via environment variable (e.g., OPENAI_API_KEY, OPENROUTER_API_KEY)."
 	case strings.Contains(msg, "invalid --embed format"):
-		return "Use format: `--embed provider/model` (e.g., `--embed ollama/nomic-embed-text`)."
+		return "Use format: `--embed provider/model` (e.g., `--embed onnx/all-minilm-l6-v2`)."
 
 	// LLM provider errors
 	case strings.Contains(msg, "unknown llm provider"):
@@ -1707,7 +1707,7 @@ func newSearchEngineForModeStrict(s store.Store, mode search.Mode, embedFlag str
 			return nil, fmt.Errorf("creating embedder: %w", clientErr)
 		}
 		engine := search.NewEngineWithEmbedder(s, embedder)
-		loadSearchHNSW(engine, "auto-resolved from config")
+		loadSearchHNSW(engine, "auto-resolved")
 		return engine, nil
 	}
 
@@ -2228,7 +2228,7 @@ func newSearchEngineForMode(s store.Store, mode search.Mode, embedFlag string) (
 			if autoConfig.Validate() == nil {
 				if embedder, clientErr := newEmbedClient(autoConfig); clientErr == nil {
 					engine := search.NewEngineWithEmbedder(s, embedder)
-					loadSearchHNSW(engine, "auto-resolved from config")
+					loadSearchHNSW(engine, "auto-resolved")
 					return engine, nil
 				}
 			}
@@ -3574,7 +3574,7 @@ func relativeTimeString(t time.Time) string {
 func buildHealthRecommendations(report healthReport) []string {
 	recs := make([]string, 0, 4)
 	if report.EmbeddingCoverage < 10 {
-		recs = append(recs, "⚠ Embedding coverage low — run: cortex embed ollama/nomic-embed-text")
+		recs = append(recs, "⚠ Embedding coverage low — run: cortex embed")
 	} else {
 		recs = append(recs, "✓ Embedding coverage healthy")
 	}
@@ -3721,7 +3721,7 @@ func runEvalSearch(args []string) error {
 	fixturePath := "tests/fixtures/retrieval/ci-gate.json"
 	corpusPath := "tests/fixtures/retrieval/ci-corpus"
 	mode := "keyword"
-	embedFlag := "ollama/nomic-embed-text"
+	embedFlag := "onnx/all-minilm-l6-v2"
 	jsonOutput := false
 	minPassRate := 0.95
 	minAvgPrecision := 0.60
@@ -8270,7 +8270,7 @@ func runIndex(args []string) error {
 	}
 
 	if count == 0 {
-		fmt.Println("No embeddings found. Run 'cortex embed <provider/model>' first.")
+		fmt.Println("No embeddings found. Run 'cortex embed' first.")
 		return nil
 	}
 
@@ -8410,7 +8410,7 @@ Flags:
 
 Examples:
   cortex embed-source /path/to/memory/2026-02-21.md
-  cortex embed-source /path/to/memory/2026-02-21.md ollama/nomic-embed-text
+  cortex embed-source /path/to/memory/2026-02-21.md onnx/all-minilm-l6-v2
   cortex embed-source /path/to/memory/2026-02-21.md --batch-size 4
 `)
 			return nil
@@ -8514,6 +8514,24 @@ func runEmbedStatus() error {
 			dims = got
 		}
 	}
+	resolvedCfg, err := embed.ResolveEmbedConfig("")
+	if err != nil {
+		return fmt.Errorf("resolving embedder: %w", err)
+	}
+	providerRef := resolvedEmbedRef(resolvedCfg)
+	providerDims := embed.ExpectedDimensions(resolvedCfg)
+	sourceRef := resolvedEmbedSource(resolvedCfg)
+	statusRef := resolvedEmbedStatus(resolvedCfg)
+	modelPath := ""
+	speedHint := ""
+	dimsMatch := true
+	if resolvedCfg != nil {
+		modelPath = resolvedCfg.ModelPath
+		speedHint = embed.SpeedHint(resolvedCfg)
+		if dims > 0 && providerDims > 0 {
+			dimsMatch = dims == providerDims
+		}
+	}
 
 	coverage := 0.0
 	if stats.MemoryCount > 0 {
@@ -8522,13 +8540,20 @@ func runEmbedStatus() error {
 
 	running := isEmbedWorkerRunning()
 	if !isTTY() {
-		fmt.Printf("embed_status memories=%d embeddings=%d remaining=%d coverage_pct=%.2f worker_running=%t dimensions=%d\n",
+		fmt.Printf("embed_status memories=%d embeddings=%d remaining=%d coverage_pct=%.2f worker_running=%t stored_dimensions=%d provider=%q provider_dimensions=%d source=%q status=%q model_path=%q speed=%q dimensions_match=%t\n",
 			stats.MemoryCount,
 			stats.EmbeddingCount,
 			remaining,
 			coverage,
 			running,
 			dims,
+			providerRef,
+			providerDims,
+			sourceRef,
+			statusRef,
+			modelPath,
+			speedHint,
+			dimsMatch,
 		)
 		return nil
 	}
@@ -8538,11 +8563,65 @@ func runEmbedStatus() error {
 	fmt.Printf("  Embedded:        %d\n", stats.EmbeddingCount)
 	fmt.Printf("  Remaining:       %d\n", remaining)
 	fmt.Printf("  Coverage:        %.1f%%\n", coverage)
+	if providerRef != "" {
+		fmt.Printf("  Resolved:        %s\n", providerRef)
+	}
+	if sourceRef != "" {
+		fmt.Printf("  Source:          %s\n", sourceRef)
+	}
+	if statusRef != "" {
+		fmt.Printf("  Status:          %s\n", statusRef)
+	}
+	if modelPath != "" {
+		fmt.Printf("  Model path:      %s\n", modelPath)
+	}
+	if providerDims > 0 {
+		fmt.Printf("  Provider dims:   %d\n", providerDims)
+	}
 	if dims > 0 {
-		fmt.Printf("  Dimensions:      %d\n", dims)
+		fmt.Printf("  Stored dims:     %d\n", dims)
+	}
+	if dims > 0 && providerDims > 0 {
+		fmt.Printf("  Compatible:      %t\n", dimsMatch)
+	}
+	if speedHint != "" {
+		fmt.Printf("  Speed:           %s\n", speedHint)
 	}
 	fmt.Printf("  Worker running:  %t\n", running)
 	return nil
+}
+
+func resolvedEmbedRef(cfg *embed.EmbedConfig) string {
+	if cfg == nil || strings.TrimSpace(cfg.Provider) == "" || strings.TrimSpace(cfg.Model) == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/%s", cfg.Provider, cfg.Model)
+}
+
+func resolvedEmbedSource(cfg *embed.EmbedConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	source := strings.TrimSpace(cfg.ResolvedFrom)
+	detail := strings.TrimSpace(cfg.ResolvedDetail)
+	switch {
+	case source != "" && detail != "":
+		return fmt.Sprintf("%s (%s)", source, detail)
+	case detail != "":
+		return detail
+	default:
+		return source
+	}
+}
+
+func resolvedEmbedStatus(cfg *embed.EmbedConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	if cfg.Provider == "onnx" && cfg.WillDownload {
+		return "auto-download pending"
+	}
+	return "ready"
 }
 
 func parseEmbedArgs(args []string) (embedCmdOptions, error) {
@@ -8640,10 +8719,6 @@ func parseEmbedArgs(args []string) (embedCmdOptions, error) {
 	if opts.watch && opts.forceReembed {
 		return opts, fmt.Errorf("--watch cannot be used with --force")
 	}
-	if opts.embedFlag == "" && os.Getenv("CORTEX_EMBED") == "" {
-		return opts, fmt.Errorf("usage: cortex embed [provider/model] [--watch] [--interval 30m] [--batch N|--batch-size N] [--workers N] [--force]\n       cortex embed --status\n       (or set CORTEX_EMBED)")
-	}
-
 	return opts, nil
 }
 
@@ -8688,10 +8763,6 @@ func parseEmbedSourceArgs(args []string) (embedCmdOptions, error) {
 	if opts.batchSize <= 0 {
 		return opts, fmt.Errorf("--batch-size must be > 0")
 	}
-	if opts.embedFlag == "" && os.Getenv("CORTEX_EMBED") == "" {
-		return opts, fmt.Errorf("usage: cortex embed-source <path> [provider/model] [--batch-size N]\n       (or set CORTEX_EMBED)")
-	}
-
 	return opts, nil
 }
 
@@ -12002,11 +12073,9 @@ func runInit(args []string) error {
 			llmEnvKey = "OPENAI_API_KEY"
 		}
 
-		// Detect embed provider
-		embedProvider := ""
-		if isOllamaRunning() {
-			embedProvider = "ollama/nomic-embed-text"
-		}
+		embedCfg, _ := embed.ResolveEmbedConfig("")
+		embedProvider := resolvedEmbedRef(embedCfg)
+		embedSource := resolvedEmbedSource(embedCfg)
 
 		if llmProvider != "" {
 			fmt.Printf("  ✓ Detected LLM key: %s\n", llmEnvKey)
@@ -12019,10 +12088,13 @@ func runInit(args []string) error {
 		fmt.Println()
 
 		if embedProvider != "" {
-			fmt.Printf("  ✓ Detected Ollama running — will use %s for embeddings\n", embedProvider)
+			fmt.Printf("  ✓ Default embedder: %s\n", embedProvider)
+			if embedSource != "" {
+				fmt.Printf("    Source: %s\n", embedSource)
+			}
 		} else {
-			fmt.Println("  ⚠ Ollama not detected — semantic search will be unavailable")
-			fmt.Println("    Install: https://ollama.ai then run: ollama pull nomic-embed-text")
+			fmt.Println("  ⚠ No embedder detected")
+			fmt.Println("    Semantic search will require an explicit --embed provider.")
 		}
 		fmt.Println()
 
@@ -12042,13 +12114,13 @@ func runInit(args []string) error {
 			cfgLines = append(cfgLines, "#   api_key: your-key-here")
 			cfgLines = append(cfgLines, "")
 		}
-		if embedProvider != "" {
+		if strings.HasPrefix(embedProvider, "ollama/") {
 			cfgLines = append(cfgLines, "embed:")
 			cfgLines = append(cfgLines, fmt.Sprintf("  provider: %s", embedProvider))
 			cfgLines = append(cfgLines, "")
 		} else {
 			cfgLines = append(cfgLines, "# embed:")
-			cfgLines = append(cfgLines, "#   provider: ollama/nomic-embed-text")
+			cfgLines = append(cfgLines, "#   provider: onnx/all-minilm-l6-v2")
 			cfgLines = append(cfgLines, "")
 		}
 		cfgContent := strings.Join(cfgLines, "\n") + "\n"
@@ -12170,7 +12242,7 @@ func runDoctorChecks() doctorReport {
 	report := doctorReport{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		DBPath:      dbPath,
-		Checks:      make([]doctorCheck, 0, 8),
+		Checks:      make([]doctorCheck, 0, 12),
 	}
 
 	ctx := context.Background()
@@ -12222,6 +12294,7 @@ func runDoctorChecks() doctorReport {
 	}
 
 	var stats *store.StoreStats
+	storedEmbeddingDims := 0
 	if canOpenDB {
 		st, err := store.NewStore(store.StoreConfig{DBPath: dbPath, ReadOnly: true})
 		if err != nil {
@@ -12262,19 +12335,20 @@ func runDoctorChecks() doctorReport {
 					Name:    "embeddings",
 					Status:  "warn",
 					Details: "no memories imported yet",
-					Hint:    "Run `cortex import <path>` first, then `cortex embed <provider/model>`.",
+					Hint:    "Run `cortex import <path>` first, then `cortex embed`.",
 				})
 			case stats.EmbeddingCount == 0:
 				addDoctorCheck(&report, doctorCheck{
 					Name:    "embeddings",
 					Status:  "warn",
 					Details: "no embeddings found",
-					Hint:    "Run `cortex embed ollama/nomic-embed-text` for semantic/hybrid search.",
+					Hint:    "Run `cortex embed` for semantic/hybrid search.",
 				})
 			default:
 				detail := fmt.Sprintf("%d embedding vectors available", stats.EmbeddingCount)
 				if sqlStore, ok := st.(*store.SQLiteStore); ok {
 					if dims, err := sqlStore.GetEmbeddingDimensions(ctx); err == nil && dims > 0 {
+						storedEmbeddingDims = dims
 						detail = fmt.Sprintf("%d embedding vectors (%d dimensions)", stats.EmbeddingCount, dims)
 					}
 				}
@@ -12392,12 +12466,77 @@ func runDoctorChecks() doctorReport {
 				Status:  "pass",
 				Details: fmt.Sprintf("embed_provider: %s (from: %s)", embedProvider, from),
 			})
-		} else if stats != nil && stats.EmbeddingCount > 0 {
+		} else if autoEmbedCfg, autoErr := embed.ResolveEmbedConfig(""); autoErr == nil && autoEmbedCfg != nil {
 			addDoctorCheck(&report, doctorCheck{
 				Name:    "embed_config",
+				Status:  "pass",
+				Details: fmt.Sprintf("auto: %s (%s)", resolvedEmbedRef(autoEmbedCfg), resolvedEmbedSource(autoEmbedCfg)),
+			})
+		}
+	}
+
+	autoEmbedCfg, autoEmbedErr := embed.ResolveEmbedConfig("")
+	if autoEmbedErr != nil {
+		addDoctorCheck(&report, doctorCheck{
+			Name:    "embedder",
+			Status:  "warn",
+			Details: fmt.Sprintf("embedder resolution failed: %v", autoEmbedErr),
+			Hint:    "Validate embed.provider in ~/.cortex/config.yaml or CORTEX_EMBED.",
+		})
+	} else if autoEmbedCfg != nil {
+		providerDims := embed.ExpectedDimensions(autoEmbedCfg)
+		locality := "remote"
+		if autoEmbedCfg.Local {
+			locality = "local"
+		}
+		detail := fmt.Sprintf("%s (%s", resolvedEmbedRef(autoEmbedCfg), locality)
+		if providerDims > 0 {
+			detail += fmt.Sprintf(", %dd", providerDims)
+		}
+		detail += ")"
+		addDoctorCheck(&report, doctorCheck{
+			Name:    "embedder",
+			Status:  "pass",
+			Details: detail,
+		})
+		addDoctorCheck(&report, doctorCheck{
+			Name:    "embedder_source",
+			Status:  "pass",
+			Details: resolvedEmbedSource(autoEmbedCfg),
+		})
+		if autoEmbedCfg.ModelPath != "" {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "embedder_model",
+				Status:  "pass",
+				Details: autoEmbedCfg.ModelPath,
+			})
+		}
+		status := resolvedEmbedStatus(autoEmbedCfg)
+		statusLevel := "pass"
+		statusHint := ""
+		if status != "ready" {
+			statusLevel = "warn"
+			statusHint = "The built-in ONNX model downloads automatically the first time you run `cortex embed`, `cortex search --mode semantic`, or `cortex answer --mode hybrid`."
+		}
+		addDoctorCheck(&report, doctorCheck{
+			Name:    "embedder_status",
+			Status:  statusLevel,
+			Details: status,
+			Hint:    statusHint,
+		})
+		if speed := embed.SpeedHint(autoEmbedCfg); speed != "" {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "embedder_speed",
+				Status:  "pass",
+				Details: speed,
+			})
+		}
+		if storedEmbeddingDims > 0 && providerDims > 0 && storedEmbeddingDims != providerDims {
+			addDoctorCheck(&report, doctorCheck{
+				Name:    "embedder_compat",
 				Status:  "warn",
-				Details: "embeddings exist, but no embed provider is configured for new query embeddings",
-				Hint:    "Set embed.provider in ~/.cortex/config.yaml or CORTEX_EMBED (for example ollama/nomic-embed-text) so hybrid/semantic search can use the stored vectors.",
+				Details: fmt.Sprintf("resolved embedder uses %d dimensions but stored embeddings use %d", providerDims, storedEmbeddingDims),
+				Hint:    "Run `cortex embed` to regenerate embeddings with the resolved provider.",
 			})
 		}
 	}
@@ -12952,7 +13091,7 @@ Maintenance:
   cleanup               Remove garbage memories, headless facts, and prune noise
   backfill-scope        Infer missing fact scope from linked memory metadata
   optimize              DB maintenance (integrity check, VACUUM, ANALYZE)
-  embed <provider/model> Generate embeddings, run/watch the worker, or show status
+  embed [provider/model] Generate embeddings, run/watch the worker, or show status
   embed-source <path>   Finish embeddings for one source file
   suppress              Manage extract suppression patterns in config
   source-weight         Manage search source weights in config
