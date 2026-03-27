@@ -73,6 +73,7 @@ type recallItem struct {
 	MemoryClass         string           `json:"memory_class,omitempty"`
 	Score               float64          `json:"score"`
 	MatchType           string           `json:"match_type"`
+	RankScore           float64          `json:"rank_score,omitempty"`
 	PromptEligible      bool             `json:"prompt_eligible"`
 	RetrievalVisibility string           `json:"retrieval_visibility"`
 	DropReasons         []string         `json:"drop_reasons,omitempty"`
@@ -114,6 +115,16 @@ type contextResponse struct {
 	StructuredBlock string             `json:"structured_block"`
 	TokenCount      int                `json:"token_count"`
 	Diagnostics     contextDiagnostics `json:"diagnostics"`
+}
+
+type recallQueryProfile struct {
+	WantsPreference bool
+	WantsDecision   bool
+	WantsIdentity   bool
+	WantsConfig     bool
+	WantsRule       bool
+	DirectAnswer    bool
+	FocusTokens     map[string]struct{}
 }
 
 func runRecall(args []string) error {
@@ -477,6 +488,7 @@ func buildRecallItems(ctx context.Context, opts recallQueryOptions) ([]recallIte
 
 	enriched := enrichSearchResultsWithFactIDs(ctx, s, results, true)
 	items, diag := classifyRecallResults(ctx, s, enriched)
+	items = rerankRecallItems(opts.Query, items)
 	if len(items) > opts.Limit {
 		items = items[:opts.Limit]
 	}
@@ -540,6 +552,31 @@ func classifyRecallResults(ctx context.Context, s store.Store, results []search.
 	}
 
 	return items, diag
+}
+
+func rerankRecallItems(query string, items []recallItem) []recallItem {
+	if len(items) <= 1 {
+		if len(items) == 1 {
+			items[0].RankScore = recallRankScore(analyzeRecallQuery(query), items[0])
+		}
+		return items
+	}
+
+	profile := analyzeRecallQuery(query)
+	ranked := append([]recallItem(nil), items...)
+	for i := range ranked {
+		ranked[i].RankScore = recallRankScore(profile, ranked[i])
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].RankScore != ranked[j].RankScore {
+			return ranked[i].RankScore > ranked[j].RankScore
+		}
+		if ranked[i].Score != ranked[j].Score {
+			return ranked[i].Score > ranked[j].Score
+		}
+		return ranked[i].MemoryID < ranked[j].MemoryID
+	})
+	return ranked
 }
 
 func classifyRecallResult(result search.Result, activeFacts []*store.Fact, allFacts []*store.Fact) recallItem {
@@ -610,6 +647,92 @@ func classifyRecallResult(result search.Result, activeFacts []*store.Fact, allFa
 
 	item.DropReasons = dropReasons
 	return item
+}
+
+func analyzeRecallQuery(query string) recallQueryProfile {
+	lower := strings.ToLower(strings.TrimSpace(query))
+	profile := recallQueryProfile{
+		WantsPreference: strings.Contains(lower, "preference") || strings.Contains(lower, "prefer"),
+		WantsDecision:   strings.Contains(lower, "decision") || strings.Contains(lower, "decide") || strings.Contains(lower, "chosen"),
+		WantsIdentity:   strings.Contains(lower, "identity") || strings.Contains(lower, "who am i") || strings.Contains(lower, "about me"),
+		WantsConfig:     strings.Contains(lower, "config") || strings.Contains(lower, "setting") || strings.Contains(lower, "configured"),
+		WantsRule:       strings.Contains(lower, "rule") || strings.Contains(lower, "policy") || strings.Contains(lower, "guideline"),
+		DirectAnswer:    strings.Contains(lower, "what ") || strings.Contains(lower, "which ") || strings.Contains(lower, "be specific") || strings.Contains(lower, "?"),
+		FocusTokens:     filteredQueryTokens(query),
+	}
+	return profile
+}
+
+func recallRankScore(profile recallQueryProfile, item recallItem) float64 {
+	score := item.Score
+	focusOverlap := overlapWithFocusTokens(profile.FocusTokens, item.PromptText, item.Content)
+	factBacked := len(item.FactIDs) > 0
+
+	if item.PromptEligible {
+		score += 0.10
+	}
+	if profile.DirectAnswer && factBacked {
+		score += 0.18
+	}
+	if profile.DirectAnswer && !factBacked {
+		score -= 0.18
+	}
+
+	matchBonus := 0.0
+	if profile.WantsPreference {
+		if hasFactType(item, "preference") {
+			matchBonus += 0.95
+		} else if store.NormalizeMemoryClass(item.MemoryClass) == store.MemoryClassPreference {
+			matchBonus += 0.65
+		}
+		if store.NormalizeMemoryClass(item.MemoryClass) == store.MemoryClassRule && !hasFactType(item, "preference") {
+			score -= 0.45
+		}
+	}
+	if profile.WantsDecision {
+		if hasFactType(item, "decision") {
+			matchBonus += 0.95
+		} else if store.NormalizeMemoryClass(item.MemoryClass) == store.MemoryClassDecision {
+			matchBonus += 0.65
+		}
+		if store.NormalizeMemoryClass(item.MemoryClass) == store.MemoryClassRule && !hasFactType(item, "decision") {
+			score -= 0.35
+		}
+	}
+	if profile.WantsIdentity {
+		if hasFactType(item, "identity") {
+			matchBonus += 0.95
+		} else if store.NormalizeMemoryClass(item.MemoryClass) == store.MemoryClassIdentity {
+			matchBonus += 0.65
+		}
+	}
+	if profile.WantsConfig {
+		if hasFactType(item, "config") {
+			matchBonus += 0.85
+		}
+	}
+	if profile.WantsRule {
+		if store.NormalizeMemoryClass(item.MemoryClass) == store.MemoryClassRule {
+			matchBonus += 0.70
+		}
+	}
+
+	if matchBonus > 0 {
+		score += matchBonus * maxFloat(0.35, focusOverlap)
+	}
+
+	if !profile.WantsRule && store.NormalizeMemoryClass(item.MemoryClass) == store.MemoryClassRule && !hasAnyTargetFactType(profile, item) {
+		score -= 0.20
+	}
+	if (item.SourceTier == "capture" || item.SourceTier == "transient") && profile.DirectAnswer {
+		score -= 0.10
+	}
+	if profile.DirectAnswer {
+		score += 0.25 * focusOverlap
+		score -= float64(max(0, estimateContextItemTokens(item)-70)) / 500.0
+	}
+
+	return score
 }
 
 func buildContextSelection(items []recallItem, maxItems, maxTokens int, allowEvidenceFallback bool) ([]recallItem, []recallItem, string, int, contextDiagnostics) {
@@ -818,6 +941,34 @@ func isPromptSafeMemoryClass(memoryClass string) bool {
 	}
 }
 
+func hasFactType(item recallItem, factType string) bool {
+	factType = strings.ToLower(strings.TrimSpace(factType))
+	if factType == "" {
+		return false
+	}
+	for _, fact := range item.Facts {
+		if strings.EqualFold(strings.TrimSpace(fact.FactType), factType) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAnyTargetFactType(profile recallQueryProfile, item recallItem) bool {
+	switch {
+	case profile.WantsPreference:
+		return hasFactType(item, "preference")
+	case profile.WantsDecision:
+		return hasFactType(item, "decision")
+	case profile.WantsIdentity:
+		return hasFactType(item, "identity")
+	case profile.WantsConfig:
+		return hasFactType(item, "config")
+	default:
+		return false
+	}
+}
+
 func maxFactConfidence(facts []recallFactView) float64 {
 	maxValue := 0.0
 	for _, fact := range facts {
@@ -866,6 +1017,45 @@ func estimateTokens(text string) int {
 		return 0
 	}
 	return max(1, (len(text)+3)/4)
+}
+
+func filteredQueryTokens(query string) map[string]struct{} {
+	raw := strings.Fields(strings.ToLower(query))
+	stopwords := map[string]struct{}{
+		"what": {}, "which": {}, "who": {}, "when": {}, "where": {}, "why": {}, "how": {},
+		"do": {}, "does": {}, "did": {}, "i": {}, "me": {}, "my": {}, "mine": {}, "have": {},
+		"for": {}, "in": {}, "on": {}, "to": {}, "of": {}, "the": {}, "a": {}, "an": {}, "be": {},
+		"specific": {}, "please": {}, "tell": {}, "about": {}, "is": {}, "are": {}, "there": {},
+	}
+	out := map[string]struct{}{}
+	for _, token := range raw {
+		token = strings.Trim(token, ".,!?;:\"'`()[]{}<>")
+		if len(token) < 2 {
+			continue
+		}
+		if _, skip := stopwords[token]; skip {
+			continue
+		}
+		out[token] = struct{}{}
+	}
+	return out
+}
+
+func overlapWithFocusTokens(tokens map[string]struct{}, values ...string) float64 {
+	if len(tokens) == 0 {
+		return 0
+	}
+	text := strings.ToLower(strings.Join(values, " "))
+	matches := 0
+	for token := range tokens {
+		if strings.Contains(text, token) {
+			matches++
+		}
+	}
+	if matches == 0 {
+		return 0
+	}
+	return float64(matches) / float64(len(tokens))
 }
 
 func truncateTTYRecall(primary, fallback string) string {
@@ -935,6 +1125,13 @@ func minInt(a, b int) int {
 }
 
 func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxFloat(a, b float64) float64 {
 	if a > b {
 		return a
 	}

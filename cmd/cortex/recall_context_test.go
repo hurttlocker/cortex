@@ -206,6 +206,94 @@ func TestRunContext_AllowEvidenceFallbackBuildsStructuredBlock(t *testing.T) {
 	}
 }
 
+func TestRunRecall_ExactPreferenceFactOutranksGenericRuleMemory(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "cortex.db")
+	oldDBPath := globalDBPath
+	globalDBPath = dbPath
+	t.Cleanup(func() { globalDBPath = oldDBPath })
+
+	s, err := store.NewStore(store.StoreConfig{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := context.Background()
+
+	_, err = s.AddMemory(ctx, &store.Memory{
+		Content:     "When asked what UI preference I have for code diffs in Cortex IDE, answer with a specific explanation about code diffs in Cortex IDE and be specific.",
+		SourceFile:  "memory/2026-03-12.md",
+		MemoryClass: store.MemoryClassRule,
+	})
+	if err != nil {
+		t.Fatalf("AddMemory generic rule: %v", err)
+	}
+
+	memID, err := s.AddMemory(ctx, &store.Memory{
+		Content:    "Green for additions, blue for deletions in Cortex IDE code diffs.",
+		SourceFile: "memory/2026-03-13.md",
+	})
+	if err != nil {
+		t.Fatalf("AddMemory preference: %v", err)
+	}
+	if _, err := s.AddFact(ctx, &store.Fact{
+		MemoryID:   memID,
+		Subject:    "UI",
+		Predicate:  "preference",
+		Object:     "green for additions, blue for deletions in Cortex IDE code diffs",
+		FactType:   "preference",
+		Confidence: 0.95,
+	}); err != nil {
+		t.Fatalf("AddFact preference: %v", err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	query := "What UI preference do I have for code diffs in Cortex IDE? Be specific."
+
+	var (
+		runErr error
+		out    string
+		recall recallResponse
+	)
+	out = captureStdout(func() {
+		runErr = runRecall([]string{query, "--mode", "keyword", "--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runRecall: %v\nout=%s", runErr, out)
+	}
+	if err := json.Unmarshal([]byte(out), &recall); err != nil {
+		t.Fatalf("decode recall json: %v\nout=%q", err, out)
+	}
+	if len(recall.Items) < 2 {
+		t.Fatalf("expected at least 2 recall items, got %+v", recall)
+	}
+	if recall.Items[0].SourceFile != "memory/2026-03-13.md" {
+		t.Fatalf("expected preference memory ranked first, got %+v", recall.Items[0])
+	}
+	if recall.Items[0].RankScore <= recall.Items[1].RankScore {
+		t.Fatalf("expected preference rank_score to beat generic rule: first=%+v second=%+v", recall.Items[0], recall.Items[1])
+	}
+
+	var contextResp contextResponse
+	out = captureStdout(func() {
+		runErr = runContextCommand([]string{query, "--mode", "keyword", "--limit", "8", "--max-items", "6", "--max-tokens", "450", "--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runContextCommand: %v\nout=%s", runErr, out)
+	}
+	if err := json.Unmarshal([]byte(out), &contextResp); err != nil {
+		t.Fatalf("decode context json: %v\nout=%q", err, out)
+	}
+	if len(contextResp.Items) == 0 {
+		t.Fatalf("expected selected context items, got %+v", contextResp)
+	}
+	if contextResp.Items[0].SourceFile != "memory/2026-03-13.md" {
+		t.Fatalf("expected preference memory selected first in context, got %+v", contextResp.Items[0])
+	}
+}
+
 func containsString(values []string, needle string) bool {
 	for _, value := range values {
 		if value == needle {
