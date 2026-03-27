@@ -78,6 +78,10 @@ func main() {
 		exitWithError(runIndex(args[1:]))
 	case "search":
 		exitWithError(runSearch(args[1:]))
+	case "recall":
+		exitWithError(runRecall(args[1:]))
+	case "context":
+		exitWithError(runContextCommand(args[1:]))
 	case "query":
 		exitWithError(runQuery(args[1:]))
 	case "answer":
@@ -152,6 +156,8 @@ func main() {
 		exitWithError(runEval(args[1:]))
 	case "connect":
 		exitWithError(runConnect(args[1:]))
+	case "integration":
+		exitWithError(runIntegration(args[1:]))
 	case "init":
 		exitWithError(runInit(args[1:]))
 	case "demo":
@@ -2954,6 +2960,110 @@ func runSourceWeight(args []string) error {
 		return nil
 	default:
 		return fmt.Errorf("unknown source-weight subcommand %q (expected: list, add, remove)", args[0])
+	}
+}
+
+type integrationStatusReport struct {
+	Integration      string                  `json:"integration"`
+	Mode             string                  `json:"mode"`
+	EffectiveEnabled bool                    `json:"effective_enabled"`
+	Configured       bool                    `json:"configured"`
+	ConfigPath       string                  `json:"config_path,omitempty"`
+	Source           cfgresolver.ValueSource `json:"source"`
+	From             string                  `json:"from,omitempty"`
+}
+
+func runIntegration(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: cortex integration openclaw [status|enable|disable|auto] [--json]")
+	}
+
+	integrationName := strings.ToLower(strings.TrimSpace(args[0]))
+	if integrationName != "openclaw" {
+		return fmt.Errorf("unknown integration %q (expected: openclaw)", args[0])
+	}
+
+	action := "status"
+	jsonOutput := false
+	for _, arg := range args[1:] {
+		switch strings.ToLower(strings.TrimSpace(arg)) {
+		case "":
+			continue
+		case "status", "enable", "disable", "auto":
+			action = strings.ToLower(strings.TrimSpace(arg))
+		case "--json":
+			jsonOutput = true
+		default:
+			return fmt.Errorf("unknown argument: %s\nusage: cortex integration openclaw [status|enable|disable|auto] [--json]", arg)
+		}
+	}
+
+	var cfgPath string
+	switch action {
+	case "enable", "disable", "auto":
+		cfg, path, err := loadMutableConfig("")
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+		integrationsMap := getNestedMap(cfg, "integrations")
+		openClawMap := getNestedMap(integrationsMap, "openclaw")
+		mode := map[string]string{
+			"enable":  string(cfgresolver.IntegrationModeEnabled),
+			"disable": string(cfgresolver.IntegrationModeDisabled),
+			"auto":    string(cfgresolver.IntegrationModeAuto),
+		}[action]
+		openClawMap["mode"] = mode
+		if err := writeMutableConfig(path, cfg); err != nil {
+			return fmt.Errorf("writing config: %w", err)
+		}
+		cfgPath = path
+	case "status":
+		cfgPath = cfgresolver.DefaultConfigPath()
+	default:
+		return fmt.Errorf("unknown action %q", action)
+	}
+
+	resolved, err := cfgresolver.ResolveConfig(cfgresolver.ResolveOptions{ConfigPath: cfgPath})
+	if err != nil {
+		return fmt.Errorf("resolving config: %w", err)
+	}
+	report := integrationReportFromResolved(resolved)
+
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(report)
+	}
+
+	state := "disabled"
+	if report.EffectiveEnabled {
+		state = "enabled"
+	}
+	fmt.Printf("OpenClaw integration: %s\n", state)
+	fmt.Printf("Mode: %s (%s)\n", report.Mode, report.Source)
+	if report.From != "" {
+		fmt.Printf("Configured from: %s\n", report.From)
+	}
+	if report.Configured {
+		fmt.Printf("OpenClaw config: detected at %s\n", report.ConfigPath)
+	} else if report.ConfigPath != "" {
+		fmt.Printf("OpenClaw config: not found at %s\n", report.ConfigPath)
+	}
+	if action == "enable" || action == "disable" || action == "auto" {
+		fmt.Printf("Saved Cortex integration setting in %s\n", cfgPath)
+	}
+	return nil
+}
+
+func integrationReportFromResolved(resolved cfgresolver.ResolvedConfig) integrationStatusReport {
+	return integrationStatusReport{
+		Integration:      "openclaw",
+		Mode:             resolved.Integrations.OpenClaw.Mode.Value,
+		EffectiveEnabled: resolved.Integrations.OpenClaw.EffectiveEnabled,
+		Configured:       resolved.Integrations.OpenClaw.Configured,
+		ConfigPath:       resolved.Integrations.OpenClaw.ConfigPath,
+		Source:           resolved.Integrations.OpenClaw.Mode.Source,
+		From:             resolved.Integrations.OpenClaw.Mode.From,
 	}
 }
 
@@ -12961,14 +13071,14 @@ func execCommand(name string, args ...string) error {
 
 // cortexCommands is the authoritative list of top-level commands for completion.
 var cortexCommands = []string{
-	"import", "reimport", "refresh-source", "search", "query", "list", "export", "update", "demo",
+	"import", "reimport", "refresh-source", "search", "recall", "context", "query", "list", "export", "update", "demo",
 	"extract", "classify", "reinforce", "supersede", "fact", "fact-history",
 	"stats", "health", "stale", "conflicts", "agents", "projects",
 	"graph", "cluster",
 	"reason", "bench", "eval",
 	"cleanup", "backfill-scope", "optimize", "embed", "tag", "answer", "ask", "lifecycle", "beliefs", "suppress", "source-weight",
 	"rerank-setup", "rerank-serve",
-	"connect",
+	"connect", "integration",
 	"mcp", "doctor", "completion", "version", "help",
 }
 
@@ -13046,6 +13156,8 @@ Memory:
   reimport <path>       Wipe database and reimport from scratch
   refresh-source <path> Refresh one source file without touching the rest of the DB
   search <query>        Search memories or facts (keyword, semantic, hybrid, or rrf)
+  recall <query>        Rank retrievable memories with prompt-eligibility diagnostics
+  context <query>       Build a prompt-safe memory block for IDE/agent injection
   query                 Filter facts by metadata (--where clauses)
   answer <query>        Search + synthesize short answer with citations
   ask <query>           Budget-aware evidence-grounded synthesis with citations
@@ -13102,6 +13214,7 @@ Connectors:
   connect add <name>    Add a connector (github, gmail, discord, etc.)
   connect sync          Sync connectors (--all or --provider <name>)
   connect status        Show connector health and sync state
+  integration openclaw  Show or toggle the OpenClaw integration gate
 
 Integration:
   mcp                   Start MCP server (stdio or --port for HTTP+SSE)

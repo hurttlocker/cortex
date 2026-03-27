@@ -79,6 +79,25 @@ type SearchConfig struct {
 	SourceBoosts []SearchSourceBoostConfig `yaml:"source_boosts" json:"source_boosts"`
 }
 
+type IntegrationMode string
+
+const (
+	IntegrationModeAuto     IntegrationMode = "auto"
+	IntegrationModeEnabled  IntegrationMode = "enabled"
+	IntegrationModeDisabled IntegrationMode = "disabled"
+)
+
+type OpenClawIntegrationConfig struct {
+	Mode             ResolvedValue `json:"mode"`
+	EffectiveEnabled bool          `json:"effective_enabled"`
+	Configured       bool          `json:"configured"`
+	ConfigPath       string        `json:"config_path,omitempty"`
+}
+
+type IntegrationsConfig struct {
+	OpenClaw OpenClawIntegrationConfig `json:"openclaw"`
+}
+
 type ResolveOptions struct {
 	ConfigPath string
 	CLILLM     string
@@ -214,6 +233,7 @@ type ResolvedConfig struct {
 	Import         ImportConfig             `json:"import"`
 	Extract        ExtractConfig            `json:"extract"`
 	Search         SearchConfig             `json:"search"`
+	Integrations   IntegrationsConfig       `json:"integrations"`
 	LLMKeys        map[string]ResolvedValue `json:"llm_keys,omitempty"`
 }
 
@@ -235,9 +255,14 @@ type fileConfig struct {
 		APIKey   string `yaml:"api_key"`
 		Endpoint string `yaml:"endpoint"`
 	} `yaml:"embed"`
-	Import   ImportConfig              `yaml:"import"`
-	Extract  ExtractConfig             `yaml:"extract"`
-	Search   SearchConfig              `yaml:"search"`
+	Import       ImportConfig  `yaml:"import"`
+	Extract      ExtractConfig `yaml:"extract"`
+	Search       SearchConfig  `yaml:"search"`
+	Integrations struct {
+		OpenClaw struct {
+			Mode string `yaml:"mode"`
+		} `yaml:"openclaw"`
+	} `yaml:"integrations"`
 	Policies PolicyConfig              `yaml:"policies"`
 	Agents   map[string]AgentTrustRule `yaml:"agents"`
 	Export   struct {
@@ -260,7 +285,16 @@ func ResolveConfig(opts ResolveOptions) (ResolvedConfig, error) {
 		ConfigPath:     path,
 		Policies:       DefaultPolicyConfig(),
 		ObsidianExport: DefaultObsidianExportConfig(),
-		LLMKeys:        map[string]ResolvedValue{},
+		Integrations: IntegrationsConfig{
+			OpenClaw: OpenClawIntegrationConfig{
+				Mode: ResolvedValue{
+					Value:  string(IntegrationModeAuto),
+					Source: SourceDefault,
+					From:   "built-in default",
+				},
+			},
+		},
+		LLMKeys: map[string]ResolvedValue{},
 	}
 
 	cfg, err := loadConfig(path)
@@ -275,6 +309,7 @@ func ResolveConfig(opts ResolveOptions) (ResolvedConfig, error) {
 		out.Import = cfg.Import
 		out.Extract = cfg.Extract
 		out.Search = cfg.Search
+		applyIntegrationMode(&out.Integrations.OpenClaw.Mode, cfg.Integrations.OpenClaw.Mode, SourceConfig, path)
 		apply(&out.DBPath, cfg.DBPath, SourceConfig, path)
 		apply(&out.LLMProvider, cfg.LLM.Provider, SourceConfig, path)
 		apply(&out.LLMEnrichModel, firstNonEmpty(cfg.LLM.EnrichModel, cfg.LLM.EnrichProvider), SourceConfig, path)
@@ -317,6 +352,14 @@ func ResolveConfig(opts ResolveOptions) (ResolvedConfig, error) {
 	if v := strings.TrimSpace(os.Getenv("CORTEX_EMBED_API_KEY")); v != "" {
 		out.EmbedAPIKey = ResolvedValue{Value: v, Source: SourceEnv, From: "CORTEX_EMBED_API_KEY"}
 	}
+	applyIntegrationMode(&out.Integrations.OpenClaw.Mode, os.Getenv("CORTEX_OPENCLAW_MODE"), SourceEnv, "CORTEX_OPENCLAW_MODE")
+	if enabled, ok := parseEnvBool(os.Getenv("CORTEX_OPENCLAW_ENABLED")); ok {
+		mode := string(IntegrationModeDisabled)
+		if enabled {
+			mode = string(IntegrationModeEnabled)
+		}
+		out.Integrations.OpenClaw.Mode = ResolvedValue{Value: mode, Source: SourceEnv, From: "CORTEX_OPENCLAW_ENABLED"}
+	}
 
 	for env, provider := range map[string]string{
 		"OPENROUTER_API_KEY": "openrouter",
@@ -337,6 +380,7 @@ func ResolveConfig(opts ResolveOptions) (ResolvedConfig, error) {
 	if out.DBPath.Value != "" {
 		out.DBPath.Value = expandUserPath(out.DBPath.Value)
 	}
+	resolveOpenClawIntegration(&out.Integrations.OpenClaw)
 
 	return out, nil
 }
@@ -480,6 +524,17 @@ func applyEnv(dst *ResolvedValue, envKey string) {
 	}
 }
 
+func applyIntegrationMode(dst *ResolvedValue, raw string, source ValueSource, from string) {
+	if strings.TrimSpace(raw) == "" {
+		return
+	}
+	mode, ok := normalizeIntegrationMode(raw)
+	if !ok {
+		return
+	}
+	*dst = ResolvedValue{Value: mode, Source: source, From: from}
+}
+
 func loadConfig(path string) (*fileConfig, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -567,4 +622,62 @@ func expandUserPath(path string) string {
 		}
 	}
 	return path
+}
+
+func normalizeIntegrationMode(raw string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", string(IntegrationModeAuto):
+		return string(IntegrationModeAuto), true
+	case string(IntegrationModeEnabled), "true", "1", "on", "yes":
+		return string(IntegrationModeEnabled), true
+	case string(IntegrationModeDisabled), "false", "0", "off", "no":
+		return string(IntegrationModeDisabled), true
+	default:
+		return "", false
+	}
+}
+
+func parseEnvBool(raw string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "on", "yes", "enabled":
+		return true, true
+	case "0", "false", "off", "no", "disabled":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func resolveOpenClawIntegration(cfg *OpenClawIntegrationConfig) {
+	if cfg == nil {
+		return
+	}
+	mode, ok := normalizeIntegrationMode(cfg.Mode.Value)
+	if !ok {
+		mode = string(IntegrationModeAuto)
+		cfg.Mode = ResolvedValue{Value: mode, Source: SourceDefault, From: "built-in default"}
+	} else {
+		cfg.Mode.Value = mode
+		if cfg.Mode.Source == "" {
+			cfg.Mode.Source = SourceDefault
+			cfg.Mode.From = "built-in default"
+		}
+	}
+
+	cfg.ConfigPath = defaultOpenClawConfigPath()
+	if cfg.ConfigPath != "" {
+		if _, err := os.Stat(cfg.ConfigPath); err == nil {
+			cfg.Configured = true
+		}
+	}
+
+	cfg.EffectiveEnabled = mode == string(IntegrationModeEnabled) || (mode == string(IntegrationModeAuto) && cfg.Configured)
+}
+
+func defaultOpenClawConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".openclaw", "openclaw.json")
 }

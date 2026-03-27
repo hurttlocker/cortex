@@ -276,6 +276,83 @@ func TestResolveConfig_QualityProfileSeedsDefaults(t *testing.T) {
 	}
 }
 
+func TestResolveConfig_OpenClawIntegrationAutoWithoutConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	resolved, err := ResolveConfig(ResolveOptions{ConfigPath: filepath.Join(home, "missing-config.yaml")})
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+
+	if got := resolved.Integrations.OpenClaw.Mode.Value; got != string(IntegrationModeAuto) {
+		t.Fatalf("expected default mode auto, got %q", got)
+	}
+	if resolved.Integrations.OpenClaw.Configured {
+		t.Fatalf("expected openclaw configured=false, got %+v", resolved.Integrations.OpenClaw)
+	}
+	if resolved.Integrations.OpenClaw.EffectiveEnabled {
+		t.Fatalf("expected effective_enabled=false without OpenClaw config, got %+v", resolved.Integrations.OpenClaw)
+	}
+}
+
+func TestResolveConfig_OpenClawIntegrationAutoWithConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	openClawDir := filepath.Join(home, ".openclaw")
+	if err := os.MkdirAll(openClawDir, 0o755); err != nil {
+		t.Fatalf("mkdir openclaw dir: %v", err)
+	}
+	openClawConfigPath := filepath.Join(openClawDir, "openclaw.json")
+	if err := os.WriteFile(openClawConfigPath, []byte(`{"plugins":{"entries":{}}}`), 0o600); err != nil {
+		t.Fatalf("write openclaw config: %v", err)
+	}
+
+	resolved, err := ResolveConfig(ResolveOptions{ConfigPath: filepath.Join(home, "missing-config.yaml")})
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+
+	if !resolved.Integrations.OpenClaw.Configured {
+		t.Fatalf("expected openclaw configured=true, got %+v", resolved.Integrations.OpenClaw)
+	}
+	if !resolved.Integrations.OpenClaw.EffectiveEnabled {
+		t.Fatalf("expected effective_enabled=true in auto mode when OpenClaw config exists, got %+v", resolved.Integrations.OpenClaw)
+	}
+	if resolved.Integrations.OpenClaw.ConfigPath != openClawConfigPath {
+		t.Fatalf("expected config path %q, got %q", openClawConfigPath, resolved.Integrations.OpenClaw.ConfigPath)
+	}
+}
+
+func TestResolveConfig_OpenClawIntegrationEnvOverridesConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfgPath := filepath.Join(home, "config.yaml")
+	yaml := `integrations:
+  openclaw:
+    mode: disabled
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv("CORTEX_OPENCLAW_ENABLED", "true")
+
+	resolved, err := ResolveConfig(ResolveOptions{ConfigPath: cfgPath})
+	if err != nil {
+		t.Fatalf("ResolveConfig: %v", err)
+	}
+
+	if got := resolved.Integrations.OpenClaw.Mode.Value; got != string(IntegrationModeEnabled) {
+		t.Fatalf("expected env override to set mode enabled, got %q", got)
+	}
+	if resolved.Integrations.OpenClaw.Mode.Source != SourceEnv {
+		t.Fatalf("expected env source, got %+v", resolved.Integrations.OpenClaw.Mode)
+	}
+	if !resolved.Integrations.OpenClaw.EffectiveEnabled {
+		t.Fatalf("expected effective_enabled=true when explicitly enabled, got %+v", resolved.Integrations.OpenClaw)
+	}
+}
+
 func TestResolveAgentTrustConfig_Valid(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "config.yaml")

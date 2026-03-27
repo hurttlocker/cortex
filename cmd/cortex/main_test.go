@@ -3229,6 +3229,96 @@ func TestRunSourceWeight_AddListRemove(t *testing.T) {
 	}
 }
 
+func TestRunIntegration_OpenClawEnableDisableAuto(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CORTEX_OPENCLAW_MODE", "")
+	t.Setenv("CORTEX_OPENCLAW_ENABLED", "")
+
+	openClawDir := filepath.Join(home, ".openclaw")
+	if err := os.MkdirAll(openClawDir, 0o755); err != nil {
+		t.Fatalf("mkdir openclaw dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(openClawDir, "openclaw.json"), []byte(`{"plugins":{"entries":{}}}`), 0o600); err != nil {
+		t.Fatalf("write openclaw config: %v", err)
+	}
+
+	var (
+		runErr error
+		out    string
+		report integrationStatusReport
+	)
+
+	out = captureStdout(func() {
+		runErr = runIntegration([]string{"openclaw", "--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runIntegration status: %v\nout=%s", runErr, out)
+	}
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode status json: %v\nout=%q", err, out)
+	}
+	if report.Mode != "auto" || !report.EffectiveEnabled || !report.Configured {
+		t.Fatalf("unexpected auto status: %+v", report)
+	}
+
+	if err := runIntegration([]string{"openclaw", "disable"}); err != nil {
+		t.Fatalf("runIntegration disable: %v", err)
+	}
+	out = captureStdout(func() {
+		runErr = runIntegration([]string{"openclaw", "--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runIntegration status after disable: %v\nout=%s", runErr, out)
+	}
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode disabled status json: %v\nout=%q", err, out)
+	}
+	if report.Mode != "disabled" || report.EffectiveEnabled {
+		t.Fatalf("unexpected disabled status: %+v", report)
+	}
+
+	cfgBytes, err := os.ReadFile(filepath.Join(home, ".cortex", "config.yaml"))
+	if err != nil {
+		t.Fatalf("read cortex config: %v", err)
+	}
+	if !strings.Contains(string(cfgBytes), "mode: disabled") {
+		t.Fatalf("expected config to persist disabled mode, got %q", string(cfgBytes))
+	}
+
+	if err := runIntegration([]string{"openclaw", "enable"}); err != nil {
+		t.Fatalf("runIntegration enable: %v", err)
+	}
+	out = captureStdout(func() {
+		runErr = runIntegration([]string{"openclaw", "--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runIntegration status after enable: %v\nout=%s", runErr, out)
+	}
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode enabled status json: %v\nout=%q", err, out)
+	}
+	if report.Mode != "enabled" || !report.EffectiveEnabled {
+		t.Fatalf("unexpected enabled status: %+v", report)
+	}
+
+	if err := runIntegration([]string{"openclaw", "auto"}); err != nil {
+		t.Fatalf("runIntegration auto: %v", err)
+	}
+	out = captureStdout(func() {
+		runErr = runIntegration([]string{"openclaw", "--json"})
+	})
+	if runErr != nil {
+		t.Fatalf("runIntegration status after auto: %v\nout=%s", runErr, out)
+	}
+	if err := json.Unmarshal([]byte(out), &report); err != nil {
+		t.Fatalf("decode auto status json: %v\nout=%q", err, out)
+	}
+	if report.Mode != "auto" || !report.EffectiveEnabled {
+		t.Fatalf("unexpected auto-restored status: %+v", report)
+	}
+}
+
 func TestRunFactCommand_KeepAndDrop(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "cortex.db")

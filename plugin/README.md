@@ -83,6 +83,23 @@ Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
 | `recallDedupe.enabled` | `true` | Deduplicate exact/near-duplicate recall memories |
 | `recallDedupe.similarityThreshold` | `0.98` | Similarity cutoff used for recall dedupe |
 
+### Cortex Integration Gate
+
+Cortex now exposes an OpenClaw integration gate that product surfaces can toggle without editing plugin config directly:
+
+```bash
+cortex integration openclaw --json
+cortex integration openclaw enable
+cortex integration openclaw disable
+cortex integration openclaw auto
+```
+
+- `auto` is the default behavior
+- `enable` forces Cortex/OpenClaw integration on
+- `disable` forces Cortex/OpenClaw integration off, so OpenClaw-specific memory hooks stop running
+
+The plugin honors this gate for tool execution plus auto-recall/auto-capture hooks. That lets Cortex IDE settings disable the OpenClaw-dependent path cleanly for users who do not use OpenClaw.
+
 ## Features
 
 ### Auto-Recall

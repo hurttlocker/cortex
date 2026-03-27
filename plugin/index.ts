@@ -120,6 +120,16 @@ interface CortexStats {
   };
 }
 
+interface CortexIntegrationStatus {
+  integration: string;
+  mode: string;
+  effective_enabled: boolean;
+  configured: boolean;
+  config_path?: string;
+  source?: string;
+  from?: string;
+}
+
 interface DoctorCheck {
   name: string;
   status: "pass" | "warn" | "fail";
@@ -517,6 +527,23 @@ class CortexCLI {
     }
   }
 
+  async getOpenClawIntegrationStatus(): Promise<CortexIntegrationStatus | null> {
+    try {
+      const output = await this.exec(["integration", "openclaw", "--json"], 10_000);
+      if (!output || output === "null") return null;
+      return JSON.parse(output) as CortexIntegrationStatus;
+    } catch (err: any) {
+      this.logger.warn(`cortex: failed to read OpenClaw integration status, assuming enabled: ${err.message}`);
+      return null;
+    }
+  }
+
+  async isOpenClawIntegrationEnabled(): Promise<boolean> {
+    const status = await this.getOpenClawIntegrationStatus();
+    if (!status) return true;
+    return status.effective_enabled !== false;
+  }
+
   async importText(
     text: string,
     source: string,
@@ -774,6 +801,8 @@ const cortexPlugin = {
     const cfg = parseConfig(api.pluginConfig);
     const cli = new CortexCLI(cfg.binaryPath, cfg.dbPath, cfg.embedProvider, cfg.searchMode, api.logger);
     const captureHygiene = new CaptureHygiene(cli, api.logger, cfg.capture, cfg.extractFacts);
+    const integrationDisabledMessage =
+      "Cortex OpenClaw integration is disabled. Enable it in Cortex IDE settings or run `cortex integration openclaw enable`.";
 
     api.logger.info(`cortex: plugin registered (binary: ${cfg.binaryPath}, db: ${cfg.dbPath}, mode: ${cfg.searchMode})`);
 
@@ -797,6 +826,13 @@ const cortexPlugin = {
           required: ["query"],
         },
         async execute(_toolCallId, params) {
+          if (!(await cli.isOpenClawIntegrationEnabled())) {
+            return {
+              content: [{ type: "text", text: integrationDisabledMessage }],
+              details: { integration: "openclaw", enabled: false },
+            };
+          }
+
           const { query, limit = 5, mode } = params as {
             query: string;
             limit?: number;
@@ -854,6 +890,13 @@ const cortexPlugin = {
           required: ["text"],
         },
         async execute(_toolCallId, params, context) {
+          if (!(await cli.isOpenClawIntegrationEnabled())) {
+            return {
+              content: [{ type: "text", text: integrationDisabledMessage }],
+              details: { integration: "openclaw", enabled: false },
+            };
+          }
+
           const { text, source = "manual", extract = true } = params as {
             text: string;
             source?: string;
@@ -888,6 +931,13 @@ const cortexPlugin = {
         description: "Show Cortex memory statistics: total memories, facts, confidence distribution, storage size.",
         parameters: { type: "object", properties: {} },
         async execute() {
+          if (!(await cli.isOpenClawIntegrationEnabled())) {
+            return {
+              content: [{ type: "text", text: integrationDisabledMessage }],
+              details: { integration: "openclaw", enabled: false },
+            };
+          }
+
           const stats = await cli.stats();
           if (!stats) {
             return {
@@ -929,6 +979,13 @@ const cortexPlugin = {
           },
         },
         async execute(_toolCallId, params) {
+          if (!(await cli.isOpenClawIntegrationEnabled())) {
+            return {
+              content: [{ type: "text", text: integrationDisabledMessage }],
+              details: { integration: "openclaw", enabled: false },
+            };
+          }
+
           const { query = "user preferences identity decisions" } = params as { query?: string };
 
           const results = await cli.search(query, 10, "hybrid");
@@ -1220,6 +1277,7 @@ const cortexPlugin = {
 
     if (cfg.autoRecall) {
       api.on("before_agent_start", async (event, ctx) => {
+        if (!(await cli.isOpenClawIntegrationEnabled())) return;
         if (!event.prompt || event.prompt.length < 10) return;
 
         try {
@@ -1322,6 +1380,7 @@ const cortexPlugin = {
 
     if (cfg.autoCapture) {
       api.on("agent_end", async (event) => {
+        if (!(await cli.isOpenClawIntegrationEnabled())) return;
         if (!event.success || !event.messages || event.messages.length === 0) return;
 
         try {
