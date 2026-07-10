@@ -88,6 +88,10 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	registerGraphImpactTool(s, cfg.Store)
 	registerListClustersTool(s, cfg.Store)
 
+	// Governance directives (v2 M1)
+	registerDirectiveAddTool(s, cfg.Store)
+	registerDirectiveListTool(s, cfg.Store)
+
 	// Register connector management tools
 	if sqlStore, ok := cfg.Store.(*store.SQLiteStore); ok {
 		connStore := connect.NewConnectorStore(sqlStore.GetDB())

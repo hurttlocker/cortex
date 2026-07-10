@@ -288,6 +288,7 @@ func effectiveMinScore(mode Mode, configured float64) float64 {
 // Result represents a single search result.
 type Result struct {
 	Content        string          `json:"content"`
+	Kind           string          `json:"kind,omitempty"` // "directive" for pinned governance rules; empty for memory/fact results
 	SourceFile     string          `json:"source_file"`
 	SourceTier     string          `json:"source_tier,omitempty"`
 	SourceLine     int             `json:"source_line"`
@@ -707,7 +708,51 @@ func (e *Engine) Search(ctx context.Context, query string, opts Options) ([]Resu
 		results = results[:requestedLimit]
 	}
 
+	// Governance pinning (v2 M1): prepend active directives ABOVE the ranked
+	// results so human-authored rules never lose to BM25/semantic ranking noise.
+	// This is the single shared chokepoint — the CLI search/recall surface, the
+	// answer engine (via the Searcher interface), and their MCP equivalents all
+	// funnel through Search(), so pinning here covers every consumer. Directives
+	// are additive: they do not consume the requested result budget.
+	results = e.prependActiveDirectives(ctx, results, opts.Project)
+
 	return results, nil
+}
+
+// prependActiveDirectives pins scope-matched active directives at the top of the
+// result set, flagged Kind:"directive". Directives never decay and are never
+// semantically ranked — they are retrieved by scope match and always surfaced.
+// Their score is set above the current top result so any downstream stable sort
+// keeps them first.
+func (e *Engine) prependActiveDirectives(ctx context.Context, results []Result, project string) []Result {
+	directives, err := e.store.ActiveDirectives(ctx, project)
+	if err != nil || len(directives) == 0 {
+		return results
+	}
+
+	topScore := 0.0
+	for i := range results {
+		if results[i].Score > topScore {
+			topScore = results[i].Score
+		}
+	}
+	directiveScore := topScore + 1.0
+
+	pinned := make([]Result, 0, len(directives)+len(results))
+	for _, d := range directives {
+		if d == nil {
+			continue
+		}
+		pinned = append(pinned, Result{
+			Content:       d.Rule,
+			Kind:          "directive",
+			SourceFile:    "directive",
+			SourceSection: d.Scope,
+			Score:         directiveScore,
+			MatchType:     "directive",
+		})
+	}
+	return append(pinned, results...)
 }
 
 // SearchFacts returns direct fact hits ranked by lexical relevance, confidence,

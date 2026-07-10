@@ -112,6 +112,8 @@ func main() {
 		exitWithError(runReinforce(args[1:]))
 	case "supersede":
 		exitWithError(runSupersede(args[1:]))
+	case "directive":
+		exitWithError(runDirective(args[1:]))
 	case "fact":
 		exitWithError(runFactCommand(args[1:]))
 	case "fact-history":

@@ -118,8 +118,20 @@ func (e *Engine) Answer(ctx context.Context, opts Options) (*Result, error) {
 	if len(results) == 0 {
 		return &Result{Answer: "No relevant memory results found.", Degraded: true, Reason: "no_results", Results: results}, nil
 	}
+	// Pinned directives (Kind:"directive") ride above the ranked evidence. Keep all
+	// of them plus up to Search.Limit evidence results so directives are surfaced
+	// as context without starving the actual retrieval hits.
 	if len(results) > opts.Search.Limit {
-		results = results[:opts.Search.Limit]
+		directiveCount := 0
+		for _, r := range results {
+			if r.Kind == "directive" {
+				directiveCount++
+			}
+		}
+		keep := opts.Search.Limit + directiveCount
+		if len(results) > keep {
+			results = results[:keep]
+		}
 	}
 
 	if e.llm == nil {
