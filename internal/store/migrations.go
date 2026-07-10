@@ -147,6 +147,12 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating session ledger table: %w", err)
 	}
 
+	// Schema evolution: directives table (v2 M1 — explicit governance memory layer).
+	// Human-authored rules that never decay and never use vector search.
+	if err := s.migrateDirectivesTable(); err != nil {
+		return fmt.Errorf("migrating directives table: %w", err)
+	}
+
 	return nil
 }
 
@@ -1091,6 +1097,75 @@ func (s *SQLiteStore) migrateSessionLedgerTable() error {
 
 	if _, err := s.db.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('session_ledger_v1', 'true')`); err != nil {
 		return fmt.Errorf("setting session_ledger_v1 flag: %w", err)
+	}
+
+	return nil
+}
+
+// migrateDirectivesTable creates the directives table for the v2 governance layer (M1).
+//
+// Directives are explicit, human-authored rules ("always X", "never Y") — a
+// first-class memory kind distinct from imported facts. Design constraints:
+//   - directives NEVER decay (no decay_rate column)
+//   - retrieval uses exact/FTS + pinning only (no embeddings on the directive path)
+//   - additive schema; a new table (facts.fact_type has a CHECK constraint, so a
+//     new fact_type is not possible without rewriting it)
+//
+// The FTS5 virtual table + sync triggers mirror how memories_fts is wired so
+// directive rule text is searchable with the same porter/unicode61 tokenizer.
+func (s *SQLiteStore) migrateDirectivesTable() error {
+	done, err := s.isMetaFlagEnabled("directives_v1")
+	if err != nil {
+		return err
+	}
+	if done {
+		return nil
+	}
+
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS directives (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			rule       TEXT NOT NULL,
+			scope      TEXT NOT NULL DEFAULT 'global',
+			status     TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','archived')),
+			pinned     INTEGER NOT NULL DEFAULT 1,
+			author     TEXT NOT NULL DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_directives_status ON directives(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_directives_scope_status ON directives(scope, status)`,
+
+		// FTS5 index over rule text (mirrors memories_fts: content-synced, external content).
+		`CREATE VIRTUAL TABLE IF NOT EXISTS directives_fts USING fts5(
+			rule,
+			content=directives,
+			content_rowid=id,
+			tokenize='porter unicode61'
+		)`,
+
+		`CREATE TRIGGER IF NOT EXISTS directives_ai AFTER INSERT ON directives BEGIN
+			INSERT INTO directives_fts(rowid, rule) VALUES (new.id, new.rule);
+		END`,
+
+		`CREATE TRIGGER IF NOT EXISTS directives_ad AFTER DELETE ON directives BEGIN
+			INSERT INTO directives_fts(directives_fts, rowid, rule) VALUES('delete', old.id, old.rule);
+		END`,
+
+		`CREATE TRIGGER IF NOT EXISTS directives_au AFTER UPDATE ON directives BEGIN
+			INSERT INTO directives_fts(directives_fts, rowid, rule) VALUES('delete', old.id, old.rule);
+			INSERT INTO directives_fts(rowid, rule) VALUES (new.id, new.rule);
+		END`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("creating directives schema %q: %w", truncate(stmt, 80), err)
+		}
+	}
+
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('directives_v1', 'true')`); err != nil {
+		return fmt.Errorf("setting directives_v1 flag: %w", err)
 	}
 
 	return nil

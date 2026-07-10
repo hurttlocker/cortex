@@ -332,6 +332,15 @@ type Store interface {
 	TagMemories(ctx context.Context, project string, memoryIDs []int64) (int64, error)
 	TagMemoriesBySource(ctx context.Context, project string, sourcePattern string) (int64, error)
 
+	// Directives (v2 M1 — explicit governance memory layer)
+	AddDirective(ctx context.Context, d *Directive) (int64, error)
+	GetDirective(ctx context.Context, id int64) (*Directive, error)
+	ListDirectives(ctx context.Context, opts DirectiveListOpts) ([]*Directive, error)
+	ActiveDirectives(ctx context.Context, scope string) ([]*Directive, error)
+	UpdateDirective(ctx context.Context, id int64, upd DirectiveUpdate) error
+	ArchiveDirective(ctx context.Context, id int64) error
+	DeleteDirective(ctx context.Context, id int64) error
+
 	// Events
 	LogEvent(ctx context.Context, e *MemoryEvent) error
 
