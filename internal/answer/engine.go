@@ -33,6 +33,7 @@ type Options struct {
 type Citation struct {
 	Index    int     `json:"index"`
 	Source   string  `json:"source"`
+	Title    string  `json:"title"`
 	Score    float64 `json:"score"`
 	MemoryID int64   `json:"memory_id"`
 }
@@ -246,7 +247,7 @@ func buildGroupedSourceContext(results []search.Result, maxContextChars int, per
 func fallbackResult(results []search.Result, reason string) *Result {
 	cites := make([]Citation, 0, len(results))
 	for i, r := range results {
-		cites = append(cites, Citation{Index: i + 1, Source: sourceLabel(r), Score: r.Score, MemoryID: r.MemoryID})
+		cites = append(cites, Citation{Index: i + 1, Source: sourceLabel(r), Title: citationTitle(r), Score: r.Score, MemoryID: r.MemoryID})
 	}
 	return &Result{
 		Answer:    "LLM unavailable or citation validation failed; returning top search results.",
@@ -266,7 +267,7 @@ func extractCitations(answer string, results []search.Result) ([]Citation, bool)
 	out := make([]Citation, 0, len(ordered))
 	for _, idx := range ordered {
 		r := results[idx-1]
-		out = append(out, Citation{Index: idx, Source: sourceLabel(r), Score: r.Score, MemoryID: r.MemoryID})
+		out = append(out, Citation{Index: idx, Source: sourceLabel(r), Title: citationTitle(r), Score: r.Score, MemoryID: r.MemoryID})
 	}
 	return out, true
 }
@@ -386,6 +387,15 @@ func sourceLabel(r search.Result) string {
 		return fmt.Sprintf("%s:%d", r.SourceFile, r.SourceLine)
 	}
 	return r.SourceFile
+}
+
+// citationTitle derives a human-readable title for a citation, falling back
+// to the locator string (sourceLabel) so Title is never empty.
+func citationTitle(r search.Result) string {
+	if t := search.CitationTitleForResult(r); t != "" {
+		return t
+	}
+	return sourceLabel(r)
 }
 
 func resultAnchorDate(r search.Result) string {

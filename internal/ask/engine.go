@@ -19,6 +19,7 @@ var danglingCitationGroupRE = regexp.MustCompile(`\[(\d+(?:\s*[,;]\s*\d+)*)\s*$`
 type Citation struct {
 	Index         int     `json:"index"`
 	Source        string  `json:"source"`
+	Title         string  `json:"title"`
 	Score         float64 `json:"score"`
 	MemoryID      int64   `json:"memory_id"`
 	Facts         []int64 `json:"fact_ids,omitempty"`
@@ -256,6 +257,7 @@ func fallbackResult(question string, results []search.Result, opts Options, reas
 		cites = append(cites, Citation{
 			Index:         i + 1,
 			Source:        sourceLabel(r),
+			Title:         citationTitle(r),
 			Score:         r.Score,
 			MemoryID:      r.MemoryID,
 			Facts:         append([]int64(nil), r.FactIDs...),
@@ -287,6 +289,7 @@ func extractCitations(answer string, results []search.Result) ([]Citation, bool)
 		out = append(out, Citation{
 			Index:         idx,
 			Source:        sourceLabel(r),
+			Title:         citationTitle(r),
 			Score:         r.Score,
 			MemoryID:      r.MemoryID,
 			Facts:         append([]int64(nil), r.FactIDs...),
@@ -506,6 +509,15 @@ func sourceLabel(result search.Result) string {
 		source = fmt.Sprintf("%s#%s", source, result.SourceSection)
 	}
 	return source
+}
+
+// citationTitle derives a human-readable title for a citation, falling back
+// to the locator string (sourceLabel) so Title is never empty.
+func citationTitle(r search.Result) string {
+	if t := search.CitationTitleForResult(r); t != "" {
+		return t
+	}
+	return sourceLabel(r)
 }
 
 func formatFactIDs(ids []int64) string {

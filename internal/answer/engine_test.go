@@ -11,6 +11,16 @@ import (
 	"github.com/hurttlocker/cortex/internal/store"
 )
 
+func newRealTestStore(t *testing.T) store.Store {
+	t.Helper()
+	s, err := store.NewStore(store.StoreConfig{DBPath: ":memory:"})
+	if err != nil {
+		t.Fatalf("failed to create test store: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
 type mockSearcher struct {
 	results []search.Result
 	err     error
@@ -187,6 +197,102 @@ func TestAnswer_UsesShortestExactPromptGuidance(t *testing.T) {
 		if !strings.Contains(system, needle) {
 			t.Fatalf("expected system prompt to contain %q, got %q", needle, system)
 		}
+	}
+}
+
+// Real-path tests (M4): drive the actual store → search engine → answer
+// engine chain (no mocked Result construction) to prove Citation.Title is
+// wired through the real entry point, not just the Citation struct in
+// isolation. No LLM configured, so Answer() falls through to fallbackResult —
+// the same code path extractCitations uses for Title derivation.
+
+func TestAnswer_CitationTitle_UsesSourceSection_RealPath(t *testing.T) {
+	s := newRealTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.AddMemory(ctx, &store.Memory{
+		Content:       "Jon started a dance studio after leaving banking.",
+		SourceFile:    "conv-30.md",
+		SourceSection: "Session 9",
+	}); err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	searchEngine := search.NewEngine(s)
+	e := NewEngine(searchEngine, nil, "")
+	res, err := e.Answer(ctx, Options{Query: "dance studio banking", Search: search.Options{Limit: 5}})
+	if err != nil {
+		t.Fatalf("Answer err: %v", err)
+	}
+	if len(res.Citations) == 0 {
+		t.Fatal("expected at least one citation")
+	}
+	if got := res.Citations[0].Title; got != "Session 9" {
+		t.Fatalf("expected Title == section header %q, got %q", "Session 9", got)
+	}
+}
+
+func TestAnswer_CitationTitle_FallsBackToBaseFilename_RealPath(t *testing.T) {
+	s := newRealTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.AddMemory(ctx, &store.Memory{
+		Content:    "The kangaroo mascot appears on the login screen of the app.",
+		SourceFile: "notes/design/kangaroo.md",
+	}); err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	searchEngine := search.NewEngine(s)
+	e := NewEngine(searchEngine, nil, "")
+	res, err := e.Answer(ctx, Options{Query: "kangaroo mascot login screen", Search: search.Options{Limit: 5}})
+	if err != nil {
+		t.Fatalf("Answer err: %v", err)
+	}
+	if len(res.Citations) == 0 {
+		t.Fatal("expected at least one citation")
+	}
+	if got := res.Citations[0].Title; got != "kangaroo.md" {
+		t.Fatalf("expected Title == base filename %q, got %q", "kangaroo.md", got)
+	}
+}
+
+func TestAnswer_CitationTitle_DirectiveUsesRuleText_RealPath(t *testing.T) {
+	s := newRealTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.AddMemory(ctx, &store.Memory{
+		Content:    "The kangaroo mascot appears on the login screen of the app.",
+		SourceFile: "notes.md",
+	}); err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+	if _, err := s.AddDirective(ctx, &store.Directive{
+		Rule:  "never commit secrets to the repository",
+		Scope: store.DirectiveScopeGlobal,
+	}); err != nil {
+		t.Fatalf("AddDirective: %v", err)
+	}
+
+	searchEngine := search.NewEngine(s)
+	e := NewEngine(searchEngine, nil, "")
+	res, err := e.Answer(ctx, Options{Query: "kangaroo", Search: search.Options{Limit: 5}})
+	if err != nil {
+		t.Fatalf("Answer err: %v", err)
+	}
+
+	var directiveCitation *Citation
+	for i := range res.Citations {
+		if res.Citations[i].Source == "directive" {
+			directiveCitation = &res.Citations[i]
+			break
+		}
+	}
+	if directiveCitation == nil {
+		t.Fatalf("expected a pinned directive citation, got %+v", res.Citations)
+	}
+	if got := directiveCitation.Title; got != "never commit secrets to the repository" {
+		t.Fatalf("expected Title == directive rule text, got %q", got)
 	}
 }
 

@@ -1987,6 +1987,9 @@ func runAsk(args []string) error {
 	fmt.Println()
 	for _, c := range res.Citations {
 		fmt.Printf("[%d] %s", c.Index, c.Source)
+		if c.Title != "" && c.Title != c.Source {
+			fmt.Printf(" — %s", c.Title)
+		}
 		if len(c.Facts) > 0 {
 			fmt.Printf(" fact_ids=%v", c.Facts)
 		}
@@ -2217,7 +2220,11 @@ func runAnswer(args []string) error {
 	fmt.Println(res.Answer)
 	fmt.Println()
 	for _, c := range res.Citations {
-		fmt.Printf("[%d] %s (score %.2f)\n", c.Index, c.Source, c.Score)
+		fmt.Printf("[%d] %s", c.Index, c.Source)
+		if c.Title != "" && c.Title != c.Source {
+			fmt.Printf(" — %s", c.Title)
+		}
+		fmt.Printf(" (score %.2f)\n", c.Score)
 	}
 	if res.Degraded {
 		fmt.Printf("\n(degraded: %s)\n", res.Reason)
