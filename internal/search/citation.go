@@ -40,11 +40,13 @@ func CitationTitleForResult(r Result) string {
 
 func truncateCitationTitle(s string, max int) string {
 	s = strings.TrimSpace(s)
-	if max <= 0 || len(s) <= max {
+	// Truncate on runes, not bytes — a byte slice can split a UTF-8 codepoint.
+	r := []rune(s)
+	if max <= 0 || len(r) <= max {
 		return s
 	}
 	if max <= 3 {
-		return s[:max]
+		return string(r[:max])
 	}
-	return strings.TrimSpace(s[:max-3]) + "..."
+	return strings.TrimSpace(string(r[:max-3])) + "..."
 }
