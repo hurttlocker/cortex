@@ -5,7 +5,7 @@
 <h1 align="center">Cortex</h1>
 
 <p align="center">
-  <strong>Memory that forgets — so your agent doesn't have to remember everything forever.</strong>
+  <strong>The open memory primitive for AI agents — the one that proposes, never writes.</strong>
 </p>
 
 <p align="center">
@@ -16,7 +16,9 @@
 
 ---
 
-Import your existing files. Search with hybrid or RRF retrieval. Watch facts fade and reinforce what matters.
+Two kinds of memory, one binary. **Directives** — explicit rules you author ("always X", "never Y"), pinned above every retrieval, never decay. **The ledger** — implicit outcomes your agents record as they work. Facts, hybrid search, and Ebbinghaus decay sit underneath both.
+
+And the part every other agent-memory tool gets wrong: **cortex never writes its own memory.** It watches the ledger, notices a fix pattern recurring, and *proposes* a rule — you accept or dismiss. A bad proposal costs a dismiss, never a bad write.
 
 No API keys. No Docker. No config. A single 12MB binary and a SQLite file.
 
@@ -66,9 +68,25 @@ cortex search "what did I decide about the API design"
 claude mcp add cortex -- cortex mcp
 ```
 
-That's it. Your agent now has persistent memory with 17 MCP tools.
+That's it. Your agent now has persistent memory with 21 MCP tools.
 
 > **No LLM keys?** Cortex works fully offline — import, search (BM25), and MCP all work without any API keys. Add an LLM provider later for enrichment, classification, and semantic search.
+
+## The governance loop (v2)
+
+```bash
+# Author a rule your agent can never lose to retrieval noise
+cortex directive add "Never commit secrets to any repository"
+
+# Agents record outcomes as they work (CLI or the cortex_ledger_record MCP tool)
+cortex ledger record --summary "fixed the auth gate" --outcome success --pattern "auth-gate-missing"
+
+# cortex notices patterns and proposes; only YOU write
+cortex propose scan       # "auth-gate-missing — seen 3x in 14d"
+cortex propose accept 1   # NOW it's a directive, pinned in every retrieval
+```
+
+The scan path contains no code that writes a directive — that's tested, not promised. Proposals carry their evidence (the ledger rows that triggered them), so you always see *why* before you accept.
 
 ### Verify your setup
 
@@ -127,6 +145,8 @@ cortex completion fish > ~/.config/fish/completions/cortex.fish
 
 ## Why Cortex
 
+**Human-gated memory.** Directives are yours; the ledger is your agents'; the proposer bridges them only through your explicit accept. Memory you can trust because a human gated every rule in it.
+
 **Memory that fades like yours.** Facts decay over time using [Ebbinghaus curves](https://en.wikipedia.org/wiki/Forgetting_curve) — identity facts last years, temporal facts fade in days. When you search, stale facts rank lower. Reinforce what matters; let the rest go.
 
 **Import-first.** Start with the files you already have — `MEMORY.md`, JSON configs, YAML, CSV, conversation logs. Every other tool says "start fresh." Cortex says "bring everything."
@@ -143,9 +163,12 @@ Your files ──→ Import ──→ Fact extraction ──→ SQLite + FTS5
                               ┌─────────┬──────────┼──────────┐
                               ▼         ▼          ▼          ▼
                            Search    Observe    Graph      MCP Server
-                          (hybrid)  (stats,    (2D         (17 tools,
+                          (hybrid)  (stats,    (2D         (21 tools,
                                     stale,     explorer)    any agent)
                                     conflicts)
+
+Directives (yours) ──────→ pinned above every search result, never decay
+Session ledger (agents') ─→ propose scan ──→ YOU accept/dismiss ──→ directive
 ```
 
 **Search:** BM25 keyword + optional semantic embeddings, fused with Weighted Score Fusion (default hybrid) or Reciprocal Rank Fusion (`--mode rrf`).
@@ -337,9 +360,13 @@ Supports Ollama (free/local), OpenAI, DeepSeek, OpenRouter, or any OpenAI-compat
 | [Contributing](CONTRIBUTING.md) | How to contribute |
 | [Brand assets](docs/branding.md) | Logo and visual identity |
 
+## cortex and o8
+
+cortex is the open-source memory core. If you want governed multi-agent approvals, audit, and an operator surface built on the same philosophy, that's [o8](https://o8.run) — the closed superset. Community PRs here are reviewed publicly through o8's own approval surface; the repo is also the demo.
+
 ## License
 
-MIT — [LICENSE](LICENSE)
+MIT — [LICENSE](LICENSE). Issues and PRs welcome; response not guaranteed. No roadmap promises.
 
 ---
 

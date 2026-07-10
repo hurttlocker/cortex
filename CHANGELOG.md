@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-10
+
+### Two-layer memory + the propose-never-write loop
+
+v2 makes cortex a *governed* memory primitive. Every other agent-memory tool auto-writes what it thinks it learned; cortex now separates memory into an explicit layer you author and an implicit layer your agents record — and the only bridge between them is your explicit accept.
+
+**Backward-compatible at the database layer.** All v2 schema changes are new additive tables; your existing `~/.cortex` upgrades in place on first run.
+
+#### Added
+- **Directives** — explicit, human-authored rules as a first-class memory kind. Pinned above every search/answer result (they never lose to ranking noise), never decay, no vector search on the directive path by design. CLI: `cortex directive add|list|edit|archive|rm`. MCP: `cortex_directive_add`, `cortex_directive_list`.
+- **Session ledger** — append-only implicit memory: agents record task outcomes (summary, success/partial/failure, files touched, fix pattern) at end-of-task. CLI: `cortex ledger record|list`. MCP: `cortex_ledger_record`. No update or delete path exists, anywhere.
+- **The proposer loop** — `cortex propose scan` groups recurring ledger fix patterns (exact-match, deterministic, no LLM) and files *pending proposals* with their evidence. `cortex propose accept <id>` is the ONLY code path that turns a proposal into a directive; `dismiss` costs nothing. The scan-writes-nothing guarantee is enforced by test, not convention. MCP: `cortex_propose_list` (read-only — accept stays human-gated).
+- **Titled citations** — every answer/search citation now carries a human-readable `title` (section header → filename → directive rule text), not just a `file:line` locator.
+
+#### Changed
+- OpenClaw plugin demoted from core to `examples/openclaw-plugin/` (reference adapter, not actively maintained). The core reads runtime-neutral.
+- CI hygiene: `concurrency: cancel-in-progress` on all workflows; daily canaries demoted to weekly; the metered-LLM quality eval is dispatch-only — nothing spends money on a schedule.
+
 ## [1.3.0] - 2026-03-21
 
 ### 🧠 v1.3.0 — High-Signal Memory Autopilot
