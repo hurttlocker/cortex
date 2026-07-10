@@ -39,7 +39,7 @@ cortex embed ollama/nomic-embed-text
 openclaw plugins install openclaw-cortex
 
 # or from local repo
-openclaw plugins install ./plugin
+openclaw plugins install ./examples/openclaw-plugin
 ```
 
 ## 4) Configure OpenClaw (must nest under `config`)

@@ -43,4 +43,4 @@ config.yml
 models/
 dist-v0.1.3/
 dist/
-plugin/node_modules/
+examples/openclaw-plugin/node_modules/
