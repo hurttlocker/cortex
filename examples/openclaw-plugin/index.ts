@@ -11,7 +11,7 @@
  *   - Confidence decay: Ebbinghaus-based memory aging
  *   - Full observability: SQLite DB, queryable, exportable
  *
- * Install: openclaw plugins install ./plugin  (from cortex repo)
+ * Install: openclaw plugins install ./examples/openclaw-plugin  (from cortex repo)
  *    or:   openclaw plugins install openclaw-cortex  (from npm)
  */
 

@@ -5,6 +5,10 @@ on:
   # by hand before a release, never on an unattended schedule.
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   reason-quality-eval:
     runs-on: ubuntu-latest

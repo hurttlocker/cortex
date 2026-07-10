@@ -1,5 +1,7 @@
 # openclaw-cortex
 
+> Reference adapter. Provided as an example; not actively maintained.
+
 > Cortex memory plugin for OpenClaw — local, free, observable AI memory with hybrid search and confidence decay.
 
 **Zero cloud dependencies.** Uses the local `cortex` binary + ollama embeddings. Your data never leaves your machine.
@@ -8,7 +10,7 @@
 
 ```bash
 # From the cortex repo
-openclaw plugins install ./plugin
+openclaw plugins install ./examples/openclaw-plugin
 
 # Or from npm (after publish)
 openclaw plugins install openclaw-cortex
