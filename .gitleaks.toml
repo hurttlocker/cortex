@@ -1,0 +1,17 @@
+# Gitleaks config — allowlist for known-fake test fixtures.
+# Full-history scan 2026-07-10: the only hits were placeholder tokens in
+# connector tests (xoxp-123-456-abc, ya29.from-env). Real secrets never
+# belong in this repo, fixtures must stay obviously fake.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fake connector-test fixtures"
+regexes = [
+  '''xoxp-123-456-abc''',
+  '''ya29\.from-env''',
+]
+paths = [
+  '''internal/connect/.*_test\.go''',
+]
