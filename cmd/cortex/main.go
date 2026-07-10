@@ -150,6 +150,8 @@ func main() {
 		exitWithError(runTag(args[1:]))
 	case "reason":
 		exitWithError(runReason(args[1:]))
+	case "ledger":
+		exitWithError(runLedger(args[1:]))
 	case "bench":
 		exitWithError(runBench(args[1:]))
 	case "eval":
@@ -13208,6 +13210,7 @@ Maintenance:
   suppress              Manage extract suppression patterns in config
   source-weight         Manage search source weights in config
   tag                   Tag memories by project
+  ledger record|list    Record/list session outcomes (implicit memory layer)
 
 Connectors:
   connect init          Initialize connector system

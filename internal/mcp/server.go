@@ -87,6 +87,7 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	registerGraphExploreTool(s, cfg.Store)
 	registerGraphImpactTool(s, cfg.Store)
 	registerListClustersTool(s, cfg.Store)
+	registerLedgerRecordTool(s, cfg.Store)
 
 	// Register connector management tools
 	if sqlStore, ok := cfg.Store.(*store.SQLiteStore); ok {
