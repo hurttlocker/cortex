@@ -67,6 +67,48 @@ func TestAsk_DegradesWithoutLLM(t *testing.T) {
 	}
 }
 
+// TestAsk_CitationTitle_RealPath (M4) drives a real store + real search
+// engine — mirroring how the CLI wires cortex ask — instead of constructing
+// search.Result values by hand, proving Citation.Title reaches the ask
+// engine's real fallback path from an actually-imported memory.
+func TestAsk_CitationTitle_RealPath(t *testing.T) {
+	s, err := store.NewStore(store.StoreConfig{DBPath: ":memory:"})
+	if err != nil {
+		t.Fatalf("failed to create test store: %v", err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	if _, err := s.AddMemory(ctx, &store.Memory{
+		Content:       "Q prefers green over blue for the accent color.",
+		SourceFile:    "prefs.md",
+		SourceSection: "Color Preferences",
+	}); err != nil {
+		t.Fatalf("AddMemory: %v", err)
+	}
+
+	searchEngine := search.NewEngine(s)
+	results, err := searchEngine.Search(ctx, "green blue accent color", search.Options{Limit: 5})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one search result")
+	}
+
+	e := NewEngine(nil, "")
+	res, err := e.Ask(ctx, Options{Question: "what accent color does Q prefer?", Results: results})
+	if err != nil {
+		t.Fatalf("Ask err: %v", err)
+	}
+	if len(res.Citations) == 0 {
+		t.Fatal("expected at least one citation")
+	}
+	if got := res.Citations[0].Title; got != "Color Preferences" {
+		t.Fatalf("expected Title == section header %q, got %q", "Color Preferences", got)
+	}
+}
+
 func TestAsk_SuccessWithValidCitations(t *testing.T) {
 	e := NewEngine(mockProvider{
 		resp: "Q prefers green for additions [1]. Q prefers blue for deletions [2].",
