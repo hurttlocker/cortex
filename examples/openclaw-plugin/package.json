@@ -1,7 +1,7 @@
 {
   "name": "openclaw-cortex",
   "version": "0.4.0",
-  "description": "Cortex memory plugin for OpenClaw — local, free, observable AI memory with hybrid search and confidence decay",
+  "description": "Cortex memory plugin for OpenClaw - local, free, observable AI memory with hybrid search and confidence decay",
   "type": "module",
   "main": "index.ts",
   "keywords": [
@@ -27,8 +27,6 @@
     "@sinclair/typebox": ">=0.34.0"
   },
   "dependencies": {
-    "@sinclair/typebox": "0.34.48"
-  },
-  "dependencies": {
     "@sinclair/typebox": "^0.34.0"
-  }}
+  }
+}
