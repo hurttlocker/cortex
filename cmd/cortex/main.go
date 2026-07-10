@@ -114,6 +114,8 @@ func main() {
 		exitWithError(runSupersede(args[1:]))
 	case "directive":
 		exitWithError(runDirective(args[1:]))
+	case "propose":
+		exitWithError(runPropose(args[1:]))
 	case "fact":
 		exitWithError(runFactCommand(args[1:]))
 	case "fact-history":
@@ -13220,6 +13222,7 @@ Maintenance:
   source-weight         Manage search source weights in config
   tag                   Tag memories by project
   ledger record|list    Record/list session outcomes (implicit memory layer)
+  propose scan|list|accept|dismiss  Propose directives from recurring ledger fix patterns (accept is human-gated)
 
 Connectors:
   connect init          Initialize connector system

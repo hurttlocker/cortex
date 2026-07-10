@@ -153,6 +153,14 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating directives table: %w", err)
 	}
 
+	// Schema evolution: directive_proposals table (v2 M3 — the proposer loop).
+	// Candidate directives derived deterministically from recurring ledger fix
+	// patterns. Sits on top of session_ledger (M2) + directives (M1); a proposal
+	// only becomes a directive on an explicit human accept.
+	if err := s.migrateDirectiveProposalsTable(); err != nil {
+		return fmt.Errorf("migrating directive_proposals table: %w", err)
+	}
+
 	return nil
 }
 
@@ -1166,6 +1174,55 @@ func (s *SQLiteStore) migrateDirectivesTable() error {
 
 	if _, err := s.db.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('directives_v1', 'true')`); err != nil {
 		return fmt.Errorf("setting directives_v1 flag: %w", err)
+	}
+
+	return nil
+}
+
+// migrateDirectiveProposalsTable creates the directive_proposals table — the
+// proposer loop's holding area (v2 M3).
+//
+// The proposer scans the session ledger for recurring fix patterns and writes
+// PENDING proposals here. A proposal is inert governance material: it only ever
+// becomes a real directive on an explicit human `accept`, which is the sole code
+// path from this table to a directives INSERT. Scanning never writes a directive.
+//
+// Additive + idempotent (meta-flag guarded), mirroring the M1/M2 migrations.
+func (s *SQLiteStore) migrateDirectiveProposalsTable() error {
+	done, err := s.isMetaFlagEnabled("directive_proposals_v1")
+	if err != nil {
+		return err
+	}
+	if done {
+		return nil
+	}
+
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS directive_proposals (
+			id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+			candidate_rule       TEXT NOT NULL,
+			pattern_key          TEXT NOT NULL,
+			occurrences          INTEGER NOT NULL,
+			window_start         DATETIME,
+			window_end           DATETIME,
+			evidence             TEXT NOT NULL DEFAULT '[]',
+			status               TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','dismissed')),
+			created_directive_id INTEGER REFERENCES directives(id),
+			created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			resolved_at          DATETIME
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_directive_proposals_pattern ON directive_proposals(pattern_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_directive_proposals_status ON directive_proposals(status)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("creating directive_proposals schema %q: %w", truncate(stmt, 80), err)
+		}
+	}
+
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('directive_proposals_v1', 'true')`); err != nil {
+		return fmt.Errorf("setting directive_proposals_v1 flag: %w", err)
 	}
 
 	return nil

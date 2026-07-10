@@ -93,6 +93,9 @@ func NewServer(cfg ServerConfig) *server.MCPServer {
 	registerDirectiveAddTool(s, cfg.Store)
 	registerDirectiveListTool(s, cfg.Store)
 
+	// Directive proposals (v2 M3) — read-only; accept/dismiss/scan stay CLI-only.
+	registerProposeListTool(s, cfg.Store)
+
 	// Register connector management tools
 	if sqlStore, ok := cfg.Store.(*store.SQLiteStore); ok {
 		connStore := connect.NewConnectorStore(sqlStore.GetDB())
