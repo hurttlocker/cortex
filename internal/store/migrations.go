@@ -142,6 +142,11 @@ func (s *SQLiteStore) migrate() error {
 		return fmt.Errorf("migrating content_only_hash: %w", err)
 	}
 
+	// Schema evolution: session ledger table — implicit memory layer (v2 M2)
+	if err := s.migrateSessionLedgerTable(); err != nil {
+		return fmt.Errorf("migrating session ledger table: %w", err)
+	}
+
 	return nil
 }
 
@@ -1044,6 +1049,48 @@ func (s *SQLiteStore) migrateAlertsTable() error {
 
 	if _, err := s.db.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('alerts_v1', 'true')`); err != nil {
 		return fmt.Errorf("setting alerts_v1 flag: %w", err)
+	}
+
+	return nil
+}
+
+// migrateSessionLedgerTable creates the session_ledger table — the append-only
+// implicit memory layer (v2 M2). Agents/tools record work outcomes here at
+// end-of-task; a later milestone scans it for recurring fix patterns. There is
+// intentionally no update or delete path for this table anywhere in the store.
+func (s *SQLiteStore) migrateSessionLedgerTable() error {
+	done, err := s.isMetaFlagEnabled("session_ledger_v1")
+	if err != nil {
+		return err
+	}
+	if done {
+		return nil
+	}
+
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS session_ledger (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id    TEXT NOT NULL DEFAULT '',
+			task_summary  TEXT NOT NULL,
+			outcome       TEXT NOT NULL CHECK(outcome IN ('success','partial','failure')),
+			files_touched TEXT NOT NULL DEFAULT '[]',
+			fix_pattern   TEXT NOT NULL DEFAULT '',
+			agent_id      TEXT NOT NULL DEFAULT '',
+			project       TEXT NOT NULL DEFAULT '',
+			created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_session_ledger_pattern_created ON session_ledger(fix_pattern, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_session_ledger_created ON session_ledger(created_at)`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("creating session_ledger table: %w", err)
+		}
+	}
+
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('session_ledger_v1', 'true')`); err != nil {
+		return fmt.Errorf("setting session_ledger_v1 flag: %w", err)
 	}
 
 	return nil
