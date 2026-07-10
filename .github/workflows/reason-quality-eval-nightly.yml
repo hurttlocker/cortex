@@ -1,10 +1,9 @@
 name: Reason Quality Eval Nightly
 
 on:
+  # Dispatch-only: this eval spends metered LLM credit (OpenRouter) — run it
+  # by hand before a release, never on an unattended schedule.
   workflow_dispatch:
-  schedule:
-    # Nightly at 07:20 UTC
-    - cron: '20 7 * * *'
 
 jobs:
   reason-quality-eval:
