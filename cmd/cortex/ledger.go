@@ -207,14 +207,24 @@ func parseSinceDuration(s string) (time.Duration, error) {
 		if err != nil {
 			return 0, fmt.Errorf("invalid day count %q", s)
 		}
+		if n < 0 {
+			return 0, fmt.Errorf("negative duration %q", s)
+		}
 		return time.Duration(n * float64(24*time.Hour)), nil
 	case 'w', 'W':
 		n, err := strconv.ParseFloat(numPart, 64)
 		if err != nil {
 			return 0, fmt.Errorf("invalid week count %q", s)
 		}
+		if n < 0 {
+			return 0, fmt.Errorf("negative duration %q", s)
+		}
 		return time.Duration(n * float64(7*24*time.Hour)), nil
 	}
 
-	return time.ParseDuration(s)
+	d, err := time.ParseDuration(s)
+	if err == nil && d < 0 {
+		return 0, fmt.Errorf("negative duration %q", s)
+	}
+	return d, err
 }
