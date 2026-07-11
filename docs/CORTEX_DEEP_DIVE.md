@@ -53,7 +53,7 @@ Files/Sources → Import → Chunk → Extract (rules) → Enrich (LLM) → Clas
 | **Confidence Decay** | Ebbinghaus forgetting curves per fact type. Identity decays slowly (years). Temporal decays fast (days). `cortex reinforce <id>` resets the decay timer. |
 | **Knowledge Graph** | Subject→predicate→object triples with cluster detection. Interactive 2D explorer at `localhost:8090`. 5 view modes: graph, table, subjects, clusters, search. |
 | **Connectors** | 8 providers: GitHub, Gmail, Calendar, Drive, Slack, Discord, Telegram, Notion. Incremental sync with cursor tracking. OS-native scheduling (launchd/systemd). |
-| **MCP Server** | 17 tools + 4 resources. stdio or HTTP+SSE transport. Works with Claude Code, Cursor, Windsurf, any MCP client. |
+| **MCP Server** | 22 tools + 4 resources. stdio or HTTP+SSE transport. Works with Claude Code, Codex CLI, Cursor, Windsurf, any MCP client. |
 | **Multi-Agent** | `--agent` flag scopes all operations. `cortex agents` lists known agents. Memories tagged with agent ID. No cross-agent leakage. |
 | **Observability** | `stats`, `stale`, `conflicts`, `alerts`, `doctor`. Proactive health monitoring. |
 | **Reasoning** | One-shot and recursive chain-of-thought over your memory corpus. Search → synthesize → answer. |
@@ -181,7 +181,7 @@ The MCP server is how agents interact with Cortex. It exposes the full feature s
 ### Starting the MCP Server
 
 ```bash
-# stdio (for Claude Code, Cursor, etc.)
+# stdio (for Claude Code, Codex CLI, Cursor, etc.)
 cortex mcp
 
 # HTTP+SSE (for web clients)
@@ -197,7 +197,7 @@ cortex mcp --agent mister
 claude mcp add cortex -- cortex mcp
 ```
 
-That's it. Claude Code now has persistent memory with 17 tools.
+That's it. Claude Code now has persistent memory with 22 tools.
 
 ---
 

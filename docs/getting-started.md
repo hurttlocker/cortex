@@ -61,6 +61,11 @@ cortex search "PostgreSQL migration" --mode bm25
 # Claude Code
 claude mcp add cortex -- cortex mcp
 
+# Codex CLI (add to ~/.codex/config.toml)
+[mcp_servers.cortex]
+command = "cortex"
+args = ["mcp"]
+
 # Cursor (add to .cursor/mcp.json)
 {
   "mcpServers": {
@@ -78,7 +83,7 @@ cortex mcp
 cortex mcp --port 8080
 ```
 
-Your agent now has persistent memory with 17 tools.
+Your agent now has persistent memory with 22 tools.
 
 ## 5. Check What You Know
 

@@ -153,10 +153,10 @@ Imports data from external services into the standard pipeline.
 Model Context Protocol server for agent integration.
 
 - **Transport**: stdio (default) or HTTP+SSE (`--port`)
-- **17 tools**: Search, import, facts, stats, stale, reinforce, reason, edge-add, graph (4 tools), clusters, connect (4 tools)
+- **22 tools**: Answer, search, import, facts, stats, stale, reinforce, reason, edge-add, graph (2 tools), explore/impact/clusters (3 tools), connect (4 tools), directives (2 tools), ledger, proposals
 - **4 resources**: stats, recent memories, graph subjects, graph clusters
 - **Agent scoping**: `--agent` sets default agent for all tool invocations; per-request `agent_id` overrides
-- **Tested with**: Claude Code, Cursor, Windsurf
+- **Tested with**: Claude Code, Codex CLI, Cursor, Windsurf
 
 ### `observe/` — Observability (823 lines)
 

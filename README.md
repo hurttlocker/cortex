@@ -64,7 +64,7 @@ cortex import ~/notes/ --recursive --extract
 # 3. Search your knowledge
 cortex search "what did I decide about the API design"
 
-# 4. Connect to your agent (Claude Code, Cursor, Windsurf, etc.)
+# 4. Connect to your agent (Claude Code, Codex CLI, Cursor, Windsurf, etc.)
 claude mcp add cortex -- cortex mcp
 ```
 
@@ -191,7 +191,7 @@ Session ledger (agents') ─→ propose scan ──→ YOU accept/dismiss ──
 | **Connectors** | GitHub, Gmail, Calendar, Drive, Slack, Discord, Telegram, Notion. Import + extract facts in one step. |
 | **Provenance** | Every fact tracks source file, line, section, timestamp. Full audit trail. |
 | **Export** | JSON, Markdown, CSV. Your memory is yours. No lock-in. |
-| **MCP server** | `cortex mcp` — stdio or HTTP. Works with Claude Code, Cursor, any MCP client. |
+| **MCP server** | `cortex mcp` — stdio or HTTP. Works with Claude Code, Codex CLI, Cursor, any MCP client. |
 
 ## vs. alternatives
 
