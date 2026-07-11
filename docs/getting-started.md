@@ -83,7 +83,7 @@ cortex mcp
 cortex mcp --port 8080
 ```
 
-Your agent now has persistent memory with 21 tools.
+Your agent now has persistent memory with 22 tools.
 
 ## 5. Check What You Know
 

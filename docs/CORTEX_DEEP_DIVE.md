@@ -53,7 +53,7 @@ Files/Sources → Import → Chunk → Extract (rules) → Enrich (LLM) → Clas
 | **Confidence Decay** | Ebbinghaus forgetting curves per fact type. Identity decays slowly (years). Temporal decays fast (days). `cortex reinforce <id>` resets the decay timer. |
 | **Knowledge Graph** | Subject→predicate→object triples with cluster detection. Interactive 2D explorer at `localhost:8090`. 5 view modes: graph, table, subjects, clusters, search. |
 | **Connectors** | 8 providers: GitHub, Gmail, Calendar, Drive, Slack, Discord, Telegram, Notion. Incremental sync with cursor tracking. OS-native scheduling (launchd/systemd). |
-| **MCP Server** | 21 tools + 4 resources. stdio or HTTP+SSE transport. Works with Claude Code, Codex CLI, Cursor, Windsurf, any MCP client. |
+| **MCP Server** | 22 tools + 4 resources. stdio or HTTP+SSE transport. Works with Claude Code, Codex CLI, Cursor, Windsurf, any MCP client. |
 | **Multi-Agent** | `--agent` flag scopes all operations. `cortex agents` lists known agents. Memories tagged with agent ID. No cross-agent leakage. |
 | **Observability** | `stats`, `stale`, `conflicts`, `alerts`, `doctor`. Proactive health monitoring. |
 | **Reasoning** | One-shot and recursive chain-of-thought over your memory corpus. Search → synthesize → answer. |
@@ -197,7 +197,7 @@ cortex mcp --agent mister
 claude mcp add cortex -- cortex mcp
 ```
 
-That's it. Claude Code now has persistent memory with 21 tools.
+That's it. Claude Code now has persistent memory with 22 tools.
 
 ---
 
