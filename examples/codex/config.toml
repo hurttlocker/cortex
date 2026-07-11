@@ -1,0 +1,3 @@
+[mcp_servers.cortex]
+command = "cortex"
+args = ["mcp"]

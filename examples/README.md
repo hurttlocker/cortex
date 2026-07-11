@@ -3,6 +3,7 @@
 Practical setups you can copy and run.
 
 - `local-first/` — fully local workflow (Ollama + SQLite, no API keys)
+- `codex/` — Codex CLI MCP setup and ledger workflow
 - `openclaw-agent/` — MCP integration pattern for OpenClaw/Claude Code style agents
 - `openclaw-plugin/` — OpenClaw plugin reference adapter (not actively maintained)
 - `obsidian-sync/` — export + validate + periodic sync workflow
