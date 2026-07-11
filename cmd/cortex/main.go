@@ -6778,13 +6778,14 @@ func runCluster(args []string) error {
 
 // graphExportNode mirrors the MCP export format for CLI output.
 type graphExportNode struct {
-	ID         int64   `json:"id"`
-	Subject    string  `json:"subject"`
-	Predicate  string  `json:"predicate"`
-	Object     string  `json:"object"`
-	Confidence float64 `json:"confidence"`
-	AgentID    string  `json:"agent_id,omitempty"`
-	FactType   string  `json:"type"`
+	ID          int64   `json:"id"`
+	Subject     string  `json:"subject"`
+	Predicate   string  `json:"predicate"`
+	Object      string  `json:"object"`
+	Confidence  float64 `json:"confidence"`
+	AgentID     string  `json:"agent_id,omitempty"`
+	FactType    string  `json:"type"`
+	SourceTitle string  `json:"source_title,omitempty"`
 }
 
 type graphExportEdge struct {
@@ -6815,6 +6816,22 @@ func runGraphExportJSON(ctx context.Context, sqlStore *store.SQLiteStore, nodes 
 	}, agentFilter)
 }
 
+func graphSourceTitle(ctx context.Context, sqlStore *store.SQLiteStore, fact *store.Fact) string {
+	if fact == nil || fact.MemoryID == 0 {
+		return ""
+	}
+	memory, err := sqlStore.GetMemory(ctx, fact.MemoryID)
+	if err != nil || memory == nil {
+		return ""
+	}
+	return search.CitationTitleForResult(search.Result{
+		Kind:          fact.FactType,
+		Content:       fact.Object,
+		SourceFile:    memory.SourceFile,
+		SourceSection: memory.SourceSection,
+	})
+}
+
 func runGraphExportJSONWithMeta(ctx context.Context, sqlStore *store.SQLiteStore, nodes []store.GraphNode, meta map[string]interface{}, agentFilter string) error {
 	if meta == nil {
 		meta = map[string]interface{}{}
@@ -6838,13 +6855,14 @@ func runGraphExportJSONWithMeta(ctx context.Context, sqlStore *store.SQLiteStore
 			seenNodes[gn.Fact.ID] = true
 			allFactIDs = append(allFactIDs, gn.Fact.ID)
 			result.Nodes = append(result.Nodes, graphExportNode{
-				ID:         gn.Fact.ID,
-				Subject:    gn.Fact.Subject,
-				Predicate:  gn.Fact.Predicate,
-				Object:     gn.Fact.Object,
-				Confidence: gn.Fact.Confidence,
-				AgentID:    gn.Fact.AgentID,
-				FactType:   gn.Fact.FactType,
+				ID:          gn.Fact.ID,
+				Subject:     gn.Fact.Subject,
+				Predicate:   gn.Fact.Predicate,
+				Object:      gn.Fact.Object,
+				Confidence:  gn.Fact.Confidence,
+				AgentID:     gn.Fact.AgentID,
+				FactType:    gn.Fact.FactType,
+				SourceTitle: graphSourceTitle(ctx, sqlStore, gn.Fact),
 			})
 		}
 		for _, e := range gn.Edges {

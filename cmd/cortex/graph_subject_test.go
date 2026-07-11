@@ -63,7 +63,11 @@ func TestRunGraph_SubjectJSONIncludesSeedFactIDs(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	memoryID, err := s.AddMemory(ctx, &store.Memory{Content: "graph run memory", ImportedAt: time.Now().UTC()})
+	memoryID, err := s.AddMemory(ctx, &store.Memory{
+		Content:    "graph run memory",
+		SourceFile: "/vault/projects/cortex-plan.md",
+		ImportedAt: time.Now().UTC(),
+	})
 	if err != nil {
 		t.Fatalf("AddMemory: %v", err)
 	}
@@ -100,7 +104,8 @@ func TestRunGraph_SubjectJSONIncludesSeedFactIDs(t *testing.T) {
 
 	var payload struct {
 		Nodes []struct {
-			ID int64 `json:"id"`
+			ID          int64  `json:"id"`
+			SourceTitle string `json:"source_title"`
 		} `json:"nodes"`
 		Meta map[string]interface{} `json:"meta"`
 	}
@@ -120,6 +125,11 @@ func TestRunGraph_SubjectJSONIncludesSeedFactIDs(t *testing.T) {
 	}
 	if len(payload.Nodes) < 2 {
 		t.Fatalf("expected at least 2 nodes for subject graph, got %d", len(payload.Nodes))
+	}
+	for _, node := range payload.Nodes {
+		if node.SourceTitle != "cortex-plan.md" {
+			t.Fatalf("expected graph node source_title to fall back to base filename, got node %#v", node)
+		}
 	}
 }
 
