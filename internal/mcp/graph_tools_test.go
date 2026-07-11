@@ -34,6 +34,37 @@ func TestMCPGraphExploreBySubject(t *testing.T) {
 	}
 }
 
+func TestMCPGraphExploreSourceTitleFallsBackToBaseFilename(t *testing.T) {
+	s, srv, _ := setupGraphToolServer(t)
+	defer s.Close()
+
+	result := callTool(t, srv, "graph_explore", map[string]interface{}{
+		"subject": "cortex",
+		"depth":   float64(1),
+	})
+
+	var payload graphExploreResult
+	if err := json.Unmarshal([]byte(getTextContent(t, result)), &payload); err != nil {
+		t.Fatalf("parse graph_explore result: %v", err)
+	}
+	if len(payload.Facts) == 0 {
+		t.Fatal("expected graph_explore to return facts")
+	}
+	foundReadme := false
+	for _, fact := range payload.Facts {
+		if fact.Source != "readme.md" {
+			continue
+		}
+		foundReadme = true
+		if fact.SourceTitle != "readme.md" {
+			t.Fatalf("expected source_title to fall back to base filename, got %#v", fact)
+		}
+	}
+	if !foundReadme {
+		t.Fatal("expected a fact backed by readme.md")
+	}
+}
+
 func TestMCPGraphExploreByFactID(t *testing.T) {
 	s, srv, _ := setupGraphToolServer(t)
 	defer s.Close()

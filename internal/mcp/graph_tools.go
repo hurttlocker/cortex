@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hurttlocker/cortex/internal/search"
 	"github.com/hurttlocker/cortex/internal/store"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -24,13 +25,19 @@ const (
 )
 
 type graphExploreFact struct {
-	ID         int64   `json:"id"`
-	Subject    string  `json:"subject"`
-	Predicate  string  `json:"predicate"`
-	Object     string  `json:"object"`
-	Confidence float64 `json:"confidence"`
-	Hop        int     `json:"hop"`
-	Source     string  `json:"source"`
+	ID          int64   `json:"id"`
+	Subject     string  `json:"subject"`
+	Predicate   string  `json:"predicate"`
+	Object      string  `json:"object"`
+	Confidence  float64 `json:"confidence"`
+	Hop         int     `json:"hop"`
+	Source      string  `json:"source"`
+	SourceTitle string  `json:"source_title,omitempty"`
+}
+
+type graphMemorySource struct {
+	file    string
+	section string
 }
 
 type graphExploreEdge struct {
@@ -362,8 +369,8 @@ func buildGraphExploreResult(
 
 	facts := make([]graphExploreFact, 0, len(nodeByID))
 	for id, nv := range nodeByID {
-		source := memorySources[nv.fact.MemoryID]
-		if !matchesSourcePrefix(source, sourcePrefix) {
+		memorySource := memorySources[nv.fact.MemoryID]
+		if !matchesSourcePrefix(memorySource.file, sourcePrefix) {
 			continue
 		}
 		facts = append(facts, graphExploreFact{
@@ -373,7 +380,14 @@ func buildGraphExploreResult(
 			Object:     nv.fact.Object,
 			Confidence: nv.fact.Confidence,
 			Hop:        nv.hop,
-			Source:     source,
+			Source:     memorySource.file,
+			SourceTitle: search.CitationTitleForResult(search.Result{
+				Kind:          nv.fact.FactType,
+				Content:       nv.fact.Object,
+				SourceFile:    memorySource.file,
+				SourceSection: memorySource.section,
+				MemoryID:      nv.fact.MemoryID,
+			}),
 		})
 	}
 	sort.Slice(facts, func(i, j int) bool {
@@ -552,7 +566,7 @@ func resolveSeedFactsBySubject(ctx context.Context, db *sql.DB, subject string, 
 	return ids, rows.Err()
 }
 
-func loadMemorySourcesForNodeViews(ctx context.Context, db *sql.DB, nodes map[int64]graphNodeView) (map[int64]string, error) {
+func loadMemorySourcesForNodeViews(ctx context.Context, db *sql.DB, nodes map[int64]graphNodeView) (map[int64]graphMemorySource, error) {
 	memoryIDs := make([]int64, 0)
 	seen := make(map[int64]struct{})
 	for _, nv := range nodes {
@@ -566,7 +580,7 @@ func loadMemorySourcesForNodeViews(ctx context.Context, db *sql.DB, nodes map[in
 		memoryIDs = append(memoryIDs, nv.fact.MemoryID)
 	}
 	if len(memoryIDs) == 0 {
-		return map[int64]string{}, nil
+		return map[int64]graphMemorySource{}, nil
 	}
 
 	placeholders := make([]string, len(memoryIDs))
@@ -576,7 +590,7 @@ func loadMemorySourcesForNodeViews(ctx context.Context, db *sql.DB, nodes map[in
 		args[i] = id
 	}
 	query := fmt.Sprintf(
-		`SELECT id, COALESCE(source_file, '')
+		`SELECT id, COALESCE(source_file, ''), COALESCE(source_section, '')
 		 FROM memories
 		 WHERE id IN (%s)`,
 		strings.Join(placeholders, ","),
@@ -588,11 +602,11 @@ func loadMemorySourcesForNodeViews(ctx context.Context, db *sql.DB, nodes map[in
 	}
 	defer rows.Close()
 
-	result := make(map[int64]string, len(memoryIDs))
+	result := make(map[int64]graphMemorySource, len(memoryIDs))
 	for rows.Next() {
 		var id int64
-		var source string
-		if err := rows.Scan(&id, &source); err != nil {
+		var source graphMemorySource
+		if err := rows.Scan(&id, &source.file, &source.section); err != nil {
 			return nil, fmt.Errorf("scanning memory source: %w", err)
 		}
 		result[id] = source
